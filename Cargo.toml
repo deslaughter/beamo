@@ -1,0 +1,12 @@
+[package]
+name = "ottr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+approx = "0.5.1"
+faer = "0.19.4"
+faer-ext = { version = "0.3.0", features = ["ndarray"] }
+gauss-quad = "0.2.1"
+itertools = "0.13.0"
+ndarray = { version = "0.16.1", features = ["approx"] }
