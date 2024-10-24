@@ -1,4 +1,6 @@
-use ndarray::{array, Array2};
+use std::f64::consts::PI;
+
+use faer::{mat, row, MatMut, MatRef, Row, RowMut, RowRef};
 
 #[derive(Clone, Debug, Copy)]
 pub struct Quaternion {
@@ -15,28 +17,6 @@ impl Quaternion {
             x: 0.,
             y: 0.,
             z: 0.,
-        }
-    }
-
-    pub fn from_vec(a: &[f64; 4]) -> Self {
-        return Self {
-            w: a[0],
-            x: a[1],
-            y: a[2],
-            z: a[3],
-        };
-    }
-
-    pub fn as_vec(self) -> [f64; 4] {
-        [self.w, self.x, self.y, self.z]
-    }
-
-    pub fn compose(self, q2: &Quaternion) -> Quaternion {
-        Quaternion {
-            w: self.w * q2.w - self.x * q2.x - self.y * q2.y - self.z * q2.z,
-            x: self.w * q2.x + self.x * q2.w + self.y * q2.z - self.z * q2.y,
-            y: self.w * q2.y - self.x * q2.z + self.y * q2.w + self.z * q2.x,
-            z: self.w * q2.z + self.x * q2.y - self.y * q2.x + self.z * q2.w,
         }
     }
 
@@ -59,15 +39,123 @@ impl Quaternion {
             ],
         ]
     }
+}
 
-    pub fn from_matrix(m: &[[f64; 3]; 3]) -> Self {
-        let m22_p_m33 = m[1][1] + m[2][2];
-        let m22_m_m33 = m[1][1] - m[2][2];
+pub trait Quat {
+    fn quat_from_rotation_vector(self, v: RowRef<f64>);
+    fn quat_from_axis_angle(self, angle: f64, axis: RowRef<f64>);
+    fn quat_from_rotation_matrix(self, r: MatRef<f64>);
+    fn quat_compose(self, q1: RowRef<f64>, q2: RowRef<f64>);
+    fn quat_rotate_vector(self, v: RowMut<f64>);
+    fn quat_derivative(self, m: MatMut<f64>);
+    fn quat_from_tangent_twist(self, tangent: RowRef<f64>, twist: f64);
+    fn quat_as_matrix(self, m: MatMut<f64>);
+}
+
+impl Quat for RowMut<'_, f64> {
+    /// Populates matrix with rotation matrix equivalent of quaternion.
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `m.nrows() < 3`.  
+    /// Panics if `m.ncols() < 3`.  
+    fn quat_as_matrix(self, mut m: MatMut<f64>) {
+        m[(0, 0)] = self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3];
+        m[(0, 1)] = 2. * (self[1] * self[2] - self[0] * self[3]);
+        m[(0, 2)] = 2. * (self[1] * self[3] + self[0] * self[2]);
+
+        m[(1, 0)] = 2. * (self[1] * self[2] + self[0] * self[3]);
+        m[(1, 1)] = self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3];
+        m[(1, 2)] = 2. * (self[2] * self[3] - self[0] * self[1]);
+
+        m[(2, 0)] = 2. * (self[1] * self[3] - self[0] * self[2]);
+        m[(2, 1)] = 2. * (self[2] * self[3] + self[0] * self[1]);
+        m[(2, 2)] = self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3];
+    }
+
+    /// Populates matrix with quaternion derivative
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `m.nrows() < 3`.  
+    /// Panics if `m.ncols() < 4`.  
+    fn quat_derivative(self, mut m: MatMut<f64>) {
+        m[(0, 0)] = -self[1];
+        m[(0, 1)] = self[0];
+        m[(0, 2)] = -self[2];
+        m[(0, 3)] = self[3];
+
+        m[(1, 0)] = -self[3];
+        m[(1, 1)] = self[2];
+        m[(1, 2)] = self[0];
+        m[(1, 3)] = -self[1];
+
+        m[(1, 0)] = -self[2];
+        m[(1, 1)] = -self[3];
+        m[(1, 2)] = self[1];
+        m[(1, 3)] = self[0];
+    }
+
+    /// Populates Quaternion from rotation vector
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `v.ncols() < 3`.  
+    #[inline]
+    fn quat_from_rotation_vector(mut self, v: RowRef<f64>) {
+        let angle = v.norm_l2();
+        if angle < 1e-12 {
+            self[0] = 1.;
+            self[1] = 0.;
+            self[2] = 0.;
+            self[3] = 0.;
+        } else {
+            let (sin, cos) = (angle / 2.).sin_cos();
+            let factor = sin / angle;
+            self[0] = cos;
+            self[1] = v[0] * factor;
+            self[2] = v[1] * factor;
+            self[3] = v[2] * factor;
+        }
+    }
+
+    /// Populates Quaternion from axis-angle representation
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `axis.ncols() < 3`.  
+    #[inline]
+    fn quat_from_axis_angle(mut self, angle: f64, axis: RowRef<f64>) {
+        if angle < 1e-12 {
+            self[0] = 1.;
+            self[1] = 0.;
+            self[2] = 0.;
+            self[3] = 0.;
+        } else {
+            let (sin, cos) = (angle / 2.).sin_cos();
+            let factor = sin / angle;
+            self[0] = cos;
+            self[1] = angle * axis[0] * factor;
+            self[2] = angle * axis[1] * factor;
+            self[3] = angle * axis[2] * factor;
+        }
+    }
+
+    /// Populates Quaternion from rotation matrix
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `m.nrows() < 3`.
+    /// Panics if `m.ncols() < 3`.
+    #[inline]
+    fn quat_from_rotation_matrix(mut self, m: MatRef<f64>) {
+        let m22_p_m33 = m[(1, 1)] + m[(2, 2)];
+        let m22_m_m33 = m[(1, 1)] - m[(2, 2)];
         let vals = vec![
-            m[0][0] + m22_p_m33,
-            m[0][0] - m22_p_m33,
-            -m[0][0] + m22_m_m33,
-            -m[0][0] - m22_m_m33,
+            m[(0, 0)] + m22_p_m33,
+            m[(0, 0)] - m22_p_m33,
+            -m[(0, 0)] + m22_m_m33,
+            -m[(0, 0)] - m22_m_m33,
         ];
         let (max_idx, max_num) =
             vals.iter()
@@ -85,82 +173,103 @@ impl Quaternion {
         let coef = half / tmp;
 
         match max_idx {
-            0 => Self {
-                w: half * tmp,
-                x: (m[2][1] - m[1][2]) * coef,
-                y: (m[0][2] - m[2][0]) * coef,
-                z: (m[1][0] - m[0][1]) * coef,
-            },
-            1 => Self {
-                w: (m[2][1] - m[1][2]) * coef,
-                x: half * tmp,
-                y: (m[0][1] + m[1][0]) * coef,
-                z: (m[0][2] + m[2][0]) * coef,
-            },
-            2 => Self {
-                w: (m[0][2] - m[2][0]) * coef,
-                x: (m[0][1] + m[1][0]) * coef,
-                y: half * tmp,
-                z: (m[1][2] + m[2][1]) * coef,
-            },
-            3 => Self {
-                w: (m[1][0] - m[0][1]) * coef,
-                x: (m[0][2] + m[2][0]) * coef,
-                y: (m[1][2] + m[2][1]) * coef,
-                z: half * tmp,
-            },
+            0 => {
+                self[0] = half * tmp;
+                self[1] = (m[(2, 1)] - m[(1, 2)]) * coef;
+                self[2] = (m[(0, 2)] - m[(2, 0)]) * coef;
+                self[3] = (m[(1, 0)] - m[(0, 1)]) * coef;
+            }
+            1 => {
+                self[0] = (m[(2, 1)] - m[(1, 2)]) * coef;
+                self[1] = half * tmp;
+                self[2] = (m[(0, 1)] + m[(1, 0)]) * coef;
+                self[3] = (m[(0, 2)] + m[(2, 0)]) * coef;
+            }
+            2 => {
+                self[0] = (m[(0, 2)] - m[(2, 0)]) * coef;
+                self[1] = (m[(0, 1)] + m[(1, 0)]) * coef;
+                self[2] = half * tmp;
+                self[3] = (m[(1, 2)] + m[(2, 1)]) * coef;
+            }
+            3 => {
+                self[0] = (m[(1, 0)] - m[(0, 1)]) * coef;
+                self[1] = (m[(0, 2)] + m[(2, 0)]) * coef;
+                self[2] = (m[(1, 2)] + m[(2, 1)]) * coef;
+                self[3] = half * tmp;
+            }
             _ => unreachable!(),
         }
     }
 
-    pub fn from_axis_angle(angle: f64, axis: &[f64; 3]) -> Self {
-        if angle < 1e-12 {
-            Quaternion {
-                w: 1.,
-                x: 0.,
-                y: 0.,
-                z: 0.,
-            }
-        } else {
-            let (sin, cos) = (angle / 2.).sin_cos();
-            let factor = sin / angle;
-            Quaternion {
-                w: cos,
-                x: angle * axis[0] * factor,
-                y: angle * axis[1] * factor,
-                z: angle * axis[2] * factor,
-            }
-        }
+    /// Populates Quaternion from composition of q1 and q2.
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `q1.ncols() < 4`.  
+    /// Panics if `q2.ncols() < 4`.  
+    #[inline]
+    fn quat_compose(mut self, q1: RowRef<f64>, q2: RowRef<f64>) {
+        self[0] = q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3];
+        self[1] = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2];
+        self[2] = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1];
+        self[3] = q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0];
     }
 
-    pub fn from_scaled_axis(v: &[f64; 3]) -> Self {
-        return Self {
-            w: a[0],
-            x: a[1],
-            y: a[2],
-            z: a[3],
-        };
+    #[inline]
+    fn quat_rotate_vector(self, mut v: RowMut<f64>) {
+        v[0] = (self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3])
+            * v[0]
+            + 2. * (self[1] * self[2] - self[0] * self[3]) * v[1]
+            + 2. * (self[1] * self[3] + self[0] * self[2]) * v[2];
+        v[1] = 2. * (self[1] * self[2] + self[0] * self[3]) * v[0]
+            + (self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3])
+                * v[1]
+            + 2. * (self[2] * self[3] - self[0] * self[1]) * v[2];
+        v[2] = 2. * (self[1] * self[3] - self[0] * self[2]) * v[0]
+            + 2. * (self[2] * self[3] + self[0] * self[1]) * v[1]
+            + (self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3])
+                * v[2];
     }
 
-    pub fn rotate_vector(self, v: &[f64; 3]) -> [f64; 3] {
-        [
-            (self.w * self.w + self.x * self.x - self.y * self.y - self.z * self.z) * v[0]
-                + 2. * (self.x * self.y - self.w * self.z) * v[1]
-                + 2. * (self.x * self.z + self.w * self.y) * v[2],
-            2. * (self.x * self.y + self.w * self.z) * v[0]
-                + (self.w * self.w - self.x * self.x + self.y * self.y - self.z * self.z) * v[1]
-                + 2. * (self.y * self.z - self.w * self.x) * v[2],
-            2. * (self.x * self.z - self.w * self.y) * v[0]
-                + 2. * (self.y * self.z + self.w * self.x) * v[1]
-                + (self.w * self.w - self.x * self.x - self.y * self.y + self.z * self.z) * v[2],
-        ]
-    }
+    /// Populates Quaternion from tangent vector and twist angle.
+    ///
+    /// # Panics
+    /// Panics if `self.ncols() < 4`.  
+    /// Panics if `tangent.ncols() < 4`.  
+    fn quat_from_tangent_twist(mut self, tangent: RowRef<f64>, twist: f64) {
+        let e1 = Row::from_fn(3, |i| tangent[i]);
+        let a = if e1[0] > 0. { 1. } else { -1. };
+        let e2 = row![
+            -a * e1[1] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
+            a * e1[0] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
+            0.,
+        ];
 
-    pub fn derivative(self) -> Array2<f64> {
-        array![
-            [-self.x, self.w, -self.y, self.z],
-            [-self.z, self.y, self.w, -self.x],
-            [-self.y, -self.z, self.x, self.w],
-        ]
+        let mut e3 = Row::<f64>::zeros(3);
+        cross(e1.as_ref(), e2.as_ref(), e3.as_mut());
+
+        let mut q0 = Row::<f64>::zeros(4);
+        q0.as_mut().quat_from_rotation_matrix(
+            mat![
+                [e1[0], e2[0], e3[0]],
+                [e1[1], e2[1], e3[1]],
+                [e1[2], e2[2], e3[2]],
+            ]
+            .as_ref(),
+        );
+
+        //  Matrix3::from_columns(&[e1, e2, e3]);
+        let mut q_twist = Row::<f64>::zeros(4);
+        q_twist
+            .as_mut()
+            .quat_from_axis_angle(twist * PI / 180., e1.as_ref());
+        self.quat_compose(q_twist.as_ref(), q0.as_ref());
     }
+}
+
+// Returns the cross product of two vectors
+pub fn cross(a: RowRef<f64>, b: RowRef<f64>, mut c: RowMut<f64>) {
+    c[0] = a[1] * b[2] - a[2] * b[1];
+    c[1] = a[2] * b[0] - a[0] * b[2];
+    c[2] = a[0] * b[1] - a[1] * b[0];
 }

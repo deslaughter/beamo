@@ -1,5 +1,5 @@
 use crate::quaternion::Quaternion;
-use ndarray::Array2;
+use faer::MatMut;
 
 // Returns the dot product of two vectors
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -19,15 +19,6 @@ pub fn unit_vector(v: &[f64; 3]) -> Option<[f64; 3]> {
     } else {
         Some([v[0] / m, v[1] / m, v[2] / m])
     }
-}
-
-// Returns the cross product of two vectors
-pub fn cross(a: &[f64; 3], b: &[f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 //------------------------------------------------------------------------------
@@ -292,47 +283,20 @@ mod test_gll {
 // Interpolation Matrix
 //------------------------------------------------------------------------------
 
-pub fn shape_interp_matrix(rows: &[f64], cols: &[f64]) -> Array2<f64> {
-    Array2::from_shape_vec(
-        (rows.len(), cols.len()),
-        rows.iter()
-            .flat_map(|&si| lagrange_polynomial(si, cols))
-            .collect(),
-    )
-    .unwrap()
+pub fn shape_interp_matrix(rows: &[f64], cols: &[f64], mut m: MatMut<f64>) {
+    for (i, &si) in rows.iter().enumerate() {
+        for (j, &v) in lagrange_polynomial(si, cols).iter().enumerate() {
+            m[(i, j)] = v;
+        }
+    }
 }
 
-pub fn shape_deriv_matrix(rows: &[f64], cols: &[f64]) -> Array2<f64> {
-    Array2::from_shape_vec(
-        (rows.len(), cols.len()),
-        rows.iter()
-            .flat_map(|&si| lagrange_polynomial_derivative(si, cols))
-            .collect(),
-    )
-    .unwrap()
-}
-
-//------------------------------------------------------------------------------
-// Quaternion
-//------------------------------------------------------------------------------
-
-pub fn quaternion_from_tangent_twist(tangent: &[f64; 3], twist: f64) -> Quaternion {
-    let e1 = tangent.clone();
-    let a = if e1[0] > 0. { 1. } else { -1. };
-    let e2 = [
-        -a * e1[1] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
-        a * e1[0] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
-        0.,
-    ];
-    let e3 = cross(&e1, &e2);
-    let q0 = Quaternion::from_matrix(&[
-        [e1[0], e2[0], e3[0]],
-        [e1[1], e2[1], e3[1]],
-        [e1[2], e2[2], e3[2]],
-    ]);
-    //  Matrix3::from_columns(&[e1, e2, e3]);
-    let q_twist = Quaternion::from_axis_angle(twist * PI / 180., &e1);
-    q_twist.compose(&q0)
+pub fn shape_deriv_matrix(rows: &[f64], cols: &[f64], mut m: MatMut<f64>) {
+    for (i, &si) in rows.iter().enumerate() {
+        for (j, &v) in lagrange_polynomial_derivative(si, cols).iter().enumerate() {
+            m[(i, j)] = v;
+        }
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -342,9 +306,10 @@ pub fn quaternion_from_tangent_twist(tangent: &[f64; 3], twist: f64) -> Quaterni
 #[cfg(test)]
 mod test_integration {
 
-    use approx::assert_relative_eq;
+    use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, row, Mat, Parallelism};
     use itertools::Itertools;
-    use ndarray::{arr1, arr2, array, Axis, Zip};
+
+    use crate::quaternion::Quat;
 
     use super::*;
 
@@ -361,72 +326,82 @@ mod test_integration {
         // representation of a line with twist; gives us reference length and curvature to test against
         let s = p.iter().map(|v| (v + 1.) / 2.).collect_vec();
 
+        // Node x, y, z, twist along reference line
         let fz = |t: f64| -> f64 { t - 2. * t * t };
         let fy = |t: f64| -> f64 { -2. * t + 3. * t * t };
         let fx = |t: f64| -> f64 { 5. * t };
         let ft = |t: f64| -> f64 { 0. * t * t };
-
-        // Node x, y, z, twist along reference line
-        let ref_line = arr2(
-            &s.iter()
-                .map(|&si| [fx(si), fy(si), fz(si), ft(si)])
-                .collect_vec(),
-        );
+        let ref_line = Mat::<f64>::from_fn(s.len(), 4, |i, j| match j {
+            0 => fx(s[i]),
+            1 => fy(s[i]),
+            2 => fz(s[i]),
+            3 => ft(s[i]),
+            _ => unreachable!(),
+        });
 
         // Shape function derivatives at each node along reference line
-        let shape_deriv = shape_deriv_matrix(&s, &s);
+        let mut shape_deriv = Mat::<f64>::zeros(s.len(), s.len());
+        shape_deriv_matrix(&s, &s, shape_deriv.as_mut());
 
         // Tangent vectors at each node along reference line
-        let ref_tan = arr2(
-            &shape_deriv
-                .dot(&ref_line)
-                .axis_iter(Axis(0))
-                .map(|row| {
-                    let v = row.as_slice().unwrap();
-                    unit_vector(&[v[0], v[1], v[2]]).unwrap()
-                })
-                .collect_vec(),
+        let mut ref_tan = Mat::<f64>::zeros(s.len(), 3);
+        matmul(
+            ref_tan.as_mut(),
+            shape_deriv,
+            ref_line.subcols(0, 3),
+            None,
+            1.,
+            Parallelism::None,
         );
+        ref_tan.row_iter_mut().for_each(|mut r| {
+            let m = r.norm_l2();
+            if m != 0. {
+                r /= m;
+            }
+        });
 
-        assert_relative_eq!(
+        assert_matrix_eq!(
             ref_tan,
-            array![
+            mat![
                 [0.9128709291752768, -0.365148371670111, 0.1825741858350555],
                 [0.9801116185947563, -0.1889578775710052, 0.06063114380768645],
                 [0.9622504486493763, 0.19245008972987512, -0.1924500897298752],
                 [0.7994326396775596, 0.4738974351647219, -0.3692271327549852],
                 [0.7071067811865474, 0.5656854249492382, -0.4242640687119285],
             ],
-            epsilon = 1e-15
+            comp = float
         );
 
-        // Rotation matrix at each node along reference line
-        let ref_q = Zip::from(ref_tan.rows())
-            .and(ref_line.rows())
-            .map_collect(|tan, line| {
-                quaternion_from_tangent_twist(&[tan[0], tan[1], tan[2]], line[3])
-            })
-            .to_vec();
+        // Quaternion at each node along reference line
+        let mut ref_q = Mat::<f64>::zeros(ref_tan.nrows(), 4);
+        ref_q
+            .row_iter_mut()
+            .zip(ref_tan.row_iter())
+            .zip(ref_line.col(3).iter())
+            .for_each(|((q, tan), &twist)| q.quat_from_tangent_twist(tan, twist));
 
-        assert_relative_eq!(
-            arr2(&ref_q[3].as_matrix()),
-            array![
+        let mut m = Mat::<f64>::zeros(3, 3);
+        ref_q.row_mut(3).quat_as_matrix(m.as_mut());
+        assert_matrix_eq!(
+            m,
+            mat![
                 [0.7994326396775595, -0.509929465806723, 0.3176151673334238],
                 [0.47389743516472144, 0.8602162169490122, 0.18827979456709748],
                 [-0.3692271327549849, 0.0000000000000000, 0.9293391869697156]
             ],
-            epsilon = 1e-15
+            comp = float
         );
 
-        assert_relative_eq!(
-            arr1(&ref_q[3].as_vec()),
-            arr1(&[
-                0.9472312341234699,    // w
-                -0.049692141629315074, // i
-                0.18127630174800594,   // j
-                0.25965858850765167,   // k
-            ]),
-            epsilon = 1e-15
+        assert_matrix_eq!(
+            ref_q.subrows(3, 1),
+            mat![[
+                0.9472312341234699,
+                -0.049692141629315074,
+                0.18127630174800594,
+                0.25965858850765167,
+            ]]
+            .as_ref(),
+            comp = float
         );
     }
 }

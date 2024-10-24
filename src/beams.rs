@@ -1,11 +1,13 @@
+use std::iter::zip;
 use std::rc::Rc;
 
 use crate::interp::{shape_interp_matrix, unit_vector};
 use crate::quadrature::Quadrature;
-use crate::quaternion::Quaternion;
+use crate::quaternion::{Quat, Quaternion};
 use crate::{interp::shape_deriv_matrix, node::Node};
-use itertools::Itertools;
-use ndarray::{arr1, arr2, azip, s, Array1, Array2, Array3, Axis, Zip};
+use faer::linalg::matmul;
+use faer::{mat, Mat, Parallelism, Row};
+use itertools::{multiunzip, Itertools};
 
 pub struct BeamInput {
     gravity: [f64; 3],
@@ -39,52 +41,52 @@ pub struct ElemIndex {
 pub struct Beams {
     index: Vec<ElemIndex>,
     node_ids: Vec<usize>,
-    gravity: Array1<f64>, // [3] gravity
+    gravity: Row<f64>, // [3] gravity
 
     // Node-based data
-    node_x0: Array2<f64>, // [n_nodes][7] Inital position/rotation
-    node_u: Array2<f64>,  // [n_nodes][7] State: translation/rotation displacement
-    node_v: Array2<f64>,  // [n_nodes][6] State: translation/rotation velocity
-    node_vd: Array2<f64>, // [n_nodes][6] State: translation/rotation acceleration
-    node_fx: Array2<f64>, // [n_nodes][6] External forces
+    node_x0: Mat<f64>, // [n_nodes][7] Inital position/rotation
+    node_u: Mat<f64>,  // [n_nodes][7] State: translation/rotation displacement
+    node_v: Mat<f64>,  // [n_nodes][6] State: translation/rotation velocity
+    node_vd: Mat<f64>, // [n_nodes][6] State: translation/rotation acceleration
+    node_fx: Mat<f64>, // [n_nodes][6] External forces
 
     // Quadrature point data
-    qp_weight: Array1<f64>,   // [n_qps]        Integration weights
-    qp_jacobian: Array1<f64>, // [n_qps]        Jacobian vector
-    qp_m_star: Array3<f64>,   // [n_qps][6][6]  Mass matrix in material frame
-    qp_c_star: Array3<f64>,   // [n_qps][6][6]  Stiffness matrix in material frame
-    qp_x: Array2<f64>,        // [n_qps][7]     Current position/orientation
-    qp_x0: Array2<f64>,       // [n_qps][7]     Initial position
-    qp_x0_prime: Array2<f64>, // [n_qps][7]     Initial position derivative
-    qp_u: Array2<f64>,        // [n_qps][7]     State: translation displacement
-    qp_u_prime: Array2<f64>,  // [n_qps][7]     State: translation displacement derivative
-    qp_v: Array2<f64>,        // [n_qps][6]     State: translation velocity
-    qp_vd: Array2<f64>,       // [n_qps][6]     State: translation acceleration
-    qp_e: Array3<f64>,        // [n_qps][3][4]  Quaternion derivative
-    qp_eta: Array2<f64>,      // [n_qps][3]     mass
-    qp_rho: Array3<f64>,      // [n_qps][3][3]  mass
-    qp_strain: Array2<f64>,   // [n_qps][6]     Strain
-    qp_fc: Array2<f64>,       // [n_qps][6]     Elastic force
-    qp_fd: Array2<f64>,       // [n_qps][6]     Elastic force
-    qp_fi: Array2<f64>,       // [n_qps][6]     Inertial force
-    qp_fx: Array2<f64>,       // [n_qps][6]     External force
-    qp_fg: Array2<f64>,       // [n_qps][6]     Gravity force
-    qp_rr0: Array3<f64>,      // [n_qps][6][6]  Global rotation
-    qp_muu: Array3<f64>,      // [n_qps][6][6]  Mass in global frame
-    qp_cuu: Array3<f64>,      // [n_qps][6][6]  Stiffness in global frame
-    qp_ouu: Array3<f64>,      // [n_qps][6][6]  Linearization matrices
-    qp_puu: Array3<f64>,      // [n_qps][6][6]  Linearization matrices
-    qp_quu: Array3<f64>,      // [n_qps][6][6]  Linearization matrices
-    qp_guu: Array3<f64>,      // [n_qps][6][6]  Linearization matrices
-    qp_kuu: Array3<f64>,      // [n_qps][6][6]  Linearization matrices
+    qp_weight: Row<f64>,   // [n_qps]        Integration weights
+    qp_jacobian: Row<f64>, // [n_qps]        Jacobian vector
+    qp_m_star: Mat<f64>,   // [n_qps][6][6]  Mass matrix in material frame
+    qp_c_star: Mat<f64>,   // [n_qps][6][6]  Stiffness matrix in material frame
+    qp_x: Mat<f64>,        // [n_qps][7]     Current position/orientation
+    qp_x0: Mat<f64>,       // [n_qps][7]     Initial position
+    qp_x0_prime: Mat<f64>, // [n_qps][7]     Initial position derivative
+    qp_u: Mat<f64>,        // [n_qps][7]     State: translation displacement
+    qp_u_prime: Mat<f64>,  // [n_qps][7]     State: translation displacement derivative
+    qp_v: Mat<f64>,        // [n_qps][6]     State: translation velocity
+    qp_vd: Mat<f64>,       // [n_qps][6]     State: translation acceleration
+    qp_e: Mat<f64>,        // [n_qps][3][4]  Quaternion derivative
+    qp_eta: Mat<f64>,      // [n_qps][3]     mass
+    qp_rho: Mat<f64>,      // [n_qps][3][3]  mass
+    qp_strain: Mat<f64>,   // [n_qps][6]     Strain
+    qp_fc: Mat<f64>,       // [n_qps][6]     Elastic force
+    qp_fd: Mat<f64>,       // [n_qps][6]     Elastic force
+    qp_fi: Mat<f64>,       // [n_qps][6]     Inertial force
+    qp_fx: Mat<f64>,       // [n_qps][6]     External force
+    qp_fg: Mat<f64>,       // [n_qps][6]     Gravity force
+    qp_rr0: Mat<f64>,      // [n_qps][6][6]  Global rotation
+    qp_muu: Mat<f64>,      // [n_qps][6][6]  Mass in global frame
+    qp_cuu: Mat<f64>,      // [n_qps][6][6]  Stiffness in global frame
+    qp_ouu: Mat<f64>,      // [n_qps][6][6]  Linearization matrices
+    qp_puu: Mat<f64>,      // [n_qps][6][6]  Linearization matrices
+    qp_quu: Mat<f64>,      // [n_qps][6][6]  Linearization matrices
+    qp_guu: Mat<f64>,      // [n_qps][6][6]  Linearization matrices
+    qp_kuu: Mat<f64>,      // [n_qps][6][6]  Linearization matrices
 
-    residual_vector_terms: Array2<f64>,  // [n_qps][6]
-    stiffness_matrix_terms: Array3<f64>, // [n_qps][6][6]
-    inertia_matrix_terms: Array3<f64>,   // [n_qps][6][6]
+    residual_vector_terms: Mat<f64>,  // [n_qps][6]
+    stiffness_matrix_terms: Mat<f64>, // [n_qps][6][6]
+    inertia_matrix_terms: Mat<f64>,   // [n_qps][6][6]
 
     // Shape Function data
-    shape_interp: Array2<f64>, // [n_qps][max_nodes] Shape function values
-    shape_deriv: Array2<f64>,  // [n_qps][max_nodes] Shape function derivatives
+    shape_interp: Mat<f64>, // [n_qps][max_nodes] Shape function values
+    shape_deriv: Mat<f64>,  // [n_qps][max_nodes] Shape function derivatives
 }
 
 impl Beams {
@@ -128,97 +130,96 @@ impl Beams {
             .flat_map(|e| e.nodes.iter().map(|n| n.node.id).collect_vec())
             .collect_vec();
 
+        // let (x0, u, v, vd): (Vec<[f64; 7]>, Vec<[f64; 7]>, Vec<[f64; 6]>, Vec<[f64; 6]>) = inp
+        let (x0, u, v, vd): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = multiunzip(
+            inp.elements
+                .iter()
+                .flat_map(|e| {
+                    e.nodes
+                        .iter()
+                        .map(|n| (n.node.x, n.node.u, n.node.v, n.node.vd))
+                        .collect_vec()
+                })
+                .collect_vec(),
+        );
+
+        let qp_weights = inp
+            .elements
+            .iter()
+            .flat_map(|e| e.quadrature.weights.clone())
+            .collect_vec();
+
         let mut beams = Self {
             index,
             node_ids,
-            gravity: arr1(&inp.gravity),
+            gravity: Row::from_fn(3, |i| inp.gravity[i]),
 
             // Nodes
-            node_x0: Array2::zeros((alloc_nodes, 7)),
-            node_u: Array2::zeros((alloc_nodes, 7)),
-            node_v: Array2::zeros((alloc_nodes, 6)),
-            node_vd: Array2::zeros((alloc_nodes, 6)),
-            node_fx: Array2::zeros((alloc_nodes, 6)),
+            node_x0: Mat::from_fn(
+                alloc_nodes,
+                7,
+                |i, j| if i < x0.len() { x0[i][j] } else { 0. },
+            ),
+            node_u: Mat::from_fn(
+                alloc_nodes,
+                7,
+                |i, j| if i < u.len() { u[i][j] } else { 0. },
+            ),
+            node_v: Mat::from_fn(
+                alloc_nodes,
+                6,
+                |i, j| if i < v.len() { v[i][j] } else { 0. },
+            ),
+            node_vd: Mat::from_fn(
+                alloc_nodes,
+                6,
+                |i, j| if i < vd.len() { vd[i][j] } else { 0. },
+            ),
+            node_fx: Mat::zeros(alloc_nodes, 6),
 
             // Quadrature points
-            qp_weight: Array1::zeros(alloc_qps),
-            qp_jacobian: Array1::zeros(alloc_qps),
-            qp_m_star: Array3::zeros((alloc_qps, 6, 6)),
-            qp_c_star: Array3::zeros((alloc_qps, 6, 6)),
-            qp_x: Array2::zeros((alloc_qps, 7)),
-            qp_x0: Array2::zeros((alloc_qps, 7)),
-            qp_x0_prime: Array2::zeros((alloc_qps, 7)),
-            qp_u: Array2::zeros((alloc_qps, 7)),
-            qp_u_prime: Array2::zeros((alloc_qps, 7)),
-            qp_v: Array2::zeros((alloc_qps, 6)),
-            qp_vd: Array2::zeros((alloc_qps, 6)),
-            qp_e: Array3::zeros((alloc_qps, 3, 4)),
-            qp_eta: Array2::zeros((alloc_qps, 3)),
-            qp_rho: Array3::zeros((alloc_qps, 3, 3)),
-            qp_strain: Array2::zeros((alloc_qps, 6)),
-            qp_fc: Array2::zeros((alloc_qps, 6)),
-            qp_fd: Array2::zeros((alloc_qps, 6)),
-            qp_fi: Array2::zeros((alloc_qps, 6)),
-            qp_fx: Array2::zeros((alloc_qps, 6)),
-            qp_fg: Array2::zeros((alloc_qps, 6)),
-            qp_rr0: Array3::zeros((alloc_qps, 6, 6)),
-            qp_muu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_cuu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_ouu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_puu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_quu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_guu: Array3::zeros((alloc_qps, 6, 6)),
-            qp_kuu: Array3::zeros((alloc_qps, 6, 6)),
+            qp_weight: Row::from_fn(alloc_qps, |i| {
+                if i < qp_weights.len() {
+                    qp_weights[0]
+                } else {
+                    0.
+                }
+            }),
+            qp_jacobian: Row::zeros(alloc_qps),
+            qp_m_star: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_c_star: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_x: Mat::zeros(alloc_qps, 7),
+            qp_x0: Mat::zeros(alloc_qps, 7),
+            qp_x0_prime: Mat::zeros(alloc_qps, 7),
+            qp_u: Mat::zeros(alloc_qps, 7),
+            qp_u_prime: Mat::zeros(alloc_qps, 7),
+            qp_v: Mat::zeros(alloc_qps, 6),
+            qp_vd: Mat::zeros(alloc_qps, 6),
+            qp_e: Mat::zeros(alloc_qps, 12), // 3x4
+            qp_eta: Mat::zeros(alloc_qps, 3),
+            qp_rho: Mat::zeros(alloc_qps, 9), // 3x3
+            qp_strain: Mat::zeros(alloc_qps, 6),
+            qp_fc: Mat::zeros(alloc_qps, 6),
+            qp_fd: Mat::zeros(alloc_qps, 6),
+            qp_fi: Mat::zeros(alloc_qps, 6),
+            qp_fx: Mat::zeros(alloc_qps, 6),
+            qp_fg: Mat::zeros(alloc_qps, 6),
+            qp_rr0: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_muu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_cuu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_ouu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_puu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_quu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_guu: Mat::zeros(alloc_qps, 36), // 6x6
+            qp_kuu: Mat::zeros(alloc_qps, 36), // 6x6
 
-            residual_vector_terms: Array2::zeros((alloc_nodes, 6)),
-            stiffness_matrix_terms: Array3::zeros((alloc_nodes, 6, 6)),
-            inertia_matrix_terms: Array3::zeros((alloc_nodes, 6, 6)),
+            residual_vector_terms: Mat::zeros(alloc_nodes, 6),
+            stiffness_matrix_terms: Mat::zeros(alloc_nodes, 36), //6x6
+            inertia_matrix_terms: Mat::zeros(alloc_nodes, 36),   //6x6
 
-            shape_interp: Array2::zeros((alloc_qps, max_elem_nodes)),
-            shape_deriv: Array2::zeros((alloc_qps, max_elem_nodes)),
+            shape_interp: Mat::zeros(alloc_qps, max_elem_nodes),
+            shape_deriv: Mat::zeros(alloc_qps, max_elem_nodes),
         };
-
-        //----------------------------------------------------------------------
-        // Node data
-        //----------------------------------------------------------------------
-
-        // Set node initial positions
-        beams
-            .node_x0
-            .slice_mut(s![0..total_nodes, ..])
-            .assign(&arr2(
-                &inp.elements
-                    .iter()
-                    .flat_map(|e| e.nodes.iter().map(|n| n.node.x).collect_vec())
-                    .collect_vec(),
-            ));
-
-        // Set node initial displacement
-        beams.node_u.slice_mut(s![0..total_nodes, ..]).assign(&arr2(
-            &inp.elements
-                .iter()
-                .flat_map(|e| e.nodes.iter().map(|n| n.node.u).collect_vec())
-                .collect_vec(),
-        ));
-
-        // Set node initial velocity
-        beams.node_v.slice_mut(s![0..total_nodes, ..]).assign(&arr2(
-            &inp.elements
-                .iter()
-                .flat_map(|e| e.nodes.iter().map(|n| n.node.v).collect_vec())
-                .collect_vec(),
-        ));
-
-        // Set node initial acceleration
-        beams
-            .node_vd
-            .slice_mut(s![0..total_nodes, ..])
-            .assign(&arr2(
-                &inp.elements
-                    .iter()
-                    .flat_map(|e| e.nodes.iter().map(|n| n.node.vd).collect_vec())
-                    .collect_vec(),
-            ));
 
         //----------------------------------------------------------------------
         // Shape functions
@@ -226,77 +227,80 @@ impl Beams {
 
         // Initialize element shape functions for interpolation and derivative
         for (ei, e) in beams.index.iter().zip(inp.elements.iter()) {
+            // Get node positions along beam [-1, 1]
             let node_xi = e.nodes.iter().map(|n| 2. * n.si - 1.).collect_vec();
 
             // Get shape interpolation matrix for this element
-            let mut shape_interp = beams
-                .shape_interp
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+            let mut shape_interp =
+                beams
+                    .shape_interp
+                    .submatrix_mut(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Create interpolation matrix from quadrature point and node locations
-            shape_interp.assign(&shape_interp_matrix(&e.quadrature.points, &node_xi));
+            shape_interp_matrix(&e.quadrature.points, &node_xi, shape_interp.as_mut());
 
             // Get shape derivative matrix for this element
-            let mut shape_deriv = beams
-                .shape_deriv
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+            let mut shape_deriv =
+                beams
+                    .shape_deriv
+                    .submatrix_mut(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Create derivative matrix from quadrature point and node locations
-            shape_deriv.assign(&shape_deriv_matrix(&e.quadrature.points, &node_xi));
+            shape_deriv_matrix(&e.quadrature.points, &node_xi, shape_deriv.as_mut());
         }
 
         //----------------------------------------------------------------------
         // Quadrature points
         //----------------------------------------------------------------------
 
-        // Set quadrature point weights
-        beams.qp_weight.slice_mut(s![0..total_qps]).assign(&arr1(
-            &inp.elements
-                .iter()
-                .flat_map(|e| e.quadrature.points.clone())
-                .collect_vec(),
-        ));
-
         for ei in beams.index.iter() {
             // Get shape derivative matrix for this element
-            let shape_interp = beams
-                .shape_interp
-                .slice(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+            let shape_interp =
+                beams
+                    .shape_interp
+                    .submatrix(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Interpolate initial position
-            let node_x0 = beams
-                .node_x0
-                .slice(s![ei.node_range[0]..ei.node_range[1], ..]);
-            let mut qp_x0 = beams
-                .qp_x0
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            ndarray::linalg::general_mat_mul(1., &shape_interp, &node_x0, 0., &mut qp_x0);
-            for mut row in qp_x0.slice_mut(s![.., 3..7]).rows_mut() {
-                let m = row.dot(&row).sqrt();
+            let node_x0 = beams.node_x0.subrows(ei.node_range[0], ei.n_nodes);
+            let mut qp_x0 = beams.qp_x0.subrows_mut(ei.qp_range[0], ei.n_qps);
+            matmul::matmul(
+                qp_x0.as_mut(),
+                shape_interp,
+                node_x0,
+                None,
+                1.,
+                Parallelism::None,
+            );
+            qp_x0.subcols_mut(3, 4).row_iter_mut().for_each(|mut r| {
+                let m = r.norm_l2();
                 if m != 0. {
-                    row /= m;
+                    r /= m;
                 }
-            }
+            });
 
             // Get shape derivative matrix for this element
             let shape_deriv = beams
                 .shape_deriv
-                .slice(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+                .submatrix(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Calculate Jacobian
-            let mut qp_jacobian = beams
-                .qp_jacobian
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1]]);
-            qp_jacobian.assign(&arr1(
-                &shape_deriv
-                    .dot(&node_x0.slice(s![.., 0..3]))
-                    .rows()
-                    .into_iter()
-                    .map(|row| row.dot(&row).sqrt())
-                    .collect_vec(),
-            ));
+            let mut qp_jacobian = beams.qp_jacobian.subcols_mut(ei.qp_range[0], ei.n_qps);
+            let mut qp_x0_prime = Mat::<f64>::zeros(ei.n_qps, 3);
+            matmul::matmul(
+                qp_x0_prime.as_mut(),
+                shape_deriv,
+                node_x0.subcols(0, 3),
+                None,
+                1.0,
+                Parallelism::None,
+            );
+            qp_jacobian
+                .as_mut()
+                .iter_mut()
+                .zip(qp_x0_prime.row_iter())
+                .for_each(|(j, x0_prime)| *j = x0_prime.norm_l2());
 
-            print!("{}", qp_jacobian);
+            print!("{:?}", qp_jacobian);
         }
 
         beams
@@ -307,70 +311,88 @@ impl Beams {
             // Get shape derivative matrix for this element
             let shape_interp = self
                 .shape_interp
-                .slice(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+                .submatrix(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Get shape derivative matrix for this element
             let shape_deriv = self
                 .shape_deriv
-                .slice(s![ei.qp_range[0]..ei.qp_range[1], 0..ei.n_nodes]);
+                .submatrix(ei.qp_range[0], 0, ei.n_qps, ei.n_nodes);
 
             // Interpolate displacement
-            let node_u = self
-                .node_u
-                .slice(s![ei.node_range[0]..ei.node_range[1], ..]);
-            let mut qp_u = self.qp_u.slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            ndarray::linalg::general_mat_mul(1., &shape_interp, &node_u, 0., &mut qp_u);
-            for mut row in qp_u.slice_mut(s![.., 3..7]).rows_mut() {
-                let m = row.dot(&row).sqrt();
-                if m != 0. {
-                    row /= m;
-                }
-            }
+            let node_u = self.node_u.subrows(ei.qp_range[0], ei.n_qps);
+            let mut qp_u = self.qp_u.subrows_mut(ei.qp_range[0], ei.n_qps);
+            matmul::matmul(
+                qp_u.as_mut(),
+                shape_interp,
+                node_u,
+                None,
+                1.,
+                Parallelism::None,
+            );
+            qp_u.as_mut()
+                .subcols_mut(3, 4)
+                .row_iter_mut()
+                .for_each(|mut r| {
+                    let m = r.norm_l2();
+                    if m != 0. {
+                        r /= m;
+                    }
+                });
 
-            let qp_jacobian = self
-                .qp_jacobian
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1]]);
+            // Get Jacobians for this element
+            let qp_jacobian = self.qp_jacobian.subcols(ei.qp_range[0], ei.n_qps);
 
             // Displacement derivative
-            let mut qp_u_prime = self
-                .qp_u_prime
-                .slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            ndarray::linalg::general_mat_mul(1., &shape_deriv, &node_u, 0., &mut qp_u_prime);
-            for (mut row, &jacobian) in qp_u_prime.rows_mut().into_iter().zip(qp_jacobian.iter()) {
-                row /= jacobian;
-            }
+            let mut qp_u_prime = self.qp_u_prime.subrows_mut(ei.qp_range[0], ei.n_qps);
+            matmul::matmul(
+                qp_u_prime.as_mut(),
+                shape_deriv,
+                node_u.subcols(0, 3),
+                None,
+                1.0,
+                Parallelism::None,
+            );
+            qp_u_prime
+                .row_iter_mut()
+                .zip(qp_jacobian.iter())
+                .for_each(|(mut row, &jacobian)| row /= jacobian);
 
             // Interpolate velocity
-            let node_v = self
-                .node_v
-                .slice(s![ei.node_range[0]..ei.node_range[1], ..]);
-            let mut qp_v = self.qp_v.slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            ndarray::linalg::general_mat_mul(1., &shape_interp, &node_v, 0., &mut qp_v);
+            let node_v = self.node_v.subrows(ei.node_range[0], ei.n_nodes);
+            let mut qp_v = self.qp_v.subrows_mut(ei.qp_range[0], ei.n_qps);
+            matmul::matmul(
+                qp_v.as_mut(),
+                shape_interp,
+                node_v.subcols(0, 3),
+                None,
+                1.0,
+                Parallelism::None,
+            );
 
             // Interpolate acceleration
-            let node_vd = self
-                .node_vd
-                .slice(s![ei.node_range[0]..ei.node_range[1], ..]);
-            let mut qp_vd = self.qp_vd.slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            ndarray::linalg::general_mat_mul(1., &shape_interp, &node_vd, 0., &mut qp_vd);
+            let node_vd = self.node_vd.subrows(ei.node_range[0], ei.n_nodes);
+            let mut qp_vd = self.qp_vd.subrows_mut(ei.qp_range[0], ei.n_qps);
+            matmul::matmul(
+                qp_vd.as_mut(),
+                shape_interp,
+                node_vd.subcols(0, 3),
+                None,
+                1.0,
+                Parallelism::None,
+            );
 
             // Calculate current position and rotation
-            let mut qp_x = self.qp_x.slice_mut(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            let qp_x0 = self.qp_x0.slice(s![ei.qp_range[0]..ei.qp_range[1], ..]);
-            Zip::from(qp_x.rows_mut())
-                .and(qp_x0.rows())
-                .and(qp_u.rows())
-                .for_each(|mut x, x0, u| {
-                    let q = Quaternion::from_vec(&[u[3], u[4], u[5], u[6]])
-                        .compose(&Quaternion::from_vec(&[x0[3], x0[4], x0[5], x0[6]]))
-                        .as_vec();
+            let qp_x = self.qp_x.subrows_mut(ei.qp_range[0], ei.n_qps);
+            let qp_x0 = self.qp_x0.subrows(ei.qp_range[0], ei.n_qps);
+            qp_x.row_iter_mut()
+                .zip(qp_x0.row_iter())
+                .zip(qp_u.row_iter())
+                .for_each(|((mut x, x0), u)| {
                     x[0] = x0[0] + u[0];
                     x[1] = x0[1] + u[1];
                     x[2] = x0[2] + u[2];
-                    x[3] = q[0];
-                    x[4] = q[1];
-                    x[5] = q[2];
-                    x[6] = q[3];
+                    x.subcols_mut(3, 4)
+                        .quat_compose(u.subcols(3, 4), x0.subcols(3, 4));
                 });
         }
     }
@@ -386,8 +408,8 @@ mod tests {
     use super::*;
 
     use approx::assert_relative_eq;
+    use faer::row;
     use itertools::Itertools;
-    use ndarray::arr2;
 
     use crate::interp::gauss_legendre_lobotto_points;
     use crate::quadrature::Quadrature;
@@ -402,7 +424,7 @@ mod tests {
         let gq = Quadrature::gauss(7);
 
         // Node initial position and rotation
-        let r0 = Quaternion::identity().as_vec();
+        let r0 = row![1., 0., 0., 0.];
         let fx = |s: f64| -> f64 { 10. * s + 2. };
 
         let mut mass = [
