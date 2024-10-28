@@ -1,4 +1,3 @@
-use crate::quaternion::Quaternion;
 use faer::MatMut;
 
 // Returns the dot product of two vectors
@@ -306,7 +305,7 @@ pub fn shape_deriv_matrix(rows: &[f64], cols: &[f64], mut m: MatMut<f64>) {
 #[cfg(test)]
 mod test_integration {
 
-    use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, row, Mat, Parallelism};
+    use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, Mat, Parallelism};
     use itertools::Itertools;
 
     use crate::quaternion::Quat;
@@ -331,11 +330,11 @@ mod test_integration {
         let fy = |t: f64| -> f64 { -2. * t + 3. * t * t };
         let fx = |t: f64| -> f64 { 5. * t };
         let ft = |t: f64| -> f64 { 0. * t * t };
-        let ref_line = Mat::<f64>::from_fn(s.len(), 4, |i, j| match j {
-            0 => fx(s[i]),
-            1 => fy(s[i]),
-            2 => fz(s[i]),
-            3 => ft(s[i]),
+        let ref_line = Mat::<f64>::from_fn(4, s.len(), |i, j| match i {
+            0 => fx(s[j]),
+            1 => fy(s[j]),
+            2 => fz(s[j]),
+            3 => ft(s[j]),
             _ => unreachable!(),
         });
 
@@ -344,24 +343,24 @@ mod test_integration {
         shape_deriv_matrix(&s, &s, shape_deriv.as_mut());
 
         // Tangent vectors at each node along reference line
-        let mut ref_tan = Mat::<f64>::zeros(s.len(), 3);
+        let mut ref_tan = Mat::<f64>::zeros(3, s.len());
         matmul(
-            ref_tan.as_mut(),
+            ref_tan.as_mut().transpose_mut(),
             shape_deriv,
-            ref_line.subcols(0, 3),
+            ref_line.subrows(0, 3).transpose(),
             None,
             1.,
             Parallelism::None,
         );
-        ref_tan.row_iter_mut().for_each(|mut r| {
-            let m = r.norm_l2();
+        ref_tan.col_iter_mut().for_each(|mut c| {
+            let m = c.norm_l2();
             if m != 0. {
-                r /= m;
+                c /= m;
             }
         });
 
         assert_matrix_eq!(
-            ref_tan,
+            ref_tan.transpose(),
             mat![
                 [0.9128709291752768, -0.365148371670111, 0.1825741858350555],
                 [0.9801116185947563, -0.1889578775710052, 0.06063114380768645],
@@ -373,15 +372,15 @@ mod test_integration {
         );
 
         // Quaternion at each node along reference line
-        let mut ref_q = Mat::<f64>::zeros(ref_tan.nrows(), 4);
+        let mut ref_q = Mat::<f64>::zeros(4, ref_tan.ncols());
         ref_q
-            .row_iter_mut()
-            .zip(ref_tan.row_iter())
-            .zip(ref_line.col(3).iter())
-            .for_each(|((q, tan), &twist)| q.quat_from_tangent_twist(tan, twist));
+            .col_iter_mut()
+            .zip(ref_tan.col_iter())
+            .zip(ref_line.row(3).iter())
+            .for_each(|((mut q, tan), &twist)| q.quat_from_tangent_twist(tan, twist));
 
         let mut m = Mat::<f64>::zeros(3, 3);
-        ref_q.row_mut(3).quat_as_matrix(m.as_mut());
+        ref_q.col_mut(3).quat_as_matrix(m.as_mut());
         assert_matrix_eq!(
             m,
             mat![
@@ -393,13 +392,13 @@ mod test_integration {
         );
 
         assert_matrix_eq!(
-            ref_q.subrows(3, 1),
-            mat![[
-                0.9472312341234699,
-                -0.049692141629315074,
-                0.18127630174800594,
-                0.25965858850765167,
-            ]]
+            ref_q.subcols(3, 1),
+            mat![
+                [0.9472312341234699],
+                [-0.049692141629315074],
+                [0.18127630174800594],
+                [0.25965858850765167],
+            ]
             .as_ref(),
             comp = float
         );

@@ -1,5 +1,3 @@
-use itertools::Itertools;
-
 pub struct Quadrature {
     pub points: Vec<f64>,
     pub weights: Vec<f64>,
@@ -8,7 +6,12 @@ pub struct Quadrature {
 impl Quadrature {
     pub fn gauss(order: usize) -> Self {
         let gl_rule = gauss_quad::GaussLegendre::new(order).unwrap();
-        let (points, weights) = gl_rule.into_node_weight_pairs().iter().map(|&p| p).unzip();
+        let (points, weights) = gl_rule
+            .into_node_weight_pairs()
+            .iter()
+            .rev()
+            .map(|&p| p)
+            .unzip();
         Quadrature {
             points: points,
             weights: weights,

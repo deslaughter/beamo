@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use faer::{mat, row, MatMut, MatRef, Row, RowMut, RowRef};
+use faer::{col, mat, row, Col, ColMut, ColRef, MatMut, MatRef, Row, RowMut};
 
 #[derive(Clone, Debug, Copy)]
 pub struct Quaternion {
@@ -10,55 +10,34 @@ pub struct Quaternion {
     z: f64,
 }
 
-impl Quaternion {
-    pub fn identity() -> Self {
-        Quaternion {
-            w: 1.,
-            x: 0.,
-            y: 0.,
-            z: 0.,
-        }
-    }
-
-    pub fn as_matrix(self) -> [[f64; 3]; 3] {
-        [
-            [
-                self.w * self.w + self.x * self.x - self.y * self.y - self.z * self.z,
-                2. * (self.x * self.y - self.w * self.z),
-                2. * (self.x * self.z + self.w * self.y),
-            ],
-            [
-                2. * (self.x * self.y + self.w * self.z),
-                self.w * self.w - self.x * self.x + self.y * self.y - self.z * self.z,
-                2. * (self.y * self.z - self.w * self.x),
-            ],
-            [
-                2. * (self.x * self.z - self.w * self.y),
-                2. * (self.y * self.z + self.w * self.x),
-                self.w * self.w - self.x * self.x - self.y * self.y + self.z * self.z,
-            ],
-        ]
-    }
-}
-
 pub trait Quat {
-    fn quat_from_rotation_vector(self, v: RowRef<f64>);
-    fn quat_from_axis_angle(self, angle: f64, axis: RowRef<f64>);
-    fn quat_from_rotation_matrix(self, r: MatRef<f64>);
-    fn quat_compose(self, q1: RowRef<f64>, q2: RowRef<f64>);
+    fn quat_from_rotation_vector(&mut self, v: ColRef<f64>);
+    fn quat_from_axis_angle(&mut self, angle: f64, axis: ColRef<f64>);
+    fn quat_from_rotation_matrix(&mut self, r: MatRef<f64>);
+    fn quat_compose(&mut self, q1: ColRef<f64>, q2: ColRef<f64>);
     fn quat_rotate_vector(self, v: RowMut<f64>);
     fn quat_derivative(self, m: MatMut<f64>);
-    fn quat_from_tangent_twist(self, tangent: RowRef<f64>, twist: f64);
+    fn quat_from_tangent_twist(&mut self, tangent: ColRef<f64>, twist: f64);
     fn quat_as_matrix(self, m: MatMut<f64>);
+    fn quat_from_identity(&mut self);
 }
 
-impl Quat for RowMut<'_, f64> {
+impl Quat for ColMut<'_, f64> {
+    #[inline]
+    fn quat_from_identity(&mut self) {
+        self[0] = 1.;
+        self[1] = 0.;
+        self[2] = 0.;
+        self[3] = 0.;
+    }
+
     /// Populates matrix with rotation matrix equivalent of quaternion.
     ///
     /// # Panics
     /// Panics if `self.ncols() < 4`.  
     /// Panics if `m.nrows() < 3`.  
     /// Panics if `m.ncols() < 3`.  
+    #[inline]
     fn quat_as_matrix(self, mut m: MatMut<f64>) {
         m[(0, 0)] = self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3];
         m[(0, 1)] = 2. * (self[1] * self[2] - self[0] * self[3]);
@@ -79,6 +58,7 @@ impl Quat for RowMut<'_, f64> {
     /// Panics if `self.ncols() < 4`.  
     /// Panics if `m.nrows() < 3`.  
     /// Panics if `m.ncols() < 4`.  
+    #[inline]
     fn quat_derivative(self, mut m: MatMut<f64>) {
         m[(0, 0)] = -self[1];
         m[(0, 1)] = self[0];
@@ -102,7 +82,7 @@ impl Quat for RowMut<'_, f64> {
     /// Panics if `self.ncols() < 4`.  
     /// Panics if `v.ncols() < 3`.  
     #[inline]
-    fn quat_from_rotation_vector(mut self, v: RowRef<f64>) {
+    fn quat_from_rotation_vector(&mut self, v: ColRef<f64>) {
         let angle = v.norm_l2();
         if angle < 1e-12 {
             self[0] = 1.;
@@ -125,7 +105,7 @@ impl Quat for RowMut<'_, f64> {
     /// Panics if `self.ncols() < 4`.  
     /// Panics if `axis.ncols() < 3`.  
     #[inline]
-    fn quat_from_axis_angle(mut self, angle: f64, axis: RowRef<f64>) {
+    fn quat_from_axis_angle(&mut self, angle: f64, axis: ColRef<f64>) {
         if angle < 1e-12 {
             self[0] = 1.;
             self[1] = 0.;
@@ -148,7 +128,7 @@ impl Quat for RowMut<'_, f64> {
     /// Panics if `m.nrows() < 3`.
     /// Panics if `m.ncols() < 3`.
     #[inline]
-    fn quat_from_rotation_matrix(mut self, m: MatRef<f64>) {
+    fn quat_from_rotation_matrix(&mut self, m: MatRef<f64>) {
         let m22_p_m33 = m[(1, 1)] + m[(2, 2)];
         let m22_m_m33 = m[(1, 1)] - m[(2, 2)];
         let vals = vec![
@@ -208,7 +188,7 @@ impl Quat for RowMut<'_, f64> {
     /// Panics if `q1.ncols() < 4`.  
     /// Panics if `q2.ncols() < 4`.  
     #[inline]
-    fn quat_compose(mut self, q1: RowRef<f64>, q2: RowRef<f64>) {
+    fn quat_compose(&mut self, q1: ColRef<f64>, q2: ColRef<f64>) {
         self[0] = q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2] - q1[3] * q2[3];
         self[1] = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2];
         self[2] = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1];
@@ -236,19 +216,19 @@ impl Quat for RowMut<'_, f64> {
     /// # Panics
     /// Panics if `self.ncols() < 4`.  
     /// Panics if `tangent.ncols() < 4`.  
-    fn quat_from_tangent_twist(mut self, tangent: RowRef<f64>, twist: f64) {
-        let e1 = Row::from_fn(3, |i| tangent[i]);
+    fn quat_from_tangent_twist(&mut self, tangent: ColRef<f64>, twist: f64) {
+        let e1 = Col::from_fn(3, |i| tangent[i]);
         let a = if e1[0] > 0. { 1. } else { -1. };
-        let e2 = row![
+        let e2 = col![
             -a * e1[1] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
             a * e1[0] / (e1[0].powi(2) + e1[1].powi(2)).sqrt(),
             0.,
         ];
 
-        let mut e3 = Row::<f64>::zeros(3);
+        let mut e3 = Col::<f64>::zeros(3);
         cross(e1.as_ref(), e2.as_ref(), e3.as_mut());
 
-        let mut q0 = Row::<f64>::zeros(4);
+        let mut q0 = Col::<f64>::zeros(4);
         q0.as_mut().quat_from_rotation_matrix(
             mat![
                 [e1[0], e2[0], e3[0]],
@@ -259,7 +239,7 @@ impl Quat for RowMut<'_, f64> {
         );
 
         //  Matrix3::from_columns(&[e1, e2, e3]);
-        let mut q_twist = Row::<f64>::zeros(4);
+        let mut q_twist = Col::<f64>::zeros(4);
         q_twist
             .as_mut()
             .quat_from_axis_angle(twist * PI / 180., e1.as_ref());
@@ -268,7 +248,7 @@ impl Quat for RowMut<'_, f64> {
 }
 
 // Returns the cross product of two vectors
-pub fn cross(a: RowRef<f64>, b: RowRef<f64>, mut c: RowMut<f64>) {
+pub fn cross(a: ColRef<f64>, b: ColRef<f64>, mut c: ColMut<f64>) {
     c[0] = a[1] * b[2] - a[2] * b[1];
     c[1] = a[2] * b[0] - a[0] * b[2];
     c[2] = a[0] * b[1] - a[1] * b[0];
