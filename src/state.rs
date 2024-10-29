@@ -1,7 +1,8 @@
 use std::rc::Rc;
 
 use crate::quaternion::Quat;
-use faer::{unzipped, zipped, Col, Mat, Row};
+use faer::{unzipped, zipped, Col, Mat};
+use itertools::izip;
 
 use crate::node::Node;
 
@@ -56,14 +57,12 @@ impl State {
 
         // Calculate change in rotation
         let mut q_delta = Col::<f64>::zeros(4);
-        r_prev
-            .col_iter()
-            .zip(rv_delta.col_iter())
-            .zip(r.col_iter_mut())
-            .for_each(|((q_prev, rv_delta), mut q)| {
+        izip!(r_prev.col_iter(), rv_delta.col_iter(), r.col_iter_mut()).for_each(
+            |(q_prev, rv_delta, mut q)| {
                 q_delta.as_mut().quat_from_rotation_vector(rv_delta);
                 q.quat_compose(q_delta.as_ref(), q_prev);
-            });
+            },
+        );
     }
 
     pub fn calculate_x(&mut self) {
@@ -81,10 +80,8 @@ impl State {
         let q_r = self.u.subrows(3, 4);
 
         // Calculate current rotation
-        x0_r.col_iter()
-            .zip(q_r.col_iter())
-            .zip(x_r.col_iter_mut())
-            .for_each(|((x0, q), mut x)| x.quat_compose(q, x0));
+        izip!(x0_r.col_iter(), q_r.col_iter(), x_r.col_iter_mut())
+            .for_each(|(x0, q, mut x)| x.quat_compose(q, x0));
     }
 }
 
@@ -93,7 +90,7 @@ mod tests {
 
     use std::f64::consts::PI;
 
-    use faer::{col, mat, row};
+    use faer::{assert_matrix_eq, col, mat};
 
     use super::*;
 
@@ -131,7 +128,7 @@ mod tests {
     #[test]
     fn test_state_x0() {
         let state = create_state();
-        faer::assert_matrix_eq!(
+        assert_matrix_eq!(
             state.x0,
             mat![
                 [3.0000000000000000, 2.0000000000000000],
@@ -149,7 +146,7 @@ mod tests {
     #[test]
     fn test_state_u() {
         let state = create_state();
-        faer::assert_matrix_eq!(
+        assert_matrix_eq!(
             state.u,
             mat![
                 [4.0000000000000000, 1.0000000000000000],
@@ -167,7 +164,7 @@ mod tests {
     #[test]
     fn test_state_x() {
         let state = create_state();
-        faer::assert_matrix_eq!(
+        assert_matrix_eq!(
             state.x,
             mat![
                 [7.000000000000000, 3.000000000000000],
@@ -185,7 +182,7 @@ mod tests {
     #[test]
     fn test_state_v() {
         let state = create_state();
-        faer::assert_matrix_eq!(
+        assert_matrix_eq!(
             state.v,
             mat![
                 [1., -1.],
@@ -202,7 +199,7 @@ mod tests {
     #[test]
     fn test_state_vd() {
         let state = create_state();
-        faer::assert_matrix_eq!(
+        assert_matrix_eq!(
             state.vd,
             mat![
                 [7., -7.],

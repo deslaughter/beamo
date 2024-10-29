@@ -1,8 +1,9 @@
 use faer::MatMut;
+use itertools::izip;
 
 // Returns the dot product of two vectors
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(&x, &y)| x * y).sum()
+    izip!(a.iter(), b.iter()).map(|(&x, &y)| x * y).sum()
 }
 
 // Returns the L2-norm of a vector
@@ -373,11 +374,12 @@ mod test_integration {
 
         // Quaternion at each node along reference line
         let mut ref_q = Mat::<f64>::zeros(4, ref_tan.ncols());
-        ref_q
-            .col_iter_mut()
-            .zip(ref_tan.col_iter())
-            .zip(ref_line.row(3).iter())
-            .for_each(|((mut q, tan), &twist)| q.quat_from_tangent_twist(tan, twist));
+        izip!(
+            ref_q.col_iter_mut(),
+            ref_tan.col_iter(),
+            ref_line.row(3).iter()
+        )
+        .for_each(|(mut q, tan, &twist)| q.quat_from_tangent_twist(tan, twist));
 
         let mut m = Mat::<f64>::zeros(3, 3);
         ref_q.col_mut(3).quat_as_matrix(m.as_mut());

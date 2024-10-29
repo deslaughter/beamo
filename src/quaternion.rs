@@ -15,10 +15,10 @@ pub trait Quat {
     fn quat_from_axis_angle(&mut self, angle: f64, axis: ColRef<f64>);
     fn quat_from_rotation_matrix(&mut self, r: MatRef<f64>);
     fn quat_compose(&mut self, q1: ColRef<f64>, q2: ColRef<f64>);
-    fn quat_rotate_vector(self, v: RowMut<f64>);
-    fn quat_derivative(self, m: MatMut<f64>);
+    fn quat_rotate_vector(&self, v: ColMut<f64>);
+    fn quat_derivative(&self, m: MatMut<f64>);
     fn quat_from_tangent_twist(&mut self, tangent: ColRef<f64>, twist: f64);
-    fn quat_as_matrix(self, m: MatMut<f64>);
+    fn quat_as_matrix(&self, m: MatMut<f64>);
     fn quat_from_identity(&mut self);
 }
 
@@ -38,7 +38,7 @@ impl Quat for ColMut<'_, f64> {
     /// Panics if `m.nrows() < 3`.  
     /// Panics if `m.ncols() < 3`.  
     #[inline]
-    fn quat_as_matrix(self, mut m: MatMut<f64>) {
+    fn quat_as_matrix(&self, mut m: MatMut<f64>) {
         m[(0, 0)] = self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3];
         m[(0, 1)] = 2. * (self[1] * self[2] - self[0] * self[3]);
         m[(0, 2)] = 2. * (self[1] * self[3] + self[0] * self[2]);
@@ -59,7 +59,7 @@ impl Quat for ColMut<'_, f64> {
     /// Panics if `m.nrows() < 3`.  
     /// Panics if `m.ncols() < 4`.  
     #[inline]
-    fn quat_derivative(self, mut m: MatMut<f64>) {
+    fn quat_derivative(&self, mut m: MatMut<f64>) {
         m[(0, 0)] = -self[1];
         m[(0, 1)] = self[0];
         m[(0, 2)] = -self[2];
@@ -196,7 +196,7 @@ impl Quat for ColMut<'_, f64> {
     }
 
     #[inline]
-    fn quat_rotate_vector(self, mut v: RowMut<f64>) {
+    fn quat_rotate_vector(&self, mut v: ColMut<f64>) {
         v[0] = (self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3])
             * v[0]
             + 2. * (self[1] * self[2] - self[0] * self[3]) * v[1]
