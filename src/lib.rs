@@ -1,8 +1,10 @@
 pub mod beams;
 pub mod interp;
+pub mod model;
 pub mod node;
 pub mod quadrature;
 pub mod quaternion;
+pub mod solver;
 pub mod state;
 
 pub fn add(left: u64, right: u64) -> u64 {

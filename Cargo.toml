@@ -3,6 +3,14 @@ name = "ottr"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "ottr"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cantilever_sin_load"
+path = "src/bin.rs"
+
 [dependencies]
 approx = "0.5.1"
 faer = "0.19.4"

@@ -2,7 +2,17 @@
     "editor.formatOnPaste": true,
     "editor.formatOnSave": true,
     "cSpell.words": [
+        "consts",
+        "faer",
+        "itertools",
+        "izip",
+        "matmul",
+        "ncols",
+        "nrows",
+        "powi",
         "pupss",
-        "subcols"
+        "subcols",
+        "submatrix",
+        "subrows"
     ],
 }

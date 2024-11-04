@@ -1,14 +1,6 @@
 use std::f64::consts::PI;
 
-use faer::{col, mat, row, Col, ColMut, ColRef, MatMut, MatRef, Row, RowMut};
-
-#[derive(Clone, Debug, Copy)]
-pub struct Quaternion {
-    w: f64,
-    x: f64,
-    y: f64,
-    z: f64,
-}
+use faer::{col, mat, Col, ColMut, ColRef, MatMut, MatRef};
 
 pub trait Quat {
     fn quat_from_rotation_vector(&mut self, v: ColRef<f64>);
@@ -39,17 +31,22 @@ impl Quat for ColMut<'_, f64> {
     /// Panics if `m.ncols() < 3`.  
     #[inline]
     fn quat_as_matrix(&self, mut m: MatMut<f64>) {
-        m[(0, 0)] = self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3];
-        m[(0, 1)] = 2. * (self[1] * self[2] - self[0] * self[3]);
-        m[(0, 2)] = 2. * (self[1] * self[3] + self[0] * self[2]);
-
-        m[(1, 0)] = 2. * (self[1] * self[2] + self[0] * self[3]);
-        m[(1, 1)] = self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3];
-        m[(1, 2)] = 2. * (self[2] * self[3] - self[0] * self[1]);
-
-        m[(2, 0)] = 2. * (self[1] * self[3] - self[0] * self[2]);
-        m[(2, 1)] = 2. * (self[2] * self[3] + self[0] * self[1]);
-        m[(2, 2)] = self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3];
+        let (w, i, j, k) = (self[0], self[1], self[2], self[3]);
+        let ww = w * w;
+        let ii = i * i;
+        let jj = j * j;
+        let kk = k * k;
+        let ij = i * j * 2.;
+        let wk = w * k * 2.;
+        let wj = w * j * 2.;
+        let ik = i * k * 2.;
+        let jk = j * k * 2.;
+        let wi = w * i * 2.;
+        m.copy_from(mat![
+            [ww + ii - jj - kk, ij - wk, ik + wj],
+            [ij + wk, ww - ii + jj - kk, jk - wi],
+            [ik - wj, jk + wi, ww - ii - jj + kk],
+        ]);
     }
 
     /// Populates matrix with quaternion derivative
@@ -60,20 +57,11 @@ impl Quat for ColMut<'_, f64> {
     /// Panics if `m.ncols() < 4`.  
     #[inline]
     fn quat_derivative(&self, mut m: MatMut<f64>) {
-        m[(0, 0)] = -self[1];
-        m[(0, 1)] = self[0];
-        m[(0, 2)] = -self[2];
-        m[(0, 3)] = self[3];
-
-        m[(1, 0)] = -self[3];
-        m[(1, 1)] = self[2];
-        m[(1, 2)] = self[0];
-        m[(1, 3)] = -self[1];
-
-        m[(1, 0)] = -self[2];
-        m[(1, 1)] = -self[3];
-        m[(1, 2)] = self[1];
-        m[(1, 3)] = self[0];
+        m.copy_from(mat![
+            [-self[1], self[0], -self[3], self[2]],
+            [-self[2], self[3], self[0], -self[1]],
+            [-self[3], -self[2], self[1], self[0]],
+        ]);
     }
 
     /// Populates Quaternion from rotation vector
@@ -150,31 +138,31 @@ impl Quat for ColMut<'_, f64> {
 
         let half = 0.5;
         let tmp = (max_num + 1.).sqrt();
-        let coef = half / tmp;
+        let c = half / tmp;
 
         match max_idx {
             0 => {
                 self[0] = half * tmp;
-                self[1] = (m[(2, 1)] - m[(1, 2)]) * coef;
-                self[2] = (m[(0, 2)] - m[(2, 0)]) * coef;
-                self[3] = (m[(1, 0)] - m[(0, 1)]) * coef;
+                self[1] = (m[(2, 1)] - m[(1, 2)]) * c;
+                self[2] = (m[(0, 2)] - m[(2, 0)]) * c;
+                self[3] = (m[(1, 0)] - m[(0, 1)]) * c;
             }
             1 => {
-                self[0] = (m[(2, 1)] - m[(1, 2)]) * coef;
+                self[0] = (m[(2, 1)] - m[(1, 2)]) * c;
                 self[1] = half * tmp;
-                self[2] = (m[(0, 1)] + m[(1, 0)]) * coef;
-                self[3] = (m[(0, 2)] + m[(2, 0)]) * coef;
+                self[2] = (m[(0, 1)] + m[(1, 0)]) * c;
+                self[3] = (m[(0, 2)] + m[(2, 0)]) * c;
             }
             2 => {
-                self[0] = (m[(0, 2)] - m[(2, 0)]) * coef;
-                self[1] = (m[(0, 1)] + m[(1, 0)]) * coef;
+                self[0] = (m[(0, 2)] - m[(2, 0)]) * c;
+                self[1] = (m[(0, 1)] + m[(1, 0)]) * c;
                 self[2] = half * tmp;
-                self[3] = (m[(1, 2)] + m[(2, 1)]) * coef;
+                self[3] = (m[(1, 2)] + m[(2, 1)]) * c;
             }
             3 => {
-                self[0] = (m[(1, 0)] - m[(0, 1)]) * coef;
-                self[1] = (m[(0, 2)] + m[(2, 0)]) * coef;
-                self[2] = (m[(1, 2)] + m[(2, 1)]) * coef;
+                self[0] = (m[(1, 0)] - m[(0, 1)]) * c;
+                self[1] = (m[(0, 2)] + m[(2, 0)]) * c;
+                self[2] = (m[(1, 2)] + m[(2, 1)]) * c;
                 self[3] = half * tmp;
             }
             _ => unreachable!(),
@@ -193,22 +181,28 @@ impl Quat for ColMut<'_, f64> {
         self[1] = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2];
         self[2] = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1];
         self[3] = q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0];
+        let m = self.norm_l2();
+        self[0] /= m;
+        self[1] /= m;
+        self[2] /= m;
+        self[3] /= m;
     }
 
     #[inline]
     fn quat_rotate_vector(&self, mut v: ColMut<f64>) {
-        v[0] = (self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3])
-            * v[0]
-            + 2. * (self[1] * self[2] - self[0] * self[3]) * v[1]
-            + 2. * (self[1] * self[3] + self[0] * self[2]) * v[2];
-        v[1] = 2. * (self[1] * self[2] + self[0] * self[3]) * v[0]
-            + (self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3])
-                * v[1]
-            + 2. * (self[2] * self[3] - self[0] * self[1]) * v[2];
-        v[2] = 2. * (self[1] * self[3] - self[0] * self[2]) * v[0]
-            + 2. * (self[2] * self[3] + self[0] * self[1]) * v[1]
-            + (self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3])
-                * v[2];
+        v.copy_from(col![
+            (self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3]) * v[0]
+                + 2. * (self[1] * self[2] - self[0] * self[3]) * v[1]
+                + 2. * (self[1] * self[3] + self[0] * self[2]) * v[2],
+            2. * (self[1] * self[2] + self[0] * self[3]) * v[0]
+                + (self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3])
+                    * v[1]
+                + 2. * (self[2] * self[3] - self[0] * self[1]) * v[2],
+            2. * (self[1] * self[3] - self[0] * self[2]) * v[0]
+                + 2. * (self[2] * self[3] + self[0] * self[1]) * v[1]
+                + (self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3])
+                    * v[2],
+        ]);
     }
 
     /// Populates Quaternion from tangent vector and twist angle.
