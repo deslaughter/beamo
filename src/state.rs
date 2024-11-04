@@ -1,8 +1,7 @@
+use crate::node::Node;
 use crate::quaternion::Quat;
 use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
-
-use crate::node::Node;
 
 pub struct State {
     x0: Mat<f64>,          // [7][n_nodes]    Initial global position/rotation
@@ -131,13 +130,10 @@ impl State {
 #[cfg(test)]
 mod tests {
 
-    use std::f64::consts::PI;
-
-    use faer::{assert_matrix_eq, col, mat};
-
-    use crate::node::NodeBuilder;
-
     use super::*;
+    use crate::node::NodeBuilder;
+    use faer::{assert_matrix_eq, col, mat};
+    use std::f64::consts::PI;
 
     fn create_state() -> State {
         let mut q1: Col<f64> = Col::zeros(4);
@@ -204,14 +200,18 @@ mod tests {
         assert_matrix_eq!(
             state.x,
             mat![
-                [7.000000000000000, 3.000000000000000],
-                [11.000000000000000, -2.000000000000000],
-                [15.000000000000000, 1.000000000000000],
-                [0.000000000000000, 0.6532814824381883],
-                [1.000000000000000, 0.6532814824381882],
-                [0.000000000000000, 0.2705980500730985],
-                [0.000000000000000, -0.27059805007309845],
-            ],
+                [7., 11., 15., 0., 1., 0., 0.],
+                [
+                    3.,
+                    -2.,
+                    1.,
+                    0.6532814824381883,
+                    0.6532814824381882,
+                    0.2705980500730985,
+                    -0.27059805007309845,
+                ]
+            ]
+            .transpose(),
             comp = float
         );
     }
@@ -221,14 +221,7 @@ mod tests {
         let state = create_state();
         assert_matrix_eq!(
             state.v,
-            mat![
-                [1., -1.],
-                [2., -2.],
-                [3., -3.],
-                [4., -4.],
-                [5., -5.],
-                [6., -6.],
-            ],
+            mat![[1., 2., 3., 4., 5., 6.], [-1., -2., -3., -4., -5., -6.]].transpose(),
             comp = float
         );
     }
@@ -239,13 +232,10 @@ mod tests {
         assert_matrix_eq!(
             state.vd,
             mat![
-                [7., -7.],
-                [8., -8.],
-                [9., -9.],
-                [10., -10.],
-                [11., -11.],
-                [12., -12.],
-            ],
+                [7., 8., 9., 10., 11., 12.],
+                [-7., -8., -9., -10., -11., -12.],
+            ]
+            .transpose(),
             comp = float
         );
     }

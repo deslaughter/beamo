@@ -7,11 +7,76 @@ pub trait Quat {
     fn quat_from_axis_angle(&mut self, angle: f64, axis: ColRef<f64>);
     fn quat_from_rotation_matrix(&mut self, r: MatRef<f64>);
     fn quat_compose(&mut self, q1: ColRef<f64>, q2: ColRef<f64>);
-    fn quat_rotate_vector(&self, v: ColMut<f64>);
-    fn quat_derivative(&self, m: MatMut<f64>);
     fn quat_from_tangent_twist(&mut self, tangent: ColRef<f64>, twist: f64);
-    fn quat_as_matrix(&self, m: MatMut<f64>);
     fn quat_from_identity(&mut self);
+}
+
+/// Populates matrix with rotation matrix equivalent of quaternion.
+///
+/// # Panics
+/// Panics if `self.ncols() < 4`.  
+/// Panics if `m.nrows() < 3`.  
+/// Panics if `m.ncols() < 3`.  
+#[inline]
+pub fn quat_as_matrix(v: ColRef<f64>, mut m: MatMut<f64>) {
+    let (w, i, j, k) = (v[0], v[1], v[2], v[3]);
+    let ww = w * w;
+    let ii = i * i;
+    let jj = j * j;
+    let kk = k * k;
+    let ij = i * j * 2.;
+    let wk = w * k * 2.;
+    let wj = w * j * 2.;
+    let ik = i * k * 2.;
+    let jk = j * k * 2.;
+    let wi = w * i * 2.;
+
+    m[(0, 0)] = ww + ii - jj - kk;
+    m[(0, 1)] = ij - wk;
+    m[(0, 2)] = ik + wj;
+
+    m[(1, 0)] = ij + wk;
+    m[(1, 1)] = ww - ii + jj - kk;
+    m[(1, 2)] = jk - wi;
+
+    m[(2, 0)] = ik - wj;
+    m[(2, 1)] = jk + wi;
+    m[(2, 2)] = ww - ii - jj + kk;
+}
+
+#[inline]
+pub fn quat_rotate_vector(q: ColRef<f64>, v_in: ColRef<f64>, mut v_out: ColMut<f64>) {
+    v_out[0] = (q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3]) * v_in[0]
+        + 2. * (q[1] * q[2] - q[0] * q[3]) * v_in[1]
+        + 2. * (q[1] * q[3] + q[0] * q[2]) * v_in[2];
+    v_out[1] = 2. * (q[1] * q[2] + q[0] * q[3]) * v_in[0]
+        + (q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3]) * v_in[1]
+        + 2. * (q[2] * q[3] - q[0] * q[1]) * v_in[2];
+    v_out[2] = 2. * (q[1] * q[3] - q[0] * q[2]) * v_in[0]
+        + 2. * (q[2] * q[3] + q[0] * q[1]) * v_in[1]
+        + (q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3]) * v_in[2];
+}
+
+/// Populates matrix with quaternion derivative
+///
+/// # Panics
+/// Panics if `self.ncols() < 4`.  
+/// Panics if `m.nrows() < 3`.  
+/// Panics if `m.ncols() < 4`.  
+#[inline]
+pub fn quat_derivative(q: ColRef<f64>, mut m: MatMut<f64>) {
+    m[(0, 0)] = -q[1];
+    m[(0, 1)] = q[0];
+    m[(0, 2)] = -q[3];
+    m[(0, 3)] = q[2];
+    m[(1, 0)] = -q[2];
+    m[(1, 1)] = q[3];
+    m[(1, 2)] = q[0];
+    m[(1, 3)] = -q[1];
+    m[(2, 0)] = -q[3];
+    m[(2, 1)] = -q[2];
+    m[(2, 2)] = q[1];
+    m[(2, 3)] = q[0];
 }
 
 impl Quat for ColMut<'_, f64> {
@@ -21,47 +86,6 @@ impl Quat for ColMut<'_, f64> {
         self[1] = 0.;
         self[2] = 0.;
         self[3] = 0.;
-    }
-
-    /// Populates matrix with rotation matrix equivalent of quaternion.
-    ///
-    /// # Panics
-    /// Panics if `self.ncols() < 4`.  
-    /// Panics if `m.nrows() < 3`.  
-    /// Panics if `m.ncols() < 3`.  
-    #[inline]
-    fn quat_as_matrix(&self, mut m: MatMut<f64>) {
-        let (w, i, j, k) = (self[0], self[1], self[2], self[3]);
-        let ww = w * w;
-        let ii = i * i;
-        let jj = j * j;
-        let kk = k * k;
-        let ij = i * j * 2.;
-        let wk = w * k * 2.;
-        let wj = w * j * 2.;
-        let ik = i * k * 2.;
-        let jk = j * k * 2.;
-        let wi = w * i * 2.;
-        m.copy_from(mat![
-            [ww + ii - jj - kk, ij - wk, ik + wj],
-            [ij + wk, ww - ii + jj - kk, jk - wi],
-            [ik - wj, jk + wi, ww - ii - jj + kk],
-        ]);
-    }
-
-    /// Populates matrix with quaternion derivative
-    ///
-    /// # Panics
-    /// Panics if `self.ncols() < 4`.  
-    /// Panics if `m.nrows() < 3`.  
-    /// Panics if `m.ncols() < 4`.  
-    #[inline]
-    fn quat_derivative(&self, mut m: MatMut<f64>) {
-        m.copy_from(mat![
-            [-self[1], self[0], -self[3], self[2]],
-            [-self[2], self[3], self[0], -self[1]],
-            [-self[3], -self[2], self[1], self[0]],
-        ]);
     }
 
     /// Populates Quaternion from rotation vector
@@ -186,23 +210,6 @@ impl Quat for ColMut<'_, f64> {
         self[1] /= m;
         self[2] /= m;
         self[3] /= m;
-    }
-
-    #[inline]
-    fn quat_rotate_vector(&self, mut v: ColMut<f64>) {
-        v.copy_from(col![
-            (self[0] * self[0] + self[1] * self[1] - self[2] * self[2] - self[3] * self[3]) * v[0]
-                + 2. * (self[1] * self[2] - self[0] * self[3]) * v[1]
-                + 2. * (self[1] * self[3] + self[0] * self[2]) * v[2],
-            2. * (self[1] * self[2] + self[0] * self[3]) * v[0]
-                + (self[0] * self[0] - self[1] * self[1] + self[2] * self[2] - self[3] * self[3])
-                    * v[1]
-                + 2. * (self[2] * self[3] - self[0] * self[1]) * v[2],
-            2. * (self[1] * self[3] - self[0] * self[2]) * v[0]
-                + 2. * (self[2] * self[3] + self[0] * self[1]) * v[1]
-                + (self[0] * self[0] - self[1] * self[1] - self[2] * self[2] + self[3] * self[3])
-                    * v[2],
-        ]);
     }
 
     /// Populates Quaternion from tangent vector and twist angle.

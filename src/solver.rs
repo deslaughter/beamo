@@ -18,7 +18,7 @@ pub struct StepParameters {
     gamma: f64,
     beta_prime: f64,
     gamma_prime: f64,
-    pub max_iter: usize,
+    max_iter: usize,
     conditioner: f64,
     convergence_atol: f64,
     convergence_rtol: f64,
@@ -58,11 +58,11 @@ pub struct Solver {
     pub t: Mat<f64>,          // T
     pub st: Mat<f64>,         // St
     pub x: Col<f64>,          // x solution vector
-    pub x_delta: Mat<f64>,
-    pub fx: Col<f64>,     // external force vector
-    pub r: Col<f64>,      // R residual vector
-    pub b: Mat<f64>,      // B constraint gradient matrix
-    pub lambda: Col<f64>, //
+    pub x_delta: Mat<f64>,    //
+    pub fx: Mat<f64>,         // nodal forces
+    pub r: Col<f64>,          // R residual vector
+    pub b: Mat<f64>,          // B constraint gradient matrix
+    pub lambda: Col<f64>,     //
 }
 
 pub struct StepResults {
@@ -92,7 +92,7 @@ impl Solver {
             ct: Mat::zeros(n_system_dofs, n_system_dofs),
             m: Mat::zeros(n_system_dofs, n_system_dofs),
             t: Mat::zeros(n_system_dofs, n_system_dofs),
-            fx: Col::zeros(n_system_dofs),
+            fx: Mat::zeros(6, n_nodes),
             st: Mat::zeros(n_dofs, n_dofs),
             x: Col::zeros(n_dofs),
             x_delta: Mat::zeros(6, n_nodes),
@@ -138,7 +138,10 @@ impl Solver {
             );
 
             // Subtract direct nodal loads
-            self.r -= &self.fx;
+            self.fx.col_iter().enumerate().for_each(|(i, f)| {
+                let mut r = self.r.subrows_mut(6 * i, 6);
+                r -= f;
+            });
 
             // Calculate tangent matrix
             state
@@ -200,7 +203,7 @@ impl Solver {
             let x = lu.solve(&rhs);
             self.x.subrows_mut(6, reduced_dofs).copy_from(&x);
 
-            // Uncondition solution vector
+            // De-condition solution vector
             zipped!(&mut self.x.subrows_mut(self.n_system_dofs, self.n_lambda_dofs))
                 .for_each(|unzipped!(mut v)| *v /= self.p.conditioner);
 

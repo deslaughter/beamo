@@ -309,7 +309,7 @@ mod test_integration {
     use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, Mat, Parallelism};
     use itertools::Itertools;
 
-    use crate::quaternion::Quat;
+    use crate::quaternion::{quat_as_matrix, Quat};
 
     use super::*;
 
@@ -382,7 +382,7 @@ mod test_integration {
         .for_each(|(mut q, tan, &twist)| q.quat_from_tangent_twist(tan, twist));
 
         let mut m = Mat::<f64>::zeros(3, 3);
-        ref_q.col_mut(3).quat_as_matrix(m.as_mut());
+        quat_as_matrix(ref_q.col(3), m.as_mut());
         assert_matrix_eq!(
             m,
             mat![

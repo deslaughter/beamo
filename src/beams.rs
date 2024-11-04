@@ -2,7 +2,7 @@ use std::ops::Rem;
 
 use crate::interp::shape_interp_matrix;
 use crate::quadrature::Quadrature;
-use crate::quaternion::Quat;
+use crate::quaternion::{quat_as_matrix, quat_derivative, quat_rotate_vector, Quat};
 use crate::state::State;
 use crate::{interp::shape_deriv_matrix, node::Node};
 use faer::linalg::matmul::matmul;
@@ -59,7 +59,7 @@ pub struct Beams {
     gravity: Col<f64>, // [3] gravity
 
     // Node-based data
-    node_x0: Mat<f64>,     // [7][n_nodes] Inital position/rotation
+    node_x0: Mat<f64>,     // [7][n_nodes] Initial position/rotation
     node_u: Mat<f64>,      // [7][n_nodes] State: translation/rotation displacement
     node_v: Mat<f64>,      // [6][n_nodes] State: translation/rotation velocity
     node_vd: Mat<f64>,     // [6][n_nodes] State: translation/rotation acceleration
@@ -74,35 +74,38 @@ pub struct Beams {
     node_ki: Mat<f64>,     // [6][n_nodes*max_nodes] stiff matrices
 
     // Quadrature point data
-    pub qp_weight: Col<f64>,   // [n_qps]        Integration weights
-    pub qp_jacobian: Col<f64>, // [n_qps]        Jacobian vector
-    pub qp_m_star: Mat<f64>,   // [6][6][n_qps]  Mass matrix in material frame
-    pub qp_c_star: Mat<f64>,   // [6][6][n_qps]  Stiffness matrix in material frame
-    pub qp_x: Mat<f64>,        // [7][n_qps]     Current position/orientation
-    pub qp_x0: Mat<f64>,       // [7][n_qps]     Initial position
-    pub qp_x0_prime: Mat<f64>, // [7][n_qps]     Initial position derivative
-    pub qp_u: Mat<f64>,        // [7][n_qps]     State: translation displacement
-    pub qp_u_prime: Mat<f64>,  // [7][n_qps]     State: translation displacement derivative
-    pub qp_v: Mat<f64>,        // [6][n_qps]     State: translation velocity
-    pub qp_vd: Mat<f64>,       // [6][n_qps]     State: translation acceleration
-    pub qp_x0pupss: Mat<f64>,  // [3][3][n_qps] skew_symmetric(x0_prime + u_prime)
-    pub qp_m: Col<f64>,        // [n_qps]     mass
-    pub qp_eta: Mat<f64>,      // [3][n_qps]     mass
-    pub qp_rho: Mat<f64>,      // [3][3][n_qps]  mass
-    pub qp_strain: Mat<f64>,   // [6][n_qps]     Strain
-    pub qp_fc: Mat<f64>,       // [6][n_qps]     Elastic force
-    pub qp_fd: Mat<f64>,       // [6][n_qps]     Elastic force
-    pub qp_fi: Mat<f64>,       // [6][n_qps]     Inertial force
-    pub qp_fx: Mat<f64>,       // [6][n_qps]     External force
-    pub qp_fg: Mat<f64>,       // [6][n_qps]     Gravity force
-    pub qp_rr0: Mat<f64>,      // [6][6][n_qps]  Global rotation
-    pub qp_muu: Mat<f64>,      // [6][6][n_qps]  Mass in global frame
-    pub qp_cuu: Mat<f64>,      // [6][6][n_qps]  Stiffness in global frame
-    pub qp_ouu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_puu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_quu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_guu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_kuu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
+    pub qp_weight: Col<f64>,          // [n_qps]        Integration weights
+    pub qp_jacobian: Col<f64>,        // [n_qps]        Jacobian vector
+    pub qp_m_star: Mat<f64>,          // [6][6][n_qps]  Mass matrix in material frame
+    pub qp_c_star: Mat<f64>,          // [6][6][n_qps]  Stiffness matrix in material frame
+    pub qp_x: Mat<f64>,               // [7][n_qps]     Current position/orientation
+    pub qp_x0: Mat<f64>,              // [7][n_qps]     Initial position
+    pub qp_x0_prime: Mat<f64>,        // [7][n_qps]     Initial position derivative
+    pub qp_u: Mat<f64>,               // [7][n_qps]     State: displacement
+    pub qp_u_prime: Mat<f64>,         // [7][n_qps]     State: displacement derivative
+    pub qp_v: Mat<f64>,               // [6][n_qps]     State: velocity
+    pub qp_vd: Mat<f64>,              // [6][n_qps]     State: acceleration
+    pub qp_omega_tilde: Mat<f64>,     // [3][3][n_qps]  State: rotational velocity
+    pub qp_omega_dot_tilde: Mat<f64>, // [3][3][n_qps]  State: rotational acceleration
+    pub qp_x0pupss: Mat<f64>,         // [3][3][n_qps]  skew_symmetric(x0_prime + u_prime)
+    pub qp_m: Col<f64>,               // [n_qps]        mass
+    pub qp_eta: Mat<f64>,             // [3][n_qps]     mass
+    pub qp_eta_tilde: Mat<f64>,       // [3][3][n_qps]  mass
+    pub qp_rho: Mat<f64>,             // [3][3][n_qps]  mass
+    pub qp_strain: Mat<f64>,          // [6][n_qps]     Strain
+    pub qp_fc: Mat<f64>,              // [6][n_qps]     Elastic force
+    pub qp_fd: Mat<f64>,              // [6][n_qps]     Elastic force
+    pub qp_fi: Mat<f64>,              // [6][n_qps]     Inertial force
+    pub qp_fx: Mat<f64>,              // [6][n_qps]     External force
+    pub qp_fg: Mat<f64>,              // [6][n_qps]     Gravity force
+    pub qp_rr0: Mat<f64>,             // [6][6][n_qps]  Global rotation
+    pub qp_muu: Mat<f64>,             // [6][6][n_qps]  Mass in global frame
+    pub qp_cuu: Mat<f64>,             // [6][6][n_qps]  Stiffness in global frame
+    pub qp_ouu: Mat<f64>,             // [6][6][n_qps]  Linearization matrices
+    pub qp_puu: Mat<f64>,             // [6][6][n_qps]  Linearization matrices
+    pub qp_quu: Mat<f64>,             // [6][6][n_qps]  Linearization matrices
+    pub qp_guu: Mat<f64>,             // [6][6][n_qps]  Linearization matrices
+    pub qp_kuu: Mat<f64>,             // [6][6][n_qps]  Linearization matrices
 
     // residual_vector_terms: Mat<f64>,  // [6][max_nodes]
     // stiffness_matrix_terms: Mat<f64>, // [6][6][max_nodes][max_nodes]
@@ -234,9 +237,12 @@ impl Beams {
             qp_u_prime: Mat::zeros(7, alloc_qps),
             qp_v: Mat::zeros(6, alloc_qps),
             qp_vd: Mat::zeros(6, alloc_qps),
+            qp_omega_tilde: Mat::zeros(3 * 3, alloc_qps),
+            qp_omega_dot_tilde: Mat::zeros(3 * 3, alloc_qps),
             qp_x0pupss: Mat::zeros(3 * 3, alloc_qps),
             qp_m: Col::zeros(alloc_qps),
             qp_eta: Mat::zeros(3, alloc_qps),
+            qp_eta_tilde: Mat::zeros(3 * 3, alloc_qps),
             qp_rho: Mat::zeros(3 * 3, alloc_qps),
             qp_strain: Mat::zeros(6, alloc_qps),
             qp_fc: Mat::zeros(6, alloc_qps),
@@ -460,7 +466,8 @@ impl Beams {
                 .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
             izip!(elem_dof_start_pairs.iter(), muu.col_iter()).for_each(|((i, j), muu)| {
                 let mut me = m.as_mut().submatrix_mut(*i, *j, 6, 6);
-                me += muu.as_mat_ref(6, 6);
+                zipped!(&mut me, &muu.as_mat_ref(6, 6))
+                    .for_each(|unzipped!(mut me, muu)| *me += *muu);
             });
 
             // Gyroscopic matrix
@@ -469,7 +476,8 @@ impl Beams {
                 .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
             izip!(elem_dof_start_pairs.iter(), guu.col_iter()).for_each(|((i, j), guu)| {
                 let mut ge = g.as_mut().submatrix_mut(*i, *j, 6, 6);
-                ge += guu.as_mat_ref(6, 6);
+                zipped!(&mut ge, &guu.as_mat_ref(6, 6))
+                    .for_each(|unzipped!(mut ge, guu)| *ge += *guu);
             });
 
             // Stiffness matrix
@@ -482,8 +490,8 @@ impl Beams {
             izip!(elem_dof_start_pairs.iter(), ke.col_iter(), ki.col_iter()).for_each(
                 |((i, j), ke, ki)| {
                     let mut kt = k.as_mut().submatrix_mut(*i, *j, 6, 6);
-                    kt += ke.as_mat_ref(6, 6);
-                    kt += ki.as_mat_ref(6, 6);
+                    zipped!(&mut kt, &ke.as_mat_ref(6, 6), &ki.as_mat_ref(6, 6))
+                        .for_each(|unzipped!(mut kt, ke, ki)| *kt += *ke + *ki);
                 },
             );
         });
@@ -496,7 +504,7 @@ impl Beams {
             .zip(self.node_f.col_iter())
         {
             let mut resid = r.as_mut().subrows_mut(i, 6);
-            resid += f;
+            zipped!(&mut resid, &f).for_each(|unzipped!(mut r, f)| *r += *f);
         }
     }
 
@@ -576,467 +584,203 @@ impl Beams {
     }
 
     fn calc_qp_values(&mut self) {
-        self.calc_qp_x();
-        self.calc_qp_rr0();
-        self.calc_qp_muu();
-        self.calc_qp_cuu();
-        self.calc_qp_m_eta_rho();
-        self.calc_qp_strain();
-        self.calc_qp_x0pupss();
-        self.calc_qp_fc();
-        self.calc_qp_fi();
-        self.calc_qp_fd();
-        self.calc_qp_fg();
-        self.calc_qp_ouu();
-        self.calc_qp_puu();
-        self.calc_qp_quu();
+        // Calculate omega_tilde
+        izip!(
+            self.qp_v.subrows(3, 3).col_iter(),
+            self.qp_omega_tilde.col_iter_mut(),
+        )
+        .for_each(|(omega, omega_tilde)| vec_tilde2(omega, omega_tilde.as_mat_mut(3, 3)));
+
+        // Calculate omega_tilde
+        izip!(
+            self.qp_vd.subrows(3, 3).col_iter(),
+            self.qp_omega_dot_tilde.col_iter_mut(),
+        )
+        .for_each(|(omega_dot, omega_dot_tilde)| {
+            vec_tilde2(omega_dot, omega_dot_tilde.as_mat_mut(3, 3))
+        });
+
+        calc_qp_x(self.qp_x.as_mut(), self.qp_x0.as_ref(), self.qp_u.as_ref());
+        calc_qp_rr0(self.qp_rr0.as_mut(), self.qp_x.as_ref());
+        calc_qp_mat(
+            self.qp_muu.as_mut(),
+            self.qp_m_star.as_ref(),
+            self.qp_rr0.as_ref(),
+        );
+        calc_qp_mat(
+            self.qp_cuu.as_mut(),
+            self.qp_c_star.as_ref(),
+            self.qp_rr0.as_ref(),
+        );
+        calc_qp_m_eta_rho(
+            self.qp_m.as_mut(),
+            self.qp_eta.as_mut(),
+            self.qp_eta_tilde.as_mut(),
+            self.qp_rho.as_mut(),
+            self.qp_muu.as_ref(),
+        );
+        calc_qp_strain(
+            self.qp_strain.as_mut(),
+            self.qp_x0_prime.subrows(0, 3),
+            self.qp_u.subrows(3, 4),
+            self.qp_u_prime.subrows(0, 3),
+            self.qp_u_prime.subrows(3, 4),
+        );
+        calc_qp_x0pupss(
+            self.qp_x0pupss.as_mut(),
+            self.qp_x0_prime.subrows(0, 3),
+            self.qp_u_prime.subrows(0, 3),
+        );
+        calc_qp_fc(
+            self.qp_fc.as_mut(),
+            self.qp_cuu.as_ref(),
+            self.qp_strain.as_ref(),
+        );
+        calc_qp_fd(
+            self.qp_fd.as_mut(),
+            self.qp_fc.as_ref(),
+            self.qp_x0pupss.as_ref(),
+        );
+        calc_qp_fi(
+            self.qp_fi.as_mut(),
+            self.qp_m.as_ref(),
+            self.qp_v.subrows(3, 3).as_ref(), // omega
+            self.qp_omega_tilde.as_ref(),
+            self.qp_vd.subrows(0, 3).as_ref(), // u_ddot
+            self.qp_vd.subrows(3, 3).as_ref(), // omega_dot
+            self.qp_omega_dot_tilde.as_ref(),  // omega_dot
+            self.qp_eta.as_ref(),
+            self.qp_eta_tilde.as_ref(),
+            self.qp_rho.as_ref(),
+        );
+        calc_qp_fg(
+            self.qp_fg.as_mut(),
+            self.gravity.as_ref(),
+            self.qp_m.as_ref(),
+            self.qp_eta_tilde.as_ref(),
+        );
+        calc_qp_ouu(
+            self.qp_ouu.as_mut(),
+            self.qp_cuu.as_ref(),
+            self.qp_x0pupss.as_ref(),
+            self.qp_fc.as_ref(),
+        );
+        calc_qp_puu(
+            self.qp_puu.as_mut(),
+            self.qp_cuu.as_ref(),
+            self.qp_x0pupss.as_ref(),
+            self.qp_fc.as_ref(),
+        );
+        calc_qp_quu(
+            self.qp_quu.as_mut(),
+            self.qp_cuu.as_ref(),
+            self.qp_x0pupss.as_ref(),
+            self.qp_fc.as_ref(),
+        );
         self.calc_qp_guu();
         self.calc_qp_kuu();
     }
 
     #[inline]
-    // Calculate current position and rotation (x0 + u)
-    fn calc_qp_x(&mut self) {
-        izip!(
-            self.qp_x.col_iter_mut(),
-            self.qp_x0.col_iter(),
-            self.qp_u.col_iter()
-        )
-        .for_each(|(mut x, x0, u)| {
-            x[0] = x0[0] + u[0];
-            x[1] = x0[1] + u[1];
-            x[2] = x0[2] + u[2];
-            x.subrows_mut(3, 4)
-                .quat_compose(u.subrows(3, 4), x0.subrows(3, 4));
-        });
-    }
-
-    #[inline]
-    fn calc_qp_rr0(&mut self) {
-        izip!(
-            self.qp_rr0.col_iter_mut(),
-            self.qp_x.subrows_mut(3, 4).col_iter_mut()
-        )
-        .for_each(|(col, mut r)| {
-            let mut rr0 = col.as_mat_mut(6, 6);
-            let mut m = Mat::<f64>::zeros(3, 3);
-            r.as_mut().quat_as_matrix(m.as_mut());
-            rr0.as_mut().submatrix_mut(0, 0, 3, 3).copy_from(&m);
-            rr0.as_mut().submatrix_mut(3, 3, 3, 3).copy_from(&m);
-        });
-    }
-
-    #[inline]
-    fn calc_qp_muu(&mut self) {
-        izip!(
-            self.qp_muu.col_iter_mut(),
-            self.qp_m_star.col_iter(),
-            self.qp_rr0.col_iter()
-        )
-        .for_each(|(muu_col, m_star_col, rr0_col)| {
-            let rr0 = rr0_col.as_mat_ref(6, 6);
-            let mut muu_tmp = Mat::<f64>::zeros(6, 6);
-            matmul(
-                muu_tmp.as_mut(),
-                rr0,
-                m_star_col.as_mat_ref(6, 6),
-                None,
-                1.,
-                Parallelism::None,
-            );
-            matmul(
-                muu_col.as_mat_mut(6, 6),
-                muu_tmp.as_ref(),
-                rr0.transpose(),
-                None,
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_cuu(&mut self) {
-        izip!(
-            self.qp_cuu.col_iter_mut(),
-            self.qp_c_star.col_iter(),
-            self.qp_rr0.col_iter()
-        )
-        .for_each(|(cuu_col, c_star_col, rr0_col)| {
-            let cuu = cuu_col.as_mat_mut(6, 6);
-            let c_star = c_star_col.as_mat_ref(6, 6);
-            let rr0 = rr0_col.as_mat_ref(6, 6);
-            let mut cuu_tmp = Mat::<f64>::zeros(6, 6);
-            matmul(cuu_tmp.as_mut(), rr0, c_star, None, 1., Parallelism::None);
-            matmul(
-                cuu,
-                cuu_tmp.as_ref(),
-                rr0.transpose(),
-                None,
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_x0pupss(&mut self) {
-        izip!(
-            self.qp_x0pupss.col_iter_mut(),
-            self.qp_x0_prime.subrows(0, 3).col_iter(),
-            self.qp_u_prime.subrows(0, 3).col_iter()
-        )
-        .for_each(|(x0pupss_col, x0_prime, u_prime)| {
-            let mut x0pupss = x0pupss_col.as_mat_mut(3, 3);
-            let x0pup = col![
-                x0_prime[0] + u_prime[0],
-                x0_prime[1] + u_prime[1],
-                x0_prime[2] + u_prime[2]
-            ];
-            x0pupss.copy_from(vec_tilde(x0pup.as_ref()));
-        });
-    }
-
-    #[inline]
-    fn calc_qp_strain(&mut self) {
-        izip!(
-            self.qp_strain.col_iter_mut(),
-            self.qp_x0_prime.subrows(0, 3).col_iter(),
-            self.qp_u_prime.subrows(0, 3).col_iter(),
-            self.qp_u_prime.subrows(3, 4).col_iter(),
-            self.qp_u.subrows_mut(3, 4).col_iter_mut()
-        )
-        .for_each(|(mut qp_strain, x0_prime, u_prime, r_prime, r)| {
-            let mut r_x0_prime = x0_prime.to_owned();
-            r.quat_rotate_vector(r_x0_prime.as_mut());
-            qp_strain
-                .as_mut()
-                .subrows_mut(0, 3)
-                .copy_from(x0_prime + u_prime - r_x0_prime);
-
-            let mut r_deriv = Mat::<f64>::zeros(3, 4);
-            r.quat_derivative(r_deriv.as_mut());
-            matmul(
-                qp_strain.subrows_mut(3, 3),
-                r_deriv.as_ref(),
-                r_prime,
-                None,
-                2.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_m_eta_rho(&mut self) {
-        izip!(
-            self.qp_m.iter_mut(),
-            self.qp_eta.col_iter_mut(),
-            self.qp_rho.col_iter_mut(),
-            self.qp_muu.col_iter()
-        )
-        .for_each(|(m, mut eta, rho_col, muu_col)| {
-            let muu = muu_col.as_mat_ref(6, 6);
-            *m = muu[(0, 0)];
-            if *m == 0. {
-                eta.fill(0.);
-            } else {
-                eta[0] = muu[(5, 1)] / *m;
-                eta[1] = -muu[(5, 0)] / *m;
-                eta[2] = muu[(4, 0)] / *m;
-            }
-            let mut rho = rho_col.as_mat_mut(3, 3);
-            rho.copy_from(muu.submatrix(3, 3, 3, 3));
-        });
-    }
-
-    #[inline]
-    fn calc_qp_fc(&mut self) {
-        izip!(
-            self.qp_fc.col_iter_mut(),
-            self.qp_cuu.col_iter(),
-            self.qp_strain.col_iter(),
-        )
-        .for_each(|(mut fc, cuu_col, strain)| {
-            matmul(
-                fc.as_mut(),
-                cuu_col.as_mat_ref(6, 6),
-                strain.as_ref(),
-                None,
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_fi(&mut self) {
-        izip!(
-            self.qp_fi.col_iter_mut(),
-            self.qp_m.iter(),
-            self.qp_v.subrows(3, 3).col_iter(),  // omega
-            self.qp_vd.subrows(0, 3).col_iter(), // u_ddot
-            self.qp_vd.subrows(3, 3).col_iter(), // omega_dot
-            self.qp_eta.col_iter(),
-            self.qp_rho.col_iter(),
-        )
-        .for_each(|(mut fi, &m, omega, u_ddot, omega_dot, eta, rho_col)| {
-            let mut mat = Mat::<f64>::zeros(3, 3);
-            let omega_tilde = vec_tilde(omega);
-            let omega_dot_tilde = vec_tilde(omega_dot);
-            matmul(
-                mat.as_mut(),
-                omega_tilde.as_ref(),
-                omega_tilde.as_ref(),
-                None,
-                m,
-                Parallelism::None,
-            );
-            zipped!(mat.as_mut(), omega_dot_tilde.as_ref()).for_each(
-                |unzipped!(mut mat, omega_dot_tilde)| {
-                    *mat += m * *omega_dot_tilde;
-                },
-            );
-            let mut fi1 = fi.as_mut().subrows_mut(0, 3);
-            matmul(fi1.as_mut(), mat.as_ref(), eta, None, 1., Parallelism::None);
-            fi1 += u_ddot * Scale(m);
-
-            let mut fi2 = fi.as_mut().subrows_mut(3, 3);
-            let rho = rho_col.as_mat_ref(3, 3);
-            let eta_tilde = vec_tilde(eta);
-            matmul(
-                fi2.as_mut(),
-                eta_tilde,
-                u_ddot * Scale(m),
-                None,
-                1.,
-                Parallelism::None,
-            );
-            matmul(
-                fi2.as_mut(),
-                rho,
-                omega_dot,
-                Some(1.),
-                1.,
-                Parallelism::None,
-            );
-            matmul(mat.as_mut(), omega_tilde, rho, None, 1., Parallelism::None);
-            matmul(fi2.as_mut(), mat, omega, Some(1.), 1., Parallelism::None);
-        });
-    }
-
-    #[inline]
-    fn calc_qp_fd(&mut self) {
-        izip!(
-            self.qp_fd.col_iter_mut(),
-            self.qp_fc.col_iter(),
-            self.qp_x0pupss.col_iter(),
-        )
-        .for_each(|(fd, fc, x0pupss_col)| {
-            matmul(
-                fd.subrows_mut(3, 3),
-                x0pupss_col.as_mat_ref(3, 3).transpose(),
-                fc.subrows(0, 3), // N
-                None,
-                1.0,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_fg(&mut self) {
-        izip!(
-            self.qp_fg.col_iter_mut(),
-            self.qp_m.iter(),
-            self.qp_eta.col_iter(),
-        )
-        .for_each(|(mut fg, &m, eta)| {
-            let g = &self.gravity * Scale(m);
-            fg.as_mut().subrows_mut(0, 3).copy_from(&g);
-            matmul(
-                fg.as_mut().subrows_mut(3, 3),
-                vec_tilde(eta),
-                g,
-                None,
-                1.0,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_ouu(&mut self) {
-        izip!(
-            self.qp_ouu.col_iter_mut(),
-            self.qp_cuu.col_iter(),
-            self.qp_x0pupss.col_iter(),
-            self.qp_fc.col_iter(),
-        )
-        .for_each(|(ouu_col, cuu_col, x0pupss_col, fc)| {
-            let mut ouu = ouu_col.as_mat_mut(6, 6);
-            let cuu = cuu_col.as_mat_ref(6, 6);
-            let x0pupss = x0pupss_col.as_mat_ref(3, 3);
-            let n_tilde = vec_tilde(fc.subrows(0, 3));
-            let m_tilde = vec_tilde(fc.subrows(3, 3));
-
-            ouu.fill(0.);
-
-            let mut ouu12 = ouu.as_mut().submatrix_mut(0, 3, 3, 3);
-            let c11 = cuu.submatrix(0, 0, 3, 3);
-            ouu12.copy_from(&n_tilde);
-            matmul(
-                ouu12.as_mut(),
-                c11,
-                x0pupss,
-                Some(-1.),
-                1.,
-                Parallelism::None,
-            );
-
-            let mut ouu22 = ouu.as_mut().submatrix_mut(3, 3, 3, 3);
-            let c21 = cuu.submatrix(3, 0, 3, 3);
-            ouu22.copy_from(&m_tilde);
-            matmul(
-                ouu22.as_mut(),
-                c21,
-                x0pupss,
-                Some(-1.),
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_puu(&mut self) {
-        izip!(
-            self.qp_puu.col_iter_mut(),
-            self.qp_cuu.col_iter(),
-            self.qp_x0pupss.col_iter(),
-            self.qp_fc.col_iter(),
-        )
-        .for_each(|(mut puu_col, cuu_col, x0pupss_col, fc)| {
-            puu_col.fill(0.);
-            let mut puu = puu_col.as_mat_mut(6, 6);
-            let cuu = cuu_col.as_mat_ref(6, 6);
-            let x0pupss = x0pupss_col.as_mat_ref(3, 3);
-            let n_tilde = vec_tilde(fc.subrows(0, 3));
-
-            let c11 = cuu.submatrix(0, 0, 3, 3);
-            let c12 = cuu.submatrix(0, 3, 3, 3);
-
-            let mut puu21 = puu.as_mut().submatrix_mut(3, 0, 3, 3);
-            puu21.copy_from(&n_tilde);
-            matmul(
-                puu21.as_mut(),
-                x0pupss.transpose(),
-                c11,
-                Some(1.),
-                1.,
-                Parallelism::None,
-            );
-
-            let mut puu22 = puu.as_mut().submatrix_mut(3, 3, 3, 3);
-            matmul(
-                puu22.as_mut(),
-                x0pupss.transpose(),
-                c12,
-                None,
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
-    fn calc_qp_quu(&mut self) {
-        izip!(
-            self.qp_quu.col_iter_mut(),
-            self.qp_cuu.col_iter(),
-            self.qp_x0pupss.col_iter(),
-            self.qp_fc.col_iter(),
-        )
-        .for_each(|(mut quu_col, cuu_col, x0pupss_col, fc)| {
-            quu_col.fill(0.);
-            let mut quu = quu_col.as_mat_mut(6, 6);
-            let cuu = cuu_col.as_mat_ref(6, 6);
-            let x0pupss = x0pupss_col.as_mat_ref(3, 3);
-            let n_tilde = vec_tilde(fc.subrows(0, 3));
-
-            let mut quu22 = quu.as_mut().submatrix_mut(3, 3, 3, 3);
-            let c11 = cuu.submatrix(0, 0, 3, 3);
-            let mut mat = n_tilde.to_owned();
-            matmul(mat.as_mut(), c11, x0pupss, Some(-1.), 1., Parallelism::None);
-            matmul(
-                quu22.as_mut(),
-                x0pupss.transpose(),
-                mat,
-                None,
-                1.,
-                Parallelism::None,
-            );
-        });
-    }
-
-    #[inline]
     fn calc_qp_guu(&mut self) {
+        let mut m_omega_tilde_eta = Col::<f64>::zeros(3);
         izip!(
             self.qp_guu.col_iter_mut(),
             self.qp_m.iter(),
             self.qp_eta.col_iter(),
             self.qp_rho.col_iter(),
             self.qp_v.subrows(3, 3).col_iter(), // omega
+            self.qp_omega_tilde.col_iter(),
+            self.qp_eta_tilde.col_iter(),
         )
-        .for_each(|(mut guu_col, &m, eta, rho_col, omega)| {
-            guu_col.fill(0.);
-            let mut guu = guu_col.as_mat_mut(6, 6);
-            let rho = rho_col.as_mat_ref(3, 3);
-            let omega_tilde = vec_tilde(omega);
-            let mut guu12 = guu.as_mut().submatrix_mut(0, 3, 3, 3);
-            guu12.copy_from(
-                Scale(m) * &omega_tilde * vec_tilde(eta).transpose()
-                    + vec_tilde((Scale(m) * &omega_tilde * eta).as_ref()).transpose(),
-            );
+        .for_each(
+            |(guu_col, &m, eta, rho_col, omega, omega_tilde_col, eta_tilde_col)| {
+                let mut guu = guu_col.as_mat_mut(6, 6);
+                let rho = rho_col.as_mat_ref(3, 3);
+                let omega_tilde = omega_tilde_col.as_mat_ref(3, 3);
+                let eta_tilde = eta_tilde_col.as_mat_ref(3, 3);
+                let mut guu12 = guu.as_mut().submatrix_mut(0, 3, 3, 3);
+                matmul(
+                    m_omega_tilde_eta.as_mut(),
+                    omega_tilde,
+                    eta,
+                    None,
+                    m,
+                    Parallelism::None,
+                );
+                guu12.copy_from(
+                    Scale(m) * &omega_tilde * eta_tilde.transpose()
+                        + vec_tilde(m_omega_tilde_eta.as_ref()).transpose(),
+                );
 
-            let mut guu22 = guu.as_mut().submatrix_mut(3, 3, 3, 3);
-            guu22.copy_from(omega_tilde * rho - vec_tilde((rho * omega).as_ref()));
-        });
+                let mut guu22 = guu.as_mut().submatrix_mut(3, 3, 3, 3);
+                guu22.copy_from(omega_tilde * rho - vec_tilde((rho * omega).as_ref()));
+            },
+        );
     }
 
     #[inline]
     fn calc_qp_kuu(&mut self) {
+        let mut u_ddot_tilde = Mat::<f64>::zeros(3, 3);
+        let mut omega_tilde_sq = Mat::<f64>::zeros(3, 3);
+        let mut rho_omega_tilde = Mat::<f64>::zeros(3, 3);
+        let mut rho_omega_dot_tilde = Mat::<f64>::zeros(3, 3);
         izip!(
             self.qp_kuu.col_iter_mut(),
             self.qp_m.iter(),
-            self.qp_eta.col_iter(),
+            self.qp_eta_tilde.col_iter(),
             self.qp_rho.col_iter(),
             self.qp_v.subrows(3, 3).col_iter(),  // omega
+            self.qp_omega_tilde.col_iter(),      // omega_tilde
             self.qp_vd.subrows(0, 3).col_iter(), // u_ddot
             self.qp_vd.subrows(3, 3).col_iter(), // omega_dot
+            self.qp_omega_dot_tilde.col_iter(),  // omega_dot_tilde
         )
         .for_each(
-            |(mut kuu_col, &m, eta, rho_col, omega, u_ddot, omega_dot)| {
+            |(
+                mut kuu_col,
+                &m,
+                eta_tilde_col,
+                rho_col,
+                omega,
+                omega_tilde_col,
+                u_ddot,
+                omega_dot,
+                omega_dot_tilde_col,
+            )| {
                 kuu_col.fill(0.);
                 let mut kuu = kuu_col.as_mat_mut(6, 6);
                 let rho = rho_col.as_mat_ref(3, 3);
-                let omega_tilde = vec_tilde(omega);
-                let omega_dot_tilde = vec_tilde(omega_dot);
-
-                let eta_tilde = vec_tilde(eta);
+                let eta_tilde = eta_tilde_col.as_mat_ref(3, 3);
+                let omega_tilde = omega_tilde_col.as_mat_ref(3, 3);
+                let omega_dot_tilde = omega_dot_tilde_col.as_mat_ref(3, 3);
+                vec_tilde2(u_ddot, u_ddot_tilde.as_mut());
+                vec_tilde2((rho * omega).as_ref(), rho_omega_tilde.as_mut());
+                vec_tilde2((rho * omega_dot).as_ref(), rho_omega_dot_tilde.as_mut());
 
                 let mut kuu12 = kuu.as_mut().submatrix_mut(0, 3, 3, 3);
-                kuu12.copy_from(
-                    (&omega_dot_tilde + &omega_tilde * &omega_tilde)
-                        * (Scale(m) * eta_tilde.transpose()),
+                matmul(
+                    omega_tilde_sq.as_mut(),
+                    omega_tilde.as_ref(),
+                    omega_tilde.as_ref(),
+                    None,
+                    1.,
+                    Parallelism::None,
+                );
+                matmul(
+                    kuu12.as_mut(),
+                    (&omega_dot_tilde + &omega_tilde_sq).as_ref(),
+                    eta_tilde.transpose(),
+                    None,
+                    m,
+                    Parallelism::None,
                 );
 
                 let mut kuu22 = kuu.as_mut().submatrix_mut(3, 3, 3, 3);
                 kuu22.copy_from(
-                    Scale(m) * vec_tilde(u_ddot) * eta_tilde
-                        + (rho * &omega_dot_tilde - vec_tilde((rho * omega_dot).as_ref())
-                            + &omega_tilde
-                                * (rho * &omega_tilde - vec_tilde((rho * omega).as_ref()))),
+                    Scale(m) * &u_ddot_tilde * eta_tilde + &rho * &omega_dot_tilde
+                        - &rho_omega_dot_tilde
+                        + &omega_tilde * (&rho * &omega_tilde - &rho_omega_tilde),
                 );
             },
         );
@@ -1179,6 +923,392 @@ impl Beams {
 }
 
 #[inline]
+// Calculate current position and rotation (x0 + u)
+fn calc_qp_x(x: MatMut<f64>, x0: MatRef<f64>, u: MatRef<f64>) {
+    izip!(x.col_iter_mut(), x0.col_iter(), u.col_iter()).for_each(|(mut x, x0, u)| {
+        x[0] = x0[0] + u[0];
+        x[1] = x0[1] + u[1];
+        x[2] = x0[2] + u[2];
+        x.subrows_mut(3, 4)
+            .quat_compose(u.subrows(3, 4), x0.subrows(3, 4));
+    });
+}
+
+#[inline]
+fn calc_qp_rr0(rr0: MatMut<f64>, x: MatRef<f64>) {
+    let mut m = Mat::<f64>::zeros(3, 3);
+    izip!(rr0.col_iter_mut(), x.subrows(3, 4).col_iter()).for_each(|(col, r)| {
+        let mut rr0 = col.as_mat_mut(6, 6);
+        quat_as_matrix(r, m.as_mut());
+        rr0.as_mut().submatrix_mut(0, 0, 3, 3).copy_from(&m);
+        rr0.as_mut().submatrix_mut(3, 3, 3, 3).copy_from(&m);
+    });
+}
+
+#[inline]
+fn calc_qp_mat(mat: MatMut<f64>, mat_star: MatRef<f64>, rr0: MatRef<f64>) {
+    let mut mat_tmp = Mat::<f64>::zeros(6, 6);
+    izip!(mat.col_iter_mut(), mat_star.col_iter(), rr0.col_iter()).for_each(
+        |(mat_col, mat_star_col, rr0_col)| {
+            let mat = mat_col.as_mat_mut(6, 6);
+            let mat_star = mat_star_col.as_mat_ref(6, 6);
+            let rr0 = rr0_col.as_mat_ref(6, 6);
+            matmul(mat_tmp.as_mut(), rr0, mat_star, None, 1., Parallelism::None);
+            matmul(
+                mat,
+                mat_tmp.as_ref(),
+                rr0.transpose(),
+                None,
+                1.,
+                Parallelism::None,
+            );
+        },
+    );
+}
+
+#[inline]
+fn calc_qp_m_eta_rho(
+    m: ColMut<f64>,
+    eta: MatMut<f64>,
+    eta_tilde: MatMut<f64>,
+    rho: MatMut<f64>,
+    muu: MatRef<f64>,
+) {
+    izip!(
+        m.iter_mut(),
+        eta.col_iter_mut(),
+        eta_tilde.col_iter_mut(),
+        rho.col_iter_mut(),
+        muu.col_iter()
+    )
+    .for_each(|(m, mut eta, eta_tilde_col, rho_col, muu_col)| {
+        let muu = muu_col.as_mat_ref(6, 6);
+        *m = muu[(0, 0)];
+        if *m == 0. {
+            eta.fill(0.);
+        } else {
+            eta[0] = muu[(5, 1)] / *m;
+            eta[1] = -muu[(5, 0)] / *m;
+            eta[2] = muu[(4, 0)] / *m;
+        }
+        let mut rho = rho_col.as_mat_mut(3, 3);
+        rho.copy_from(muu.submatrix(3, 3, 3, 3));
+        let eta_tilde = eta_tilde_col.as_mat_mut(3, 3);
+        vec_tilde2(eta.as_ref(), eta_tilde);
+    });
+}
+
+#[inline]
+fn calc_qp_strain(
+    strain: MatMut<f64>,
+    x0_prime: MatRef<f64>,
+    r: MatRef<f64>,
+    u_prime: MatRef<f64>,
+    r_prime: MatRef<f64>,
+) {
+    let mut r_x0_prime = Col::<f64>::zeros(3);
+    let mut r_deriv = Mat::<f64>::zeros(3, 4);
+    izip!(
+        strain.col_iter_mut(),
+        x0_prime.col_iter(),
+        u_prime.col_iter(),
+        r_prime.col_iter(),
+        r.col_iter()
+    )
+    .for_each(|(mut qp_strain, x0_prime, u_prime, r_prime, r)| {
+        quat_rotate_vector(r, x0_prime, r_x0_prime.as_mut());
+        zipped!(
+            &mut qp_strain.as_mut().subrows_mut(0, 3),
+            &x0_prime,
+            &u_prime,
+            &r_x0_prime
+        )
+        .for_each(|unzipped!(mut strain, x0_prime, u_prime, r_x0_prime)| {
+            *strain = *x0_prime + *u_prime - *r_x0_prime
+        });
+
+        quat_derivative(r, r_deriv.as_mut());
+        matmul(
+            qp_strain.subrows_mut(3, 3),
+            r_deriv.as_ref(),
+            r_prime,
+            None,
+            2.,
+            Parallelism::None,
+        );
+    });
+}
+
+#[inline]
+fn calc_qp_x0pupss(x0pupss: MatMut<f64>, x0_prime: MatRef<f64>, u_prime: MatRef<f64>) {
+    izip!(
+        x0pupss.col_iter_mut(),
+        x0_prime.col_iter(),
+        u_prime.col_iter()
+    )
+    .for_each(|(x0pupss_col, x0_prime, u_prime)| {
+        let x0pup = col![
+            x0_prime[0] + u_prime[0],
+            x0_prime[1] + u_prime[1],
+            x0_prime[2] + u_prime[2]
+        ];
+        vec_tilde2(x0pup.as_ref(), x0pupss_col.as_mat_mut(3, 3));
+    });
+}
+
+#[inline]
+fn calc_qp_fc(fc: MatMut<f64>, cuu: MatRef<f64>, strain: MatRef<f64>) {
+    izip!(fc.col_iter_mut(), cuu.col_iter(), strain.col_iter()).for_each(
+        |(fc, cuu_col, strain)| {
+            matmul(
+                fc,
+                cuu_col.as_mat_ref(6, 6),
+                strain,
+                None,
+                1.,
+                Parallelism::None,
+            );
+        },
+    );
+}
+
+#[inline]
+fn calc_qp_fd(fd: MatMut<f64>, fc: MatRef<f64>, x0pupss: MatRef<f64>) {
+    izip!(fd.col_iter_mut(), fc.col_iter(), x0pupss.col_iter(),).for_each(
+        |(fd, fc, x0pupss_col)| {
+            matmul(
+                fd.subrows_mut(3, 3),
+                x0pupss_col.as_mat_ref(3, 3).transpose(),
+                fc.subrows(0, 3), // N
+                None,
+                1.0,
+                Parallelism::None,
+            );
+        },
+    );
+}
+
+#[inline]
+fn calc_qp_fi(
+    fi: MatMut<f64>,
+    m: ColRef<f64>,
+    omega: MatRef<f64>,
+    omega_tilde: MatRef<f64>,
+    u_ddot: MatRef<f64>,
+    omega_dot: MatRef<f64>,
+    omega_dot_tilde: MatRef<f64>,
+    eta: MatRef<f64>,
+    eta_tilde: MatRef<f64>,
+    rho: MatRef<f64>,
+) {
+    let mut mat = Mat::<f64>::zeros(3, 3);
+    izip!(
+        fi.col_iter_mut(),
+        m.iter(),
+        omega.col_iter(),
+        omega_tilde.col_iter(),
+        u_ddot.col_iter(),
+        omega_dot.col_iter(),
+        omega_dot_tilde.col_iter(),
+        eta.col_iter(),
+        eta_tilde.col_iter(),
+        rho.col_iter(),
+    )
+    .for_each(
+        |(
+            mut fi,
+            &m,
+            omega,
+            omega_tilde_col,
+            u_ddot,
+            omega_dot,
+            omega_dot_tilde_col,
+            eta,
+            eta_tilde_col,
+            rho_col,
+        )| {
+            let omega_tilde = omega_tilde_col.as_mat_ref(3, 3);
+            let omega_dot_tilde = omega_dot_tilde_col.as_mat_ref(3, 3);
+            matmul(
+                mat.as_mut(),
+                omega_tilde.as_ref(),
+                omega_tilde.as_ref(),
+                None,
+                m,
+                Parallelism::None,
+            );
+            zipped!(mat.as_mut(), omega_dot_tilde.as_ref()).for_each(
+                |unzipped!(mut mat, omega_dot_tilde)| {
+                    *mat += m * *omega_dot_tilde;
+                },
+            );
+            let mut fi1 = fi.as_mut().subrows_mut(0, 3);
+            matmul(fi1.as_mut(), mat.as_ref(), eta, None, 1., Parallelism::None);
+            zipped!(&mut fi1, &u_ddot).for_each(|unzipped!(mut fi1, u_ddot)| *fi1 += *u_ddot * m);
+
+            let mut fi2 = fi.as_mut().subrows_mut(3, 3);
+            let rho = rho_col.as_mat_ref(3, 3);
+            matmul(
+                fi2.as_mut(),
+                eta_tilde_col.as_mat_ref(3, 3),
+                u_ddot,
+                None,
+                m,
+                Parallelism::None,
+            );
+            matmul(
+                fi2.as_mut(),
+                rho,
+                omega_dot,
+                Some(1.),
+                1.,
+                Parallelism::None,
+            );
+            matmul(mat.as_mut(), omega_tilde, rho, None, 1., Parallelism::None);
+            matmul(
+                fi2.as_mut(),
+                mat.as_ref(),
+                omega,
+                Some(1.),
+                1.,
+                Parallelism::None,
+            );
+        },
+    );
+}
+
+#[inline]
+fn calc_qp_fg(fg: MatMut<f64>, gravity: ColRef<f64>, m: ColRef<f64>, eta_tilde: MatRef<f64>) {
+    izip!(fg.col_iter_mut(), m.iter(), eta_tilde.col_iter(),).for_each(
+        |(mut fg, &m, eta_tilde_col)| {
+            zipped!(&mut fg.as_mut().subrows_mut(0, 3), &gravity)
+                .for_each(|unzipped!(mut fg, g)| *fg = *g * m);
+            matmul(
+                fg.as_mut().subrows_mut(3, 3),
+                eta_tilde_col.as_mat_ref(3, 3),
+                gravity.as_ref(),
+                None,
+                m,
+                Parallelism::None,
+            );
+        },
+    );
+}
+
+#[inline]
+fn calc_qp_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+    izip!(
+        ouu.col_iter_mut(),
+        cuu.col_iter(),
+        x0pupss.col_iter(),
+        fc.col_iter(),
+    )
+    .for_each(|(ouu_col, cuu_col, x0pupss_col, fc)| {
+        let mut ouu = ouu_col.as_mat_mut(6, 6);
+        let cuu = cuu_col.as_mat_ref(6, 6);
+        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+        let n_tilde = vec_tilde(fc.subrows(0, 3));
+        let m_tilde = vec_tilde(fc.subrows(3, 3));
+
+        ouu.fill(0.);
+
+        let mut ouu12 = ouu.as_mut().submatrix_mut(0, 3, 3, 3);
+        let c11 = cuu.submatrix(0, 0, 3, 3);
+        ouu12.copy_from(&n_tilde);
+        matmul(
+            ouu12.as_mut(),
+            c11,
+            x0pupss,
+            Some(-1.),
+            1.,
+            Parallelism::None,
+        );
+
+        let mut ouu22 = ouu.as_mut().submatrix_mut(3, 3, 3, 3);
+        let c21 = cuu.submatrix(3, 0, 3, 3);
+        ouu22.copy_from(&m_tilde);
+        matmul(
+            ouu22.as_mut(),
+            c21,
+            x0pupss,
+            Some(-1.),
+            1.,
+            Parallelism::None,
+        );
+    });
+}
+
+#[inline]
+fn calc_qp_puu(puu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+    izip!(
+        puu.col_iter_mut(),
+        cuu.col_iter(),
+        x0pupss.col_iter(),
+        fc.col_iter(),
+    )
+    .for_each(|(mut puu_col, cuu_col, x0pupss_col, fc)| {
+        puu_col.fill(0.);
+        let mut puu = puu_col.as_mat_mut(6, 6);
+        let cuu = cuu_col.as_mat_ref(6, 6);
+        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+
+        let c11 = cuu.submatrix(0, 0, 3, 3);
+        let c12 = cuu.submatrix(0, 3, 3, 3);
+
+        let mut puu21 = puu.as_mut().submatrix_mut(3, 0, 3, 3);
+        vec_tilde2(fc.subrows(0, 3), puu21.as_mut());
+        matmul(
+            puu21.as_mut(),
+            x0pupss.transpose(),
+            c11,
+            Some(1.),
+            1.,
+            Parallelism::None,
+        );
+
+        let mut puu22 = puu.as_mut().submatrix_mut(3, 3, 3, 3);
+        matmul(
+            puu22.as_mut(),
+            x0pupss.transpose(),
+            c12,
+            None,
+            1.,
+            Parallelism::None,
+        );
+    });
+}
+
+#[inline]
+fn calc_qp_quu(quu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+    let mut mat = Mat::<f64>::zeros(3, 3);
+    izip!(
+        quu.col_iter_mut(),
+        cuu.col_iter(),
+        x0pupss.col_iter(),
+        fc.col_iter(),
+    )
+    .for_each(|(mut quu_col, cuu_col, x0pupss_col, fc)| {
+        quu_col.fill(0.);
+        let mut quu = quu_col.as_mat_mut(6, 6);
+        let cuu = cuu_col.as_mat_ref(6, 6);
+        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+        vec_tilde2(fc.subrows(0, 3), mat.as_mut()); // n_tilde
+
+        let mut quu22 = quu.as_mut().submatrix_mut(3, 3, 3, 3);
+        let c11 = cuu.submatrix(0, 0, 3, 3);
+        matmul(mat.as_mut(), c11, x0pupss, Some(-1.), 1., Parallelism::None);
+        matmul(
+            quu22.as_mut(),
+            x0pupss.transpose(),
+            mat.as_ref(),
+            None,
+            1.,
+            Parallelism::None,
+        );
+    });
+}
+
+#[inline]
 fn integrate_fe(
     node_fe: MatMut<f64>,
     qp_fc: MatRef<f64>,
@@ -1249,7 +1379,7 @@ fn integrate_matrix(
     .map(|unzipped!(w, j, phi_i, phi_j)| (*w) * (*j) * (*phi_i) * (*phi_j));
     let mut acc = Col::<f64>::zeros(6 * 6);
     izip!(qp_mat.col_iter(), c.iter()).for_each(|(mat, &c)| {
-        acc += mat * c;
+        zipped!(&mut acc, &mat).for_each(|unzipped!(mut acc, mat)| *acc += *mat * c)
     });
     node_mat.copy_from(&acc);
 }
@@ -1267,33 +1397,70 @@ fn integrate_elastic_stiffness_matrix(
     qp_w: ColRef<f64>,
     qp_j: ColRef<f64>,
 ) {
-    let mut acc = Col::<f64>::zeros(6 * 6);
-    izip!(
-        qp_puu.col_iter(),
-        qp_quu.col_iter(),
-        qp_cuu.col_iter(),
-        qp_ouu.col_iter(),
-        qp_w.iter(),
-        qp_j.iter(),
-        shape_interp.col(node_i).iter(),
-        shape_interp.col(node_j).iter(),
-        shape_deriv.col(node_i).iter(),
-        shape_deriv.col(node_j).iter(),
-    )
-    .for_each(
-        |(puu, quu, cuu, ouu, &w, &j, &phi_i, &phi_j, &phip_i, &phip_j)| {
-            acc += puu * Scale(w * phi_i * phip_j)
-                + quu * Scale(w * phi_i * phi_j * j)
-                + cuu * Scale(w * phip_i * phip_j / j)
-                + ouu * Scale(w * phip_i * phi_j);
-        },
-    );
+    let phi_i = shape_interp.col(node_i);
+    let phi_j = shape_interp.col(node_j);
+    let phip_i = shape_deriv.col(node_i);
+    let phip_j = shape_deriv.col(node_j);
 
+    // Matrix to sum quadrature point contributions
+    let mut acc = Col::<f64>::zeros(6 * 6);
+
+    // Column of constants
+    let mut c = Col::<f64>::zeros(qp_w.nrows());
+
+    // Puu contribution
+    zipped!(&mut c, &qp_w, &phi_i, &phip_j)
+        .for_each(|unzipped!(mut c, w, phi_i, phip_j)| *c = *w * *phi_i * *phip_j);
+    // izip!(c.iter(), qp_puu.col_iter()).for_each(|(&c, puu)| acc += puu * c);
+    izip!(c.iter(), qp_puu.col_iter()).for_each(|(&c, puu)| {
+        zipped!(&mut acc, &puu).for_each(|unzipped!(mut acc, puu)| *acc += *puu * c)
+    });
+
+    // Quu contribution
+    zipped!(&mut c, &qp_w, &qp_j, &phi_i, &phi_j)
+        .for_each(|unzipped!(mut c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+    // izip!(c.iter(), qp_quu.col_iter()).for_each(|(&c, quu)| acc += quu * c);
+    izip!(c.iter(), qp_quu.col_iter()).for_each(|(&c, quu)| {
+        zipped!(&mut acc, &quu).for_each(|unzipped!(mut acc, quu)| *acc += *quu * c)
+    });
+
+    // Cuu contribution
+    zipped!(&mut c, &qp_w, &qp_j, &phip_i, &phip_j)
+        .for_each(|unzipped!(mut c, w, j, phip_i, phip_j)| *c = *w * *phip_i * *phip_j / *j);
+    // izip!(c.iter(), qp_cuu.col_iter()).for_each(|(&c, cuu)| acc += cuu * c);
+    izip!(c.iter(), qp_cuu.col_iter()).for_each(|(&c, cuu)| {
+        zipped!(&mut acc, &cuu).for_each(|unzipped!(mut acc, cuu)| *acc += *cuu * c)
+    });
+
+    // Ouu contribution
+    zipped!(&mut c, &qp_w, &phip_i, &phi_j)
+        .for_each(|unzipped!(mut c, w, phip_i, phi_j)| *c = *w * *phip_i * *phi_j);
+    // izip!(c.iter(), qp_ouu.col_iter()).for_each(|(&c, ouu)| acc += ouu * c);
+    izip!(c.iter(), qp_ouu.col_iter()).for_each(|(&c, ouu)| {
+        zipped!(&mut acc, &ouu).for_each(|unzipped!(mut acc, ouu)| *acc += *ouu * c)
+    });
+
+    // Copy values into node matrix
     node_mat.copy_from(acc);
 }
 
 pub fn vec_tilde(v: ColRef<f64>) -> Mat<f64> {
     mat![[0., -v[2], v[1]], [v[2], 0., -v[0]], [-v[1], v[0], 0.]]
+}
+
+pub fn vec_tilde2(v: ColRef<f64>, mut m: MatMut<f64>) {
+    // [0., -v[2], v[1]]
+    // [v[2], 0., -v[0]]
+    // [-v[1], v[0], 0.]
+    m[(0, 0)] = 0.;
+    m[(1, 0)] = v[2];
+    m[(2, 0)] = -v[1];
+    m[(0, 1)] = -v[2];
+    m[(1, 1)] = 0.;
+    m[(2, 1)] = v[0];
+    m[(0, 2)] = v[1];
+    m[(1, 2)] = -v[0];
+    m[(2, 2)] = 0.;
 }
 
 pub trait ColAsMatMut<'a, T>
@@ -1798,7 +1965,7 @@ mod tests {
                 [
                     0.0009414876868372797,
                     -0.0004838292834870028,
-                    0.0018199012459517439,
+                    0.0018188281296873665,
                     0.0184996868523541,
                     0.,
                     0.
@@ -1806,7 +1973,7 @@ mod tests {
                 [
                     0.004999015404948938,
                     -0.0028423419905453384,
-                    0.008276774088180464,
+                    0.008261426556751703,
                     0.0193408842119465,
                     0.,
                     0.
@@ -1982,7 +2149,7 @@ mod tests {
                 ],
                 [
                     7.576404967559343,
-                    11.196339225304033,
+                    11.196339225304024,
                     20.64526599682174,
                     29.63878267062455,
                     24.058301996624223,
@@ -2000,20 +2167,20 @@ mod tests {
             beams.qp_fc.subcols(0, 2).transpose(),
             mat![
                 [
-                    0.10234401633730722,
-                    0.15124301426586517,
-                    0.27888153411992583,
-                    0.4003682578806844,
-                    0.3249856974558686,
-                    0.5875965186045466,
+                    0.10234015755301376,
+                    0.15123731179112526,
+                    0.27887101915557216,
+                    0.4003531623743676,
+                    0.32497344417766216,
+                    0.5875743638338231
                 ],
                 [
-                    0.13312285679609867,
-                    0.19705919770592342,
-                    0.35345919812466475,
-                    0.5135500544961403,
-                    0.45037476570453555,
-                    0.7291157392479117,
+                    0.1330671495178759,
+                    0.19697673529625795,
+                    0.3533112877630318,
+                    0.513335151687895,
+                    0.45018629955393274,
+                    0.7288106297098473,
                 ]
             ],
             comp = float
@@ -2057,17 +2224,17 @@ mod tests {
                     0.,
                     0.,
                     0.,
-                    -0.12083515283409693,
-                    -0.24112031542042336,
-                    0.17510846788333717,
+                    0.12083059685899902,
+                    0.24111122420708941,
+                    -0.17510186558425117,
                 ],
                 [
                     0.,
                     0.,
                     0.,
-                    -0.10457449786878552,
-                    -0.3304488612116287,
-                    0.22361631497175743,
+                    0.10453073708428925,
+                    0.33031057987442675,
+                    -0.22352273933363573,
                 ]
             ],
             comp = float
@@ -2513,8 +2680,7 @@ mod tests {
                 [0.6, 0., -0.2, 2., 4., 6.], // column 5
                 [-0.4, 0.2, 0., 3., 6., 9.], // column 6
             ],
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2531,8 +2697,7 @@ mod tests {
                 [5., 10., 15., 20., 25., 30.], // column 5
                 [6., 12., 18., 24., 30., 36.], // column 6
             ],
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2551,8 +2716,7 @@ mod tests {
                 0.0
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2571,8 +2735,7 @@ mod tests {
                 0.0
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2594,35 +2757,7 @@ mod tests {
                 -0.17577276797940944
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
-        );
-    }
-
-    #[test]
-    fn test_qp_rr02() {
-        let beams = setup_test();
-        let mut rr0 = Col::<f64>::zeros(4);
-        rr0.as_mut().quat_compose(
-            beams.qp_u.col(0).subrows(3, 4),
-            beams.qp_x0.col(0).subrows(3, 4),
-        );
-        let mut m = Mat::<f64>::zeros(3, 3);
-        rr0.as_mut().quat_as_matrix(m.as_mut());
-        assert_matrix_eq!(
-            // beams.qp_rr0.col(0).as_mat_ref(6, 6).submatrix(0, 0, 3, 3),
-            m,
-            mat![
-                [0.9246873610951006, 0.34700636042507577, -0.156652066872805],
-                [-0.3426571011111718, 0.937858102036658, 0.05484789423748749],
-                [
-                    0.16594997827377847,
-                    0.002960788533623304,
-                    0.9861297269843315
-                ]
-            ],
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2640,8 +2775,7 @@ mod tests {
                 0.0
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2685,7 +2819,7 @@ mod tests {
                 ],
                 [
                     4.190329885612304,
-                    6.192429663690275,
+                    6.1924296636902705,
                     11.418406945420463,
                     16.392507703808057,
                     13.3060762043738,
@@ -2711,16 +2845,15 @@ mod tests {
         assert_matrix_eq!(
             beams.qp_fc.col(0).as_2d(),
             col![
-                0.10234015755301404,
-                0.15123731179112573,
-                0.2788710191555731,
-                0.4003531623743687,
-                0.3249734441776631,
-                0.587574363833825
+                0.1023401575530157,
+                0.15123731179112812,
+                0.2788710191555775,
+                0.40035316237437524,
+                0.3249734441776684,
+                0.5875743638338343
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2733,13 +2866,12 @@ mod tests {
                 0.0,
                 0.0,
                 0.0,
-                0.12083059685899937,
-                0.2411112242070902,
-                -0.1751018655842517
+                0.12083059685900131,
+                0.24111122420709402,
+                -0.1751018655842545
             ]
             .as_2d(),
-            comp = float,
-            ulp = 1
+            comp = float
         );
     }
 
@@ -2767,12 +2899,12 @@ mod tests {
         assert_matrix_eq!(
             beams.node_fe.col(0).as_2d(),
             col![
-                -0.11121183449279078,
-                -0.16149482899687723,
-                -0.30437442031624473,
-                -0.40385243171727625,
-                -0.29275354335733944,
-                -0.6838427114868826
+                -0.11121183449279251,
+                -0.1614948289968797,
+                -0.30437442031624906,
+                -0.4038524317172822,
+                -0.29275354335734394,
+                -0.6838427114868927
             ]
             .as_2d(),
             comp = float
@@ -2821,12 +2953,12 @@ mod tests {
         assert_matrix_eq!(
             beams.node_f.col(0).as_2d(),
             col![
-                -0.11109578892870146,
-                -0.162145565266495,
+                -0.1110957889287032,
+                -0.16214556526649748,
                 -5.692583289841486,
-                -1.3188329033929058,
-                0.3171127897064757,
-                -0.6863295548415552
+                -1.3188329033929111,
+                0.3171127897064705,
+                -0.6863295548415653
             ]
             .as_2d(),
             comp = float

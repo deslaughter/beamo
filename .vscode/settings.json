@@ -2,10 +2,13 @@
     "editor.formatOnPaste": true,
     "editor.formatOnSave": true,
     "cSpell.words": [
+        "atol",
         "consts",
+        "dofs",
         "faer",
         "itertools",
         "izip",
+        "linalg",
         "matmul",
         "ncols",
         "nrows",

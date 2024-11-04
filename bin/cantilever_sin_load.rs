@@ -1,3 +1,5 @@
+use std::process;
+
 use faer::{mat, Scale};
 
 use itertools::{izip, Itertools};
@@ -11,7 +13,7 @@ use ottr::{
 };
 
 fn main() {
-    let xi = gauss_legendre_lobotto_points(2);
+    let xi = gauss_legendre_lobotto_points(4);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
 
     // Quadrature rule
@@ -83,11 +85,14 @@ fn main() {
     let mut state = State::new(&nodes);
 
     for i in 2..10000 {
-        // println!("step {i}");
-        solver.fx[solver.n_system_dofs - 4] = 100. * (10.0 * (i as f64) * time_step).sin();
+        solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * (i as f64) * time_step).sin();
         let res = solver.step(&mut state, &mut beams);
         if !res.converged {
-            break;
+            println!("failed!");
+            process::exit(1);
         }
+        // println!("{} {}", i, state.u[(2, solver.n_nodes - 1)]);
     }
+
+    println!("success")
 }

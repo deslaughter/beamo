@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "cantilever_sin_load"
-path = "src/bin.rs"
+path = "bin/cantilever_sin_load.rs"
 
 [dependencies]
 approx = "0.5.1"
