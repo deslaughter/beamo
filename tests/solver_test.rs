@@ -6,7 +6,7 @@ use ottr::{
     interp::gauss_legendre_lobotto_points,
     node::NodeBuilder,
     quadrature::Quadrature,
-    quaternion::{quat_derivative, quat_rotate_vector, Quat},
+    quaternion::{quat_derivative, quat_rotate_vector},
     solver::{Solver, StepParameters},
     state::State,
 };

@@ -85,8 +85,13 @@ fn main() {
     let mut state = State::new(&nodes);
 
     for i in 2..10000 {
+        // Apply sine force on z direction of last node
         solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * (i as f64) * time_step).sin();
+
+        // Take step and get convergence result
         let res = solver.step(&mut state, &mut beams);
+
+        // Exit if failed to converge
         if !res.converged {
             println!("failed!");
             process::exit(1);
