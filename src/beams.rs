@@ -12,7 +12,11 @@ use faer::{
 use itertools::{izip, multiunzip, Itertools};
 
 pub struct BeamInput {
+    /// Gravity in XYZ directions
     pub gravity: [f64; 3],
+    /// Damping formulation
+    pub damping: Damping,
+    /// Vector of beam elements
     pub elements: Vec<BeamElement>,
 }
 
@@ -37,9 +41,18 @@ impl BeamNode {
 }
 
 pub struct BeamSection {
-    pub s: f64,           // Distance along centerline from first point
-    pub m_star: Mat<f64>, // [6][6] Mass matrix
-    pub c_star: Mat<f64>, // [6][6] Stiffness matrix
+    /// Distance along centerline from first point
+    pub s: f64,
+    /// Mass matrix `[6][6]`
+    pub m_star: Mat<f64>,
+    /// Stiffness matrix `[6][6]`
+    pub c_star: Mat<f64>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Damping {
+    None,
+    Mu(Col<f64>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,57 +68,123 @@ pub struct ElemIndex {
 pub struct Beams {
     elem_index: Vec<ElemIndex>,
     node_ids: Vec<usize>,
-    gravity: Col<f64>, // [3] gravity
+    gravity: Col<f64>, // Gravity components `[3]`
+    damping: Damping,  // Damping formulation
 
-    // Node-based data
-    node_x0: Mat<f64>,     // [7][n_nodes] Initial position/rotation
-    node_u: Mat<f64>,      // [7][n_nodes] State: translation/rotation displacement
-    node_v: Mat<f64>,      // [6][n_nodes] State: translation/rotation velocity
-    node_vd: Mat<f64>,     // [6][n_nodes] State: translation/rotation acceleration
-    pub node_fe: Mat<f64>, // [6][n_nodes] Elastic forces
-    pub node_fi: Mat<f64>, // [6][n_nodes] Internal forces
-    pub node_fx: Mat<f64>, // [6][n_nodes] External forces
-    pub node_fg: Mat<f64>, // [6][n_nodes] Gravity forces
-    pub node_f: Mat<f64>,  // [6][n_nodes] total forces
-    node_muu: Mat<f64>,    // [6][n_nodes*max_nodes] mass matrices
-    node_guu: Mat<f64>,    // [6][n_nodes*max_nodes] gyro matrices
-    node_ke: Mat<f64>,     // [6][n_nodes*max_nodes] stiff matrices
-    node_ki: Mat<f64>,     // [6][n_nodes*max_nodes] stiff matrices
+    /// Initial position/rotation `[7][n_nodes]`
+    pub node_x0: Mat<f64>,
+    /// State: translation/rotation displacement `[7][n_nodes]`
+    pub node_u: Mat<f64>,
+    /// State: translation/rotation velocity `[6][n_nodes]`
+    pub node_v: Mat<f64>,
+    /// State: translation/rotation acceleration `[6][n_nodes]`
+    pub node_vd: Mat<f64>,
+    /// Elastic forces `[6][n_nodes]`
+    pub node_fe: Mat<f64>,
+    /// Dissipative forces `[6][n_nodes]`
+    pub node_fd: Mat<f64>,
+    /// Internal forces `[6][n_nodes]`
+    pub node_fi: Mat<f64>,
+    /// External forces `[6][n_nodes]`
+    pub node_fx: Mat<f64>,
+    /// Gravity forces `[6][n_nodes]`
+    pub node_fg: Mat<f64>,
+    /// total forces `[6][n_nodes]`
+    pub node_f: Mat<f64>,
+    /// mass matrices `[6][n_nodes*max_nodes]`
+    pub node_muu: Mat<f64>,
+    /// gyro matrices `[6][n_nodes*max_nodes]`
+    pub node_guu: Mat<f64>,
+    /// stiff matrices `[6][n_nodes*max_nodes]`
+    pub node_kuu: Mat<f64>,
 
-    // Quadrature point data
-    pub qp_weight: Col<f64>,   // [n_qps]        Integration weights
-    pub qp_jacobian: Col<f64>, // [n_qps]        Jacobian vector
-    pub qp_m_star: Mat<f64>,   // [6][6][n_qps]  Mass matrix in material frame
-    pub qp_c_star: Mat<f64>,   // [6][6][n_qps]  Stiffness matrix in material frame
-    pub qp_x: Mat<f64>,        // [7][n_qps]     Current position/orientation
-    pub qp_x0: Mat<f64>,       // [7][n_qps]     Initial position
-    pub qp_x0_prime: Mat<f64>, // [7][n_qps]     Initial position derivative
-    pub qp_u: Mat<f64>,        // [7][n_qps]     State: displacement
-    pub qp_u_prime: Mat<f64>,  // [7][n_qps]     State: displacement derivative
-    pub qp_v: Mat<f64>,        // [6][n_qps]     State: velocity
-    pub qp_vd: Mat<f64>,       // [6][n_qps]     State: acceleration
-    pub qp_x0pupss: Mat<f64>,  // [3][3][n_qps]  skew_symmetric(x0_prime + u_prime)
-    pub qp_m: Col<f64>,        // [n_qps]        mass
-    pub qp_eta: Mat<f64>,      // [3][n_qps]     mass
-    pub qp_rho: Mat<f64>,      // [3][3][n_qps]  mass
-    pub qp_strain: Mat<f64>,   // [6][n_qps]     Strain
-    pub qp_fc: Mat<f64>,       // [6][n_qps]     Elastic force
-    pub qp_fd: Mat<f64>,       // [6][n_qps]     Elastic force
-    pub qp_fi: Mat<f64>,       // [6][n_qps]     Inertial force
-    pub qp_fx: Mat<f64>,       // [6][n_qps]     External force
-    pub qp_fg: Mat<f64>,       // [6][n_qps]     Gravity force
-    pub qp_rr0: Mat<f64>,      // [6][6][n_qps]  Global rotation
-    pub qp_muu: Mat<f64>,      // [6][6][n_qps]  Mass in global frame
-    pub qp_cuu: Mat<f64>,      // [6][6][n_qps]  Stiffness in global frame
-    pub qp_ouu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_puu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_quu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_guu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
-    pub qp_kuu: Mat<f64>,      // [6][6][n_qps]  Linearization matrices
+    /// Integration weights `[n_qps]`
+    pub qp_weight: Col<f64>,
+    /// Jacobian vector `[n_qps]`
+    pub qp_jacobian: Col<f64>,
+    /// Mass matrix in material frame `[6][6][n_qps]`
+    pub qp_m_star: Mat<f64>,
+    /// Stiffness matrix in material frame `[6][6][n_qps]`
+    pub qp_c_star: Mat<f64>,
+    /// Current position/orientation `[7][n_qps]`
+    pub qp_x: Mat<f64>,
+    /// Initial position `[7][n_qps]`
+    pub qp_x0: Mat<f64>,
+    /// Initial position derivative `[7][n_qps]`
+    pub qp_x0_prime: Mat<f64>,
+    /// State: displacement `[7][n_qps]`
+    pub qp_u: Mat<f64>,
+    /// State: displacement derivative `[7][n_qps]`
+    pub qp_u_prime: Mat<f64>,
+    /// State: velocity `[6][n_qps]`
+    pub qp_v: Mat<f64>,
+    /// State: acceleration `[6][n_qps]`
+    pub qp_vd: Mat<f64>,
+    /// skew_symmetric(x0_prime + u_prime) `[3][3][n_qps]`
+    pub qp_x0pupss: Mat<f64>,
+    /// mass `[n_qps]`
+    pub qp_m: Col<f64>,
+    /// mass `[3][n_qps]`
+    pub qp_eta: Mat<f64>,
+    /// mass `[3][3][n_qps]`
+    pub qp_rho: Mat<f64>,
+    /// Strain `[6][n_qps]`
+    pub qp_strain: Mat<f64>,
+    /// Strain Rate `[6][n_qps]`
+    pub qp_strain_dot: Mat<f64>,
+    /// Elastic force C `[6][n_qps]`
+    pub qp_fe_c: Mat<f64>,
+    /// Elastic force D `[6][n_qps]`
+    pub qp_fe_d: Mat<f64>,
+    /// Dissipative force C `[6][n_qps]`
+    pub qp_fd_c: Mat<f64>,
+    /// Dissipative force D `[6][n_qps]`
+    pub qp_fd_d: Mat<f64>,
+    /// Inertial force `[6][n_qps]`
+    pub qp_fi: Mat<f64>,
+    /// External force `[6][n_qps]`
+    pub qp_fx: Mat<f64>,
+    /// Gravity force `[6][n_qps]`
+    pub qp_fg: Mat<f64>,
+    /// Global rotation `[6][6][n_qps]`
+    pub qp_rr0: Mat<f64>,
+    /// Inertial mass matrices `[6][6][n_qps]`
+    pub qp_muu: Mat<f64>,
+    /// Elastic stiffness matrices `[6][6][n_qps]`
+    pub qp_cuu: Mat<f64>,
+    /// Damped stiffness in global frame `[6][6][n_qps]`
+    pub qp_mu_cuu: Mat<f64>,
+    /// Elastic stiffness matrices `[6][6][n_qps]`
+    pub qp_oe: Mat<f64>,
+    /// Elastic stiffness matrices `[6][6][n_qps]`
+    pub qp_pe: Mat<f64>,
+    /// Elastic stiffness matrices `[6][6][n_qps]`
+    pub qp_qe: Mat<f64>,
+    /// Inertial gyroscopic matrices `[6][6][n_qps]`
+    pub qp_gi: Mat<f64>,
+    /// Inertial stiffness matrices `[6][6][n_qps]`
+    pub qp_ki: Mat<f64>,
+    /// Dissipative elastic matrices `[6][6][n_qps]`
+    pub qp_pd: Mat<f64>,
+    /// Dissipative elastic matrices `[6][6][n_qps]`
+    pub qp_qd: Mat<f64>,
+    /// Dissipative elastic matrices `[6][6][n_qps]`
+    pub qp_xd: Mat<f64>,
+    /// Dissipative elastic matrices `[6][6][n_qps]`
+    pub qp_yd: Mat<f64>,
+    /// Dissipative inertial matrices `[6][6][n_qps]`
+    pub qp_sd: Mat<f64>,
+    /// Dissipative inertial matrices `[6][6][n_qps]`
+    pub qp_od: Mat<f64>,
+    /// Dissipative inertial matrices `[6][6][n_qps]`
+    pub qp_gd: Mat<f64>,
+    /// Dissipative inertial matrices `[6][6][n_qps]`
+    pub qp_ed: Mat<f64>,
 
-    // Shape Function data
-    pub shape_interp: Mat<f64>, // [n_qps][max_nodes] Shape function values
-    pub shape_deriv: Mat<f64>,  // [n_qps][max_nodes] Shape function derivatives
+    /// Shape function values `[n_qps][max_nodes]`
+    pub shape_interp: Mat<f64>,
+    /// Shape function derivatives `[n_qps][max_nodes]`
+    pub shape_deriv: Mat<f64>,
 }
 
 impl Beams {
@@ -179,46 +258,25 @@ impl Beams {
             elem_index: index,
             node_ids,
             gravity: Col::from_fn(3, |i| inp.gravity[i]),
+            damping: inp.damping.clone(),
 
             // Nodes
-            node_x0: Mat::from_fn(
-                7,
-                alloc_nodes,
-                |i, j| if j < x0.len() { x0[j][i] } else { 0. },
-            ),
-            node_u: Mat::from_fn(
-                7,
-                alloc_nodes,
-                |i, j| if j < u.len() { u[j][i] } else { 0. },
-            ),
-            node_v: Mat::from_fn(
-                6,
-                alloc_nodes,
-                |i, j| if j < v.len() { v[j][i] } else { 0. },
-            ),
-            node_vd: Mat::from_fn(
-                6,
-                alloc_nodes,
-                |i, j| if j < vd.len() { vd[j][i] } else { 0. },
-            ),
+            node_x0: Mat::from_fn(7, alloc_nodes, |i, j| x0[j][i]),
+            node_u: Mat::from_fn(7, alloc_nodes, |i, j| u[j][i]),
+            node_v: Mat::from_fn(6, alloc_nodes, |i, j| v[j][i]),
+            node_vd: Mat::from_fn(6, alloc_nodes, |i, j| vd[j][i]),
             node_fe: Mat::zeros(6, alloc_nodes),
+            node_fd: Mat::zeros(6, alloc_nodes),
             node_fi: Mat::zeros(6, alloc_nodes),
             node_fx: Mat::zeros(6, alloc_nodes),
             node_fg: Mat::zeros(6, alloc_nodes),
             node_f: Mat::zeros(6, alloc_nodes),
             node_muu: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
             node_guu: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
-            node_ke: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
-            node_ki: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
+            node_kuu: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
 
             // Quadrature points
-            qp_weight: Col::from_fn(alloc_qps, |i| {
-                if i < qp_weights.len() {
-                    qp_weights[i]
-                } else {
-                    0.
-                }
-            }),
+            qp_weight: Col::from_fn(alloc_qps, |i| qp_weights[i]),
             qp_jacobian: Col::ones(alloc_qps),
             qp_m_star: Mat::zeros(6 * 6, alloc_qps),
             qp_c_star: Mat::zeros(6 * 6, alloc_qps),
@@ -234,23 +292,32 @@ impl Beams {
             qp_eta: Mat::zeros(3, alloc_qps),
             qp_rho: Mat::zeros(3 * 3, alloc_qps),
             qp_strain: Mat::zeros(6, alloc_qps),
-            qp_fc: Mat::zeros(6, alloc_qps),
-            qp_fd: Mat::zeros(6, alloc_qps),
+            qp_strain_dot: Mat::zeros(6, alloc_qps),
+            qp_fe_c: Mat::zeros(6, alloc_qps),
+            qp_fe_d: Mat::zeros(6, alloc_qps),
+            qp_fd_c: Mat::zeros(6, alloc_qps),
+            qp_fd_d: Mat::zeros(6, alloc_qps),
             qp_fi: Mat::zeros(6, alloc_qps),
             qp_fx: Mat::zeros(6, alloc_qps),
             qp_fg: Mat::zeros(6, alloc_qps),
             qp_rr0: Mat::zeros(6 * 6, alloc_qps),
             qp_muu: Mat::zeros(6 * 6, alloc_qps),
             qp_cuu: Mat::zeros(6 * 6, alloc_qps),
-            qp_ouu: Mat::zeros(6 * 6, alloc_qps),
-            qp_puu: Mat::zeros(6 * 6, alloc_qps),
-            qp_quu: Mat::zeros(6 * 6, alloc_qps),
-            qp_guu: Mat::zeros(6 * 6, alloc_qps),
-            qp_kuu: Mat::zeros(6 * 6, alloc_qps),
+            qp_mu_cuu: Mat::zeros(6 * 6, alloc_qps),
+            qp_oe: Mat::zeros(6 * 6, alloc_qps),
+            qp_pe: Mat::zeros(6 * 6, alloc_qps),
+            qp_qe: Mat::zeros(6 * 6, alloc_qps),
+            qp_gi: Mat::zeros(6 * 6, alloc_qps),
+            qp_ki: Mat::zeros(6 * 6, alloc_qps),
+            qp_pd: Mat::zeros(6 * 6, alloc_qps),
+            qp_qd: Mat::zeros(6 * 6, alloc_qps),
+            qp_xd: Mat::zeros(6 * 6, alloc_qps),
+            qp_yd: Mat::zeros(6 * 6, alloc_qps),
+            qp_sd: Mat::zeros(6 * 6, alloc_qps),
+            qp_od: Mat::zeros(6 * 6, alloc_qps),
+            qp_gd: Mat::zeros(6 * 6, alloc_qps),
+            qp_ed: Mat::zeros(6 * 6, alloc_qps),
 
-            // residual_vector_terms: Mat::zeros(6, alloc_nodes),
-            // stiffness_matrix_terms: Mat::zeros(6 * 6, alloc_nodes), //6x6
-            // inertia_matrix_terms: Mat::zeros(6 * 6, alloc_nodes),   //6x6
             shape_interp: Mat::zeros(alloc_qps, max_elem_nodes),
             shape_deriv: Mat::zeros(alloc_qps, max_elem_nodes),
         };
@@ -432,10 +499,10 @@ impl Beams {
 
     pub fn assemble_system(
         &self,
-        mut m: MatMut<f64>,
-        mut g: MatMut<f64>,
-        mut k: MatMut<f64>,
-        mut r: ColMut<f64>,
+        mut m: MatMut<f64>, // Mass
+        mut g: MatMut<f64>, // Damping
+        mut k: MatMut<f64>, // Stiffness
+        mut r: ColMut<f64>, // Residual
     ) {
         // Loop through elements
         self.elem_index.iter().for_each(|ei| {
@@ -450,39 +517,43 @@ impl Beams {
                 .collect_vec();
 
             // Mass matrix
-            let muu = self
-                .node_muu
-                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            izip!(elem_dof_start_pairs.iter(), muu.col_iter()).for_each(|((i, j), muu)| {
+            izip!(
+                elem_dof_start_pairs.iter(),
+                self.node_muu
+                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                    .col_iter()
+            )
+            .for_each(|((i, j), muu)| {
                 let mut me = m.as_mut().submatrix_mut(*i, *j, 6, 6);
                 zipped!(&mut me, &muu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut me, muu)| *me += *muu);
             });
 
-            // Gyroscopic matrix
-            let guu = self
-                .node_guu
-                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            izip!(elem_dof_start_pairs.iter(), guu.col_iter()).for_each(|((i, j), guu)| {
+            // Damping matrix
+            izip!(
+                elem_dof_start_pairs.iter(),
+                self.node_guu
+                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                    .col_iter(),
+            )
+            .for_each(|((i, j), guu)| {
                 let mut ge = g.as_mut().submatrix_mut(*i, *j, 6, 6);
                 zipped!(&mut ge, &guu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut ge, guu)| *ge += *guu);
             });
 
             // Stiffness matrix
-            let ke = self
-                .node_ke
-                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            let ki = self
-                .node_ki
-                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            izip!(elem_dof_start_pairs.iter(), ke.col_iter(), ki.col_iter()).for_each(
-                |((i, j), ke, ki)| {
-                    let mut kt = k.as_mut().submatrix_mut(*i, *j, 6, 6);
-                    zipped!(&mut kt, &ke.as_mat_ref(6, 6), &ki.as_mat_ref(6, 6))
-                        .for_each(|unzipped!(mut kt, ke, ki)| *kt += *ke + *ki);
-                },
-            );
+            izip!(
+                elem_dof_start_pairs.iter(),
+                self.node_kuu
+                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                    .col_iter()
+            )
+            .for_each(|((i, j), kuu)| {
+                let mut ke = k.as_mut().submatrix_mut(*i, *j, 6, 6);
+                zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
+                    .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
+            });
         });
 
         // Residual vector
@@ -492,8 +563,8 @@ impl Beams {
             .map(|id| id * 6)
             .zip(self.node_f.col_iter())
         {
-            let mut resid = r.as_mut().subrows_mut(i, 6);
-            zipped!(&mut resid, &f).for_each(|unzipped!(mut r, f)| *r += *f);
+            let mut residual = r.as_mut().subrows_mut(i, 6);
+            zipped!(&mut residual, &f).for_each(|unzipped!(mut r, f)| *r += *f);
         }
     }
 
@@ -585,6 +656,12 @@ impl Beams {
             self.qp_c_star.as_ref(),
             self.qp_rr0.as_ref(),
         );
+        calc_qp_mu_cuu(
+            &self.damping,
+            self.qp_mu_cuu.as_mut(),
+            self.qp_cuu.as_ref(),
+            self.qp_rr0.as_ref(),
+        );
         calc_qp_m_eta_rho(
             self.qp_m.as_mut(),
             self.qp_eta.as_mut(),
@@ -603,22 +680,22 @@ impl Beams {
             self.qp_x0_prime.subrows(0, 3),
             self.qp_u_prime.subrows(0, 3),
         );
-        calc_qp_fc(
-            self.qp_fc.as_mut(),
+        calc_qp_fe_c(
+            self.qp_fe_c.as_mut(),
             self.qp_cuu.as_ref(),
             self.qp_strain.as_ref(),
         );
-        calc_qp_fd(
-            self.qp_fd.as_mut(),
-            self.qp_fc.as_ref(),
+        calc_qp_fe_d(
+            self.qp_fe_d.as_mut(),
+            self.qp_fe_c.as_ref(),
             self.qp_x0pupss.as_ref(),
         );
         calc_qp_fi(
             self.qp_fi.as_mut(),
             self.qp_m.as_ref(),
-            self.qp_v.subrows(3, 3).as_ref(),  // omega
-            self.qp_vd.subrows(0, 3).as_ref(), // u_ddot
-            self.qp_vd.subrows(3, 3).as_ref(), // omega_dot
+            self.qp_v.subrows(3, 3).as_ref(),
+            self.qp_vd.subrows(0, 3).as_ref(),
+            self.qp_vd.subrows(3, 3).as_ref(),
             self.qp_eta.as_ref(),
             self.qp_rho.as_ref(),
         );
@@ -629,32 +706,32 @@ impl Beams {
             self.qp_eta.as_ref(),
         );
         calc_qp_ouu(
-            self.qp_ouu.as_mut(),
+            self.qp_oe.as_mut(),
             self.qp_cuu.as_ref(),
             self.qp_x0pupss.as_ref(),
-            self.qp_fc.as_ref(),
+            self.qp_fe_c.as_ref(),
         );
         calc_qp_puu(
-            self.qp_puu.as_mut(),
+            self.qp_pe.as_mut(),
             self.qp_cuu.as_ref(),
             self.qp_x0pupss.as_ref(),
-            self.qp_fc.as_ref(),
+            self.qp_fe_c.as_ref(),
         );
         calc_qp_quu(
-            self.qp_quu.as_mut(),
+            self.qp_qe.as_mut(),
             self.qp_cuu.as_ref(),
             self.qp_x0pupss.as_ref(),
-            self.qp_fc.as_ref(),
+            self.qp_fe_c.as_ref(),
         );
         calc_qp_guu(
-            self.qp_guu.as_mut(),
+            self.qp_gi.as_mut(),
             self.qp_m.as_ref(),
             self.qp_eta.as_ref(),
             self.qp_rho.as_ref(),
             self.qp_v.subrows(3, 3),
         );
         calc_qp_kuu(
-            self.qp_kuu.as_mut(),
+            self.qp_ki.as_mut(),
             self.qp_m.as_ref(),
             self.qp_eta.as_ref(),
             self.qp_rho.as_ref(),
@@ -666,6 +743,13 @@ impl Beams {
 
     #[inline]
     fn integrate_forces(&mut self) {
+        // Zero matrices
+        self.node_fe.fill(0.);
+        self.node_fi.fill(0.);
+        self.node_fx.fill(0.);
+        self.node_fg.fill(0.);
+
+        // Loop through elements
         for ei in self.elem_index.iter() {
             let shape_interp = self
                 .shape_interp
@@ -677,8 +761,8 @@ impl Beams {
             let qp_j = self.qp_jacobian.subrows(ei.i_qp_start, ei.n_qps);
             integrate_fe(
                 self.node_fe.subcols_mut(ei.i_node_start, ei.n_nodes),
-                self.qp_fc.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp_fd.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp_fe_c.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp_fe_d.subcols(ei.i_qp_start, ei.n_qps),
                 shape_interp,
                 shape_deriv,
                 qp_w,
@@ -720,6 +804,11 @@ impl Beams {
 
     #[inline]
     fn integrate_matrices(&mut self) {
+        self.node_muu.fill(0.);
+        self.node_guu.fill(0.);
+        self.node_kuu.fill(0.);
+
+        // Loop through elements
         for ei in self.elem_index.iter() {
             let shape_interp = self
                 .shape_interp
@@ -730,6 +819,7 @@ impl Beams {
             let qp_w = self.qp_weight.subrows(ei.i_qp_start, ei.n_qps);
             let qp_j = self.qp_jacobian.subrows(ei.i_qp_start, ei.n_qps);
 
+            // Mass
             let node_muu = self
                 .node_muu
                 .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
@@ -741,10 +831,11 @@ impl Beams {
                     integrate_matrix(i, j, muu_col.as_mut(), qp_muu, shape_interp, qp_w, qp_j);
                 });
 
+            // Gyroscopic
             let node_guu = self
                 .node_guu
                 .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            let qp_guu = self.qp_guu.subcols(ei.i_qp_start, ei.n_qps);
+            let qp_guu = self.qp_gi.subcols(ei.i_qp_start, ei.n_qps);
             (0..ei.n_nodes)
                 .cartesian_product(0..ei.n_nodes)
                 .zip(node_guu.col_iter_mut())
@@ -752,18 +843,19 @@ impl Beams {
                     integrate_matrix(i, j, guu_col, qp_guu, shape_interp, qp_w, qp_j);
                 });
 
-            let mut node_ki = self
-                .node_ki
+            // Inertial Stiffness
+            let mut node_kuu = self
+                .node_kuu
                 .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            let qp_kuu = self.qp_kuu.subcols(ei.i_qp_start, ei.n_qps);
+            let qp_kuu = self.qp_ki.subcols(ei.i_qp_start, ei.n_qps);
             (0..ei.n_nodes)
                 .cartesian_product(0..ei.n_nodes)
-                .zip(node_ki.as_mut().col_iter_mut())
-                .for_each(|((i, j), mut ki_col)| {
+                .zip(node_kuu.as_mut().col_iter_mut())
+                .for_each(|((i, j), mut kuu_col)| {
                     integrate_matrix(
                         i,
                         j,
-                        ki_col.as_mut(),
+                        kuu_col.as_mut(),
                         qp_kuu.as_ref(),
                         shape_interp.as_ref(),
                         qp_w.as_ref(),
@@ -771,21 +863,19 @@ impl Beams {
                     );
                 });
 
-            let mut node_ke = self
-                .node_ke
-                .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes);
-            let qp_puu = self.qp_puu.subcols(ei.i_qp_start, ei.n_qps);
-            let qp_quu = self.qp_quu.subcols(ei.i_qp_start, ei.n_qps);
+            // Elastic Stiffness
+            let qp_puu = self.qp_pe.subcols(ei.i_qp_start, ei.n_qps);
+            let qp_quu = self.qp_qe.subcols(ei.i_qp_start, ei.n_qps);
             let qp_cuu = self.qp_cuu.subcols(ei.i_qp_start, ei.n_qps);
-            let qp_ouu = self.qp_ouu.subcols(ei.i_qp_start, ei.n_qps);
+            let qp_ouu = self.qp_oe.subcols(ei.i_qp_start, ei.n_qps);
             (0..ei.n_nodes)
                 .cartesian_product(0..ei.n_nodes)
-                .zip(node_ke.as_mut().col_iter_mut())
-                .for_each(|((i, j), mut ke_col)| {
+                .zip(node_kuu.as_mut().col_iter_mut())
+                .for_each(|((i, j), mut kuu_col)| {
                     integrate_elastic_stiffness_matrix(
                         i,
                         j,
-                        ke_col.as_mut(),
+                        kuu_col.as_mut(),
                         qp_puu.as_ref(),
                         qp_quu.as_ref(),
                         qp_cuu.as_ref(),
@@ -801,7 +891,7 @@ impl Beams {
 }
 
 #[inline]
-// Calculate current position and rotation (x0 + u)
+/// Calculate current position and rotation (x0 + u)
 fn calc_qp_x(x: MatMut<f64>, x0: MatRef<f64>, u: MatRef<f64>) {
     izip!(x.col_iter_mut(), x0.col_iter(), u.col_iter()).for_each(|(mut x, x0, u)| {
         x[0] = x0[0] + u[0];
@@ -842,6 +932,54 @@ fn calc_qp_mat(mat: MatMut<f64>, mat_star: MatRef<f64>, rr0: MatRef<f64>) {
             );
         },
     );
+}
+
+#[inline]
+fn calc_qp_mu_cuu(damping: &Damping, mu_cuu: MatMut<f64>, cuu: MatRef<f64>, rr0: MatRef<f64>) {
+    match damping {
+        Damping::None => {}
+        Damping::Mu(mu) => {
+            let mut mu_mat = Mat::<f64>::zeros(6, 6);
+            let mut rr0_mat_rr0t = Mat::<f64>::zeros(6, 6);
+            let mut tmp6 = Mat::<f64>::zeros(6, 6);
+            mu_mat.diagonal_mut().column_vector_mut().copy_from(&mu);
+            izip!(mu_cuu.col_iter_mut(), cuu.col_iter(), rr0.col_iter()).for_each(
+                |(mu_cuu_col, cuu_col, rr0_col)| {
+                    let mut mu_cuu = mu_cuu_col.as_mat_mut(6, 6);
+                    let cuu = cuu_col.as_mat_ref(6, 6);
+                    let rr0 = rr0_col.as_mat_ref(6, 6);
+
+                    // Rotate mu damping coefficients into inertial frame
+                    matmul(
+                        tmp6.as_mut(),
+                        rr0,
+                        mu_mat.as_ref(),
+                        None,
+                        1.,
+                        Parallelism::None,
+                    );
+                    matmul(
+                        rr0_mat_rr0t.as_mut(),
+                        tmp6.as_ref(),
+                        rr0.transpose(),
+                        None,
+                        1.,
+                        Parallelism::None,
+                    );
+
+                    // Multiply damping coefficients by stiffness matrix
+                    matmul(
+                        mu_cuu.as_mut(),
+                        rr0_mat_rr0t.as_ref(),
+                        cuu,
+                        None,
+                        1.0,
+                        Parallelism::None,
+                    );
+                },
+            );
+        }
+    }
 }
 
 #[inline]
@@ -924,7 +1062,7 @@ fn calc_qp_x0pupss(x0pupss: MatMut<f64>, x0_prime: MatRef<f64>, u_prime: MatRef<
 }
 
 #[inline]
-fn calc_qp_fc(fc: MatMut<f64>, cuu: MatRef<f64>, strain: MatRef<f64>) {
+fn calc_qp_fe_c(fc: MatMut<f64>, cuu: MatRef<f64>, strain: MatRef<f64>) {
     izip!(fc.col_iter_mut(), cuu.col_iter(), strain.col_iter()).for_each(
         |(fc, cuu_col, strain)| {
             matmul(
@@ -940,7 +1078,7 @@ fn calc_qp_fc(fc: MatMut<f64>, cuu: MatRef<f64>, strain: MatRef<f64>) {
 }
 
 #[inline]
-fn calc_qp_fd(fd: MatMut<f64>, fc: MatRef<f64>, x0pupss: MatRef<f64>) {
+fn calc_qp_fe_d(fd: MatMut<f64>, fc: MatRef<f64>, x0pupss: MatRef<f64>) {
     izip!(fd.col_iter_mut(), fc.col_iter(), x0pupss.col_iter(),).for_each(
         |(fd, fc, x0pupss_col)| {
             matmul(
@@ -1397,7 +1535,9 @@ fn integrate_fe(
             zipped!(&mut acc, &fc, &fd)
                 .for_each(|unzipped!(mut acc, fc, fd)| *acc += w * (*fc * phip + *fd * phi * j));
         });
-        fe.copy_from(&acc);
+
+        // Add values to node matrix
+        zipped!(&mut fe, &acc).for_each(|unzipped!(mut fe, acc)| *fe += *acc);
     });
 }
 
@@ -1417,7 +1557,9 @@ fn integrate_f(
                 zipped!(&mut acc, &qp_f).for_each(|unzipped!(mut acc, f)| *acc += *f * phi * j * w);
             },
         );
-        node_f.copy_from(&acc);
+
+        // Add values to node matrix
+        zipped!(&mut node_f, &acc).for_each(|unzipped!(mut f, acc)| *f += *acc);
     });
 }
 
@@ -1442,7 +1584,9 @@ fn integrate_matrix(
     izip!(qp_mat.col_iter(), c.iter()).for_each(|(mat, &c)| {
         zipped!(&mut acc, &mat).for_each(|unzipped!(mut acc, mat)| *acc += *mat * c)
     });
-    node_mat.copy_from(&acc);
+
+    // Add values to node matrix
+    zipped!(&mut node_mat, &acc).for_each(|unzipped!(mut mat, acc)| *mat += *acc)
 }
 
 fn integrate_elastic_stiffness_matrix(
@@ -1501,8 +1645,8 @@ fn integrate_elastic_stiffness_matrix(
         zipped!(&mut acc, &ouu).for_each(|unzipped!(mut acc, ouu)| *acc += *ouu * c)
     });
 
-    // Copy values into node matrix
-    node_mat.copy_from(acc);
+    // Add values to node matrix
+    zipped!(&mut node_mat, &acc).for_each(|unzipped!(mut mat, acc)| *mat += *acc)
 }
 
 pub fn vec_tilde(v: ColRef<f64>) -> Mat<f64> {
@@ -1739,6 +1883,7 @@ mod tests {
 
         let input = BeamInput {
             gravity: [0., 0., 9.81],
+            damping: Damping::None,
             elements: vec![BeamElement {
                 nodes: izip!(node_s.iter(), nodes.iter())
                     .map(|(&si, n)| BeamNode::new(si, n))
@@ -2225,7 +2370,7 @@ mod tests {
     fn test_qp_fc() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_fc.subcols(0, 2).transpose(),
+            beams.qp_fe_c.subcols(0, 2).transpose(),
             mat![
                 [
                     0.10234015755301376,
@@ -2279,7 +2424,7 @@ mod tests {
     fn test_qp_fd() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_fd.subcols(0, 2).transpose(),
+            beams.qp_fe_d.subcols(0, 2).transpose(),
             mat![
                 [
                     0.,
@@ -2319,7 +2464,7 @@ mod tests {
     fn test_qp_ouu() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_ouu.col(0).as_mat_ref(6, 6),
+            beams.qp_oe.col(0).as_mat_ref(6, 6),
             mat![
                 [
                     0.,
@@ -2378,7 +2523,7 @@ mod tests {
     fn test_qp_puu() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_puu.col(0).as_mat_ref(6, 6),
+            beams.qp_pe.col(0).as_mat_ref(6, 6),
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2416,7 +2561,7 @@ mod tests {
     fn test_qp_quu() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_quu.col(0).as_mat_ref(6, 6),
+            beams.qp_qe.col(0).as_mat_ref(6, 6),
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2454,7 +2599,7 @@ mod tests {
     fn test_qp_guu() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_guu.col(0).as_mat_ref(6, 6),
+            beams.qp_gi.col(0).as_mat_ref(6, 6),
             mat![
                 [
                     0.,
@@ -2513,7 +2658,7 @@ mod tests {
     fn test_qp_kuu() {
         let beams = create_beams();
         assert_matrix_eq!(
-            beams.qp_kuu.col(0).as_mat_ref(6, 6),
+            beams.qp_ki.col(0).as_mat_ref(6, 6),
             mat![
                 [
                     0.,
@@ -2716,6 +2861,7 @@ mod tests {
 
         let input = BeamInput {
             gravity: [0., 0., 9.81],
+            damping: Damping::None,
             elements: vec![BeamElement {
                 nodes: izip!(node_s.iter(), nodes.iter())
                     .map(|(&si, n)| BeamNode::new(si, n))
@@ -2904,7 +3050,7 @@ mod tests {
     fn test_qp_fc3() {
         let beams = setup_test();
         assert_matrix_eq!(
-            beams.qp_fc.col(0).as_2d(),
+            beams.qp_fe_c.col(0).as_2d(),
             col![
                 0.1023401575530157,
                 0.15123731179112812,
@@ -2922,7 +3068,7 @@ mod tests {
     fn test_qp_fd3() {
         let beams = setup_test();
         assert_matrix_eq!(
-            beams.qp_fd.col(0).as_2d(),
+            beams.qp_fe_d.col(0).as_2d(),
             col![
                 0.0,
                 0.0,

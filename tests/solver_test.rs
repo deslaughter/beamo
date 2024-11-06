@@ -2,7 +2,7 @@ use faer::{assert_matrix_eq, col, mat, Col, Mat, Scale};
 
 use itertools::{izip, Itertools};
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef},
+    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef, Damping},
     interp::gauss_legendre_lobotto_points,
     node::NodeBuilder,
     quadrature::Quadrature,
@@ -55,6 +55,7 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
 
     let input = BeamInput {
         gravity: [0., 0., 0.],
+        damping: Damping::None,
         elements: vec![BeamElement {
             nodes: izip!(s.iter(), nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
@@ -601,7 +602,7 @@ fn test_iter_1_qp_fc() {
     let (beams, _, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp_fc.col(4).as_2d(),
+        beams.qp_fe_c.col(4).as_2d(),
         col![
             0.005706498962533676,
             0.00038766265036750165,
@@ -615,7 +616,7 @@ fn test_iter_1_qp_fc() {
     );
 
     assert_matrix_eq!(
-        beams.qp_fc.col(5).as_2d(),
+        beams.qp_fe_c.col(5).as_2d(),
         col![
             0.011066510391149387,
             0.0010264240944318046,
@@ -634,7 +635,7 @@ fn test_iter_1_fd() {
     let (beams, _, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp_fd.col(5).as_2d(),
+        beams.qp_fe_d.col(5).as_2d(),
         col![
             0.,
             0.,

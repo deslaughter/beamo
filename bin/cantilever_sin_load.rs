@@ -1,10 +1,10 @@
-use std::process;
+use std::{fs::File, io::Write, process};
 
 use faer::{mat, Scale};
 
 use itertools::{izip, Itertools};
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams},
+    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
     node::NodeBuilder,
     quadrature::Quadrature,
@@ -56,6 +56,8 @@ fn main() {
 
     let input = BeamInput {
         gravity: [0., 0., 0.],
+        // damping: Damping::None,
+        damping: Damping::Mu(faer::col![0.01, 0.02, 0.03, 0.01, 0.02, 0.03]),
         elements: vec![BeamElement {
             nodes: izip!(s.iter(), nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
@@ -84,9 +86,14 @@ fn main() {
 
     let mut state = State::new(&nodes);
 
-    for i in 2..10000 {
+    let mut file = File::create("no-damping.csv").unwrap();
+
+    for i in 0..1000 {
+        // current time
+        let t = (i as f64) * time_step;
+
         // Apply sine force on z direction of last node
-        solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * (i as f64) * time_step).sin();
+        solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * t).sin();
 
         // Take step and get convergence result
         let res = solver.step(&mut state, &mut beams);
@@ -96,7 +103,9 @@ fn main() {
             println!("failed!");
             process::exit(1);
         }
-        // println!("{} {}", i, state.u[(2, solver.n_nodes - 1)]);
+
+        file.write_fmt(format_args!("{},{}\n", t, state.u[(2, solver.n_nodes - 1)]))
+            .unwrap();
     }
 
     println!("success")
