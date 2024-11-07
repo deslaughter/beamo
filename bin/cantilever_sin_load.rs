@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write, process};
 
-use faer::{mat, Scale};
+use faer::{col, mat, Scale};
 
 use itertools::{izip, Itertools};
 use ottr::{
@@ -57,7 +57,7 @@ fn main() {
     let input = BeamInput {
         gravity: [0., 0., 0.],
         // damping: Damping::None,
-        damping: Damping::Mu(faer::col![0.01, 0.02, 0.03, 0.01, 0.02, 0.03]),
+        damping: Damping::Mu(col![0.001, 0.001, 0.001, 0.001, 0.001, 0.001]),
         elements: vec![BeamElement {
             nodes: izip!(s.iter(), nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
@@ -86,9 +86,12 @@ fn main() {
 
     let mut state = State::new(&nodes);
 
-    let mut file = File::create("no-damping.csv").unwrap();
+    let mut file = match input.damping {
+        Damping::None => File::create("damping-0.csv").unwrap(),
+        Damping::Mu(_) => File::create("damping-mu.csv").unwrap(),
+    };
 
-    for i in 0..1000 {
+    for i in 0..10000 {
         // current time
         let t = (i as f64) * time_step;
 

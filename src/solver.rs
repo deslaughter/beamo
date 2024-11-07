@@ -3,7 +3,8 @@ use std::ops::Div;
 use faer::{linalg::matmul::matmul, solvers::SpSolver, unzipped, zipped, Col, Mat, Scale};
 
 use crate::{
-    beams::{vec_tilde, Beams, ColAsMatRef},
+    beams::{Beams, ColAsMatRef},
+    beams_qp::vec_tilde,
     node::Node,
     state::State,
 };
@@ -144,6 +145,7 @@ impl Solver {
             });
 
             // Calculate tangent matrix
+            let mut mt = Mat::<f64>::zeros(3, 3);
             state
                 .u_delta
                 .subrows(3, 3)
@@ -154,7 +156,7 @@ impl Solver {
                     let phi = rv.norm_l2();
                     if phi > 1e-16 {
                         let (phi_s, phi_c) = phi.sin_cos();
-                        let mt = vec_tilde(rv.as_ref());
+                        vec_tilde(rv.as_ref(), mt.as_mut());
                         self.t.submatrix_mut(i * 6 + 3, i * 6 + 3, 3, 3).copy_from(
                             Mat::<f64>::identity(3, 3)
                                 + &mt * &mt * Scale((1. - phi_s / phi) / (phi * phi))
@@ -237,6 +239,9 @@ impl Solver {
             if res.iter >= self.p.max_iter {
                 return res;
             }
+
+            // Increment iteration count
+            res.iter += 1;
         }
 
         // Converged, update algorithmic acceleration

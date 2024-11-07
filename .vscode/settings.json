@@ -10,6 +10,7 @@
         "izip",
         "linalg",
         "matmul",
+        "multiunzip",
         "ncols",
         "nrows",
         "powi",
