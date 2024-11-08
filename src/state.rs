@@ -4,14 +4,22 @@ use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
 
 pub struct State {
-    x0: Mat<f64>,          // [7][n_nodes]    Initial global position/rotation
-    x: Mat<f64>,           // [7][n_nodes]    Current global position/rotation
-    pub u_delta: Mat<f64>, // [6][n_nodes]    Displacement increment
-    u_prev: Mat<f64>,      // [7][n_nodes]    Previous state
-    pub u: Mat<f64>,       // [7][n_nodes]    Current state
-    pub v: Mat<f64>,       // [6][n_nodes]    Velocity
-    pub vd: Mat<f64>,      // [6][n_nodes]    Acceleration
-    a: Mat<f64>,           // [6][n_nodes]    Algorithmic acceleration
+    /// Initial global position/rotation `[7][n_nodes]`
+    x0: Mat<f64>,
+    /// Current global position/rotation `[7][n_nodes]`
+    x: Mat<f64>,
+    /// Displacement increment `[6][n_nodes]`
+    pub u_delta: Mat<f64>,
+    /// Previous state `[7][n_nodes]`
+    pub u_prev: Mat<f64>,
+    /// Current state `[7][n_nodes]`
+    pub u: Mat<f64>,
+    /// Velocity `[6][n_nodes]`
+    pub v: Mat<f64>,
+    /// Acceleration `[6][n_nodes]`
+    pub vd: Mat<f64>,
+    /// Algorithmic acceleration `[6][n_nodes]`
+    a: Mat<f64>,
 }
 
 impl State {

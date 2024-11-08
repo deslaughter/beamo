@@ -11,6 +11,26 @@ pub trait Quat {
     fn quat_from_identity(&mut self);
 }
 
+pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
+    let norm = q.norm_l2();
+    let (w, x, y, z) = (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
+
+    // Calculate the angle (in radians) and the rotation axis
+    let angle = 2.0 * w.acos();
+    let sin_half_angle = (1.0 - w * w).sqrt();
+
+    // To avoid division by zero, check if sin_half_angle is very small
+    if sin_half_angle < 1e-10 {
+        // If sin_half_angle is close to zero, the rotation is very small; return a zero vector
+        v.fill(0.);
+    }
+
+    // Compute the rotation vector (axis * angle)
+    v[0] = x / sin_half_angle * angle;
+    v[1] = y / sin_half_angle * angle;
+    v[2] = z / sin_half_angle * angle;
+}
+
 /// Populates matrix with rotation matrix equivalent of quaternion.
 ///
 /// # Panics

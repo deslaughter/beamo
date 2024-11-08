@@ -68,8 +68,8 @@ pub struct ElemIndex {
 pub struct Beams {
     elem_index: Vec<ElemIndex>,
     node_ids: Vec<usize>,
-    gravity: Col<f64>, // Gravity components `[3]`
-    damping: Damping,  // Damping formulation
+    pub gravity: Col<f64>, // Gravity components `[3]`
+    pub damping: Damping,  // Damping formulation
 
     /// Initial position/rotation `[7][n_nodes]`
     pub node_x0: Mat<f64>,
