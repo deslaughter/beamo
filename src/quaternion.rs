@@ -138,7 +138,7 @@ impl Quat for ColMut<'_, f64> {
     /// Panics if `axis.ncols() < 3`.  
     #[inline]
     fn quat_from_axis_angle(&mut self, angle: f64, axis: ColRef<f64>) {
-        if angle < 1e-12 {
+        if angle.abs() < 1e-12 {
             self[0] = 1.;
             self[1] = 0.;
             self[2] = 0.;

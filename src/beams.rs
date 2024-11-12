@@ -295,7 +295,7 @@ impl Beams {
                 (inp.elements[ei.elem_id].quadrature.points[i] + 1.) / 2.
             });
 
-            qp_s.iter().enumerate().for_each(|(i, &s)| {
+            qp_s.iter().enumerate().for_each(|(i, &qp_s)| {
                 let mut qp_m_star = beams
                     .qp
                     .m_star
@@ -306,26 +306,25 @@ impl Beams {
                     .c_star
                     .subcols_mut(ei.i_qp_start, ei.n_qps)
                     .col_mut(i);
-                match section_s.iter().position(|&ss| s > ss) {
+                match section_s.iter().position(|&ss| ss > qp_s) {
                     None => {
+                        qp_m_star.copy_from(&section_m_star[sections.len() - 1]);
+                        qp_c_star.copy_from(&section_c_star[sections.len() - 1]);
+                    }
+                    Some(0) => {
                         qp_m_star.copy_from(&section_m_star[0]);
                         qp_c_star.copy_from(&section_c_star[0]);
                     }
                     Some(j) => {
-                        if j == sections.len() {
-                            qp_m_star.copy_from(&section_m_star[j]);
-                            qp_c_star.copy_from(&section_c_star[j]);
-                        } else {
-                            let alpha = (s - section_s[j]) / (section_s[j + 1] - section_s[j]);
-                            qp_m_star.copy_from(
-                                &section_m_star[j] * Scale(1. - alpha)
-                                    + &section_m_star[j + 1] * Scale(alpha),
-                            );
-                            qp_c_star.copy_from(
-                                &section_c_star[j] * Scale(1. - alpha)
-                                    + &section_c_star[j + 1] * Scale(alpha),
-                            );
-                        }
+                        let alpha = (qp_s - section_s[j - 1]) / (section_s[j] - section_s[j - 1]);
+                        qp_m_star.copy_from(
+                            &section_m_star[j - 1] * Scale(1. - alpha)
+                                + &section_m_star[j] * Scale(alpha),
+                        );
+                        qp_c_star.copy_from(
+                            &section_c_star[j - 1] * Scale(1. - alpha)
+                                + &section_c_star[j] * Scale(alpha),
+                        );
                     }
                 }
             });

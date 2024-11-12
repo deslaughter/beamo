@@ -118,12 +118,13 @@ fn test_modal_frequency() {
     let f_n = omega_n / (2. * PI);
 
     // Apply 10% damping, pay attention to the order of the mu vector
-    let zeta = 0.1;
+    let zeta_z = 0.1;
+    let zeta_y = 0.05;
     let mu_x = 0.;
-    let mu_y = 0.;
-    let mu_z = 2. * zeta / omega_n;
+    let mu_y = 2. * zeta_y / omega_n;
+    let mu_z = 2. * zeta_z / omega_n;
     beams.damping = Damping::Mu(col![mu_x, mu_y, mu_z, mu_x, mu_z, mu_y]);
-    println!("fn={f_n}, zeta={zeta}, mu={mu_z}");
+    println!("fn={f_n}, zeta_z={zeta_z}, mu={mu_z}");
 
     // Apply scaled mode shape to state as a displacement
     let v = eig_vec.col(i_mode) * Scale(scale);
