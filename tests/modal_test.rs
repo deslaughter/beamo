@@ -1,13 +1,14 @@
 use std::{f64::consts::PI, fs::File, io::Write, process};
 
 use faer::{
-    col, mat,
+    col,
+    complex_native::c64,
+    mat,
     solvers::{Eigendecomposition, SpSolver},
     unzipped, zipped, Col, Mat, Scale,
 };
 
 use itertools::{izip, Itertools};
-use num_complex::Complex64;
 use ottr::{
     beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
@@ -190,7 +191,7 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
     let lu = m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(k.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<Complex64> = a.eigendecomposition();
+    let eig: Eigendecomposition<c64> = a.eigendecomposition();
     let eig_val_raw = eig.s().column_vector();
     let eig_vec_raw = eig.u();
 
@@ -203,12 +204,12 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
             .unwrap()
     });
 
-    let eig_val = Col::<f64>::from_fn(eig_val_raw.nrows(), |i| *eig_val_raw.get(eig_order[i]).re);
+    let eig_val = Col::<f64>::from_fn(eig_val_raw.nrows(), |i| eig_val_raw[eig_order[i]].re);
     let mut eig_vec = Mat::<f64>::from_fn(n_dofs, eig_vec_raw.ncols(), |i, j| {
         if i < 6 {
             0.
         } else {
-            *eig_vec_raw.get(i - 6, eig_order[j]).re
+            eig_vec_raw[(i - 6, eig_order[j])].re
         }
     });
     // normalize eigen vectors

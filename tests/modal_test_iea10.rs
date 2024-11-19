@@ -2,16 +2,16 @@ use std::{f64::consts::PI, fs::File, io::Write, process};
 
 use faer::{
     col,
+    complex_native::c64,
     linalg::matmul::matmul,
     mat,
     solvers::{Eigendecomposition, SpSolver},
-    unzipped, zipped, Col, Mat, Parallelism, Scale,
+    unzipped, zipped, Col, Mat, MatRef, Parallelism, Scale,
 };
 
 use itertools::{izip, Itertools};
-use num_complex::Complex64;
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
+    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef, Damping},
     interp::gauss_legendre_lobotto_points,
     node::{Node, NodeBuilder},
     quadrature::Quadrature,
@@ -19,6 +19,19 @@ use ottr::{
     solver::{Solver, StepParameters},
     state::State,
 };
+
+fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
+    let mut file = File::create(file_name).unwrap();
+    mat.row_iter().for_each(|r| {
+        for (j, &v) in r.iter().enumerate() {
+            if j > 0 {
+                file.write(b",").unwrap();
+            }
+            file.write_fmt(format_args!("{v:e}")).unwrap();
+        }
+        file.write(b"\n").unwrap();
+    });
+}
 
 #[test]
 fn test_modal_frequency() {
@@ -39,89 +52,284 @@ fn test_modal_frequency() {
 
     // Apply scaled mode shape to state as initial velocity
     let i_mode = 1;
-    let scale = 8.6;
+    // let scale = 8.6;
+    // let scale = 9.;
     let omega_n = eig_val[i_mode].sqrt();
     let f_n = omega_n / (2. * PI);
+    let period = 1. / f_n;
     println!("fn={f_n}");
-    let v = eig_vec.col(i_mode) * Scale(scale);
-    state
-        .v
-        .col_iter_mut()
-        .enumerate()
-        .for_each(|(i_node, mut node_v)| {
-            node_v.copy_from(v.subrows(i_node * 6, 6));
-        });
 
-    let rho_inf = 1.0;
-    let max_iter = 5;
-    let time_step = 0.01;
-    let n_steps = 800;
-    let mut solver = Solver::new(
-        StepParameters::new(time_step, rho_inf, max_iter),
-        &nodes,
-        &vec![],
-    );
-
-    let ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
-    let mut tv = Mat::<f64>::zeros(nodes.len() * 3, n_steps);
-
-    let mut last_defl = -1.;
-
-    for (i, mut tv_col) in tv.col_iter_mut().enumerate() {
-        tv_col.copy_from(Col::<f64>::from_fn(3 * nodes.len(), |i| {
-            state.u[(i % 3, i / 3)]
-        }));
-
-        // Take step and get convergence result
-        let res = solver.step(&mut state, &mut beams);
-
-        // Exit if failed to converge
-        if !res.converged {
-            println!("failed, step={i}, err={}", res.err);
-            process::exit(1);
-        }
-
-        // Get tip deflection
-        let tip_defl = tv_col[tv_col.nrows() - 2];
-
-        if tip_defl < last_defl {
-            break;
-        } else {
-            last_defl = tip_defl;
-        }
-
-        let mut file = File::create(format!("matrices/k-{:.3}.csv", tip_defl)).unwrap();
-        solver.kt.row_iter().for_each(|r| {
-            for (j, &v) in r.iter().enumerate() {
-                if j > 0 {
-                    file.write(b",").unwrap();
-                }
-                file.write_fmt(format_args!("{v:e}")).unwrap();
-            }
-            file.write(b"\n").unwrap();
-        });
-
-        let mut file = File::create(format!("matrices/c-{:.3}.csv", tip_defl)).unwrap();
-        solver.ct.row_iter().for_each(|r| {
-            for (j, &v) in r.iter().enumerate() {
-                if j > 0 {
-                    file.write(b",").unwrap();
-                }
-                file.write_fmt(format_args!("{v:e}")).unwrap();
-            }
-            file.write(b"\n").unwrap();
-        });
-    }
-
-    let mut file = File::create(format!("mode.csv")).unwrap();
-    izip!(ts.iter(), tv.col_iter()).for_each(|(&t, tv)| {
-        file.write_fmt(format_args!("{t}")).unwrap();
-        for &v in tv.iter() {
-            file.write_fmt(format_args!(",{v}")).unwrap();
-        }
-        file.write(b"\n").unwrap();
+    let a_tip = 1.;
+    let dt = 0.01;
+    let n = (period / dt) as usize + 1;
+    let t = Col::<f64>::from_fn(n, |i| (i as f64) * dt);
+    let mut u = Mat::<f64>::zeros(eig_vec.nrows(), n);
+    let mut v = Mat::<f64>::zeros(eig_vec.nrows(), n);
+    let mut vd = Mat::<f64>::zeros(eig_vec.nrows(), n);
+    let mut energy = Col::<f64>::zeros(n);
+    println!("{period} {}", dt * (n as f64));
+    izip!(
+        t.iter(),
+        u.col_iter_mut(),
+        v.col_iter_mut(),
+        vd.col_iter_mut()
+    )
+    .for_each(|(t, mut u, mut v, mut vd)| {
+        u.copy_from(eig_vec.col(i_mode) * Scale(a_tip * omega_n.powi(0) * (omega_n * t).sin()));
+        v.copy_from(eig_vec.col(i_mode) * Scale(a_tip * omega_n.powi(1) * (omega_n * t).cos()));
+        vd.copy_from(eig_vec.col(i_mode) * Scale(-a_tip * omega_n.powi(2) * (omega_n * t).sin()));
     });
+
+    let n_dofs = nodes.len() * 6;
+    let mut m = Mat::<f64>::zeros(n_dofs, n_dofs);
+    let mut c = Mat::<f64>::zeros(n_dofs, n_dofs);
+    let mut k = Mat::<f64>::zeros(n_dofs, n_dofs);
+    let mut r = Col::<f64>::zeros(n_dofs);
+    beams.calculate_system(&state);
+    beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+
+    dump_matrix(&format!("m.csv"), m.as_ref());
+    dump_matrix(&format!("c.csv"), c.as_ref());
+    dump_matrix(&format!("k.csv"), k.as_ref());
+    dump_matrix(&format!("u.csv"), u.transpose());
+    dump_matrix(&format!("v.csv"), v.transpose());
+    dump_matrix(&format!("vd.csv"), vd.transpose());
+
+    let mut force = Col::<f64>::zeros(n_dofs);
+
+    (0..n).for_each(|i| {
+        let mut q = col![0., 0., 0., 0.];
+        state
+            .u
+            .col_iter_mut()
+            .zip(u.col_iter())
+            .for_each(|(mut us, u)| {
+                q.as_mut().quat_from_rotation_vector(u.subrows(3, 3));
+                us[0] = u[0];
+                us[1] = u[1];
+                us[2] = u[2];
+                us[3] = q[0];
+                us[4] = q[1];
+                us[5] = q[2];
+                us[6] = q[3];
+            });
+        state
+            .v
+            .col_iter_mut()
+            .enumerate()
+            .for_each(|(j, mut c)| c.copy_from(v.col(i).subrows(j * 6, 6)));
+        state
+            .vd
+            .col_iter_mut()
+            .enumerate()
+            .for_each(|(j, mut c)| c.copy_from(vd.col(i).subrows(j * 6, 6)));
+
+        m.fill(0.);
+        c.fill(0.);
+        k.fill(0.);
+        r.fill(0.);
+
+        beams.calculate_system(&state);
+        beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+
+        // let n_dof_reduced = n_dofs - 6;
+        // let tip_defl = u.col(i)[u.nrows() - 5];
+        // dump_matrix(
+        //     &format!("matrices-0g/m,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+        // );
+        // dump_matrix(
+        //     &format!("matrices-0g/k,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     k.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+        // );
+        // dump_matrix(
+        //     &format!("matrices-0g/c,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     c.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+        // );
+
+        // Calculate energy dissipation
+        matmul(
+            force.as_mut(),
+            c.as_ref(),
+            v.col(i),
+            None,
+            1.,
+            Parallelism::None,
+        );
+        energy[i] = &force.transpose() * &v.col(i);
+    });
+
+    let total_energy = (1..energy.nrows())
+        .map(|i| dt * (energy[i - 1] + energy[i]) / 2.)
+        .sum::<f64>()
+        / (dt * (n as f64));
+
+    println!("energy = {total_energy}");
+
+    // let v = eig_vec.col(i_mode) * Scale(scale);
+    // state
+    //     .v
+    //     .col_iter_mut()
+    //     .enumerate()
+    //     .for_each(|(i_node, mut node_v)| {
+    //         node_v.copy_from(v.subrows(i_node * 6, 6));
+    //     });
+
+    // let rho_inf = 1.0;
+    // let max_iter = 5;
+    // let time_step = 0.01;
+    // let n_steps = 200;
+    // let mut solver = Solver::new(
+    //     StepParameters::new(time_step, rho_inf, max_iter),
+    //     &nodes,
+    //     &vec![],
+    // );
+
+    // let mut ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
+    // let mut tu = Mat::<f64>::zeros(nodes.len() * 3, n_steps);
+    // let mut vsave = Mat::<f64>::zeros(nodes.len() * 6, n_steps);
+
+    // let dir = "matrices-0g";
+    // beams.gravity = col![0., 0., 0.];
+    // // let dir = "matrices-1g";
+    // // beams.gravity = col![0., 0., -9.81];
+
+    // let mut vel = Col::<f64>::zeros(solver.n_dofs);
+    // let mut force = Col::<f64>::zeros(solver.n_dofs);
+    // let mut energy = 0.;
+
+    // for (i, mut tv_col) in tu.col_iter_mut().enumerate() {
+    //     tv_col.copy_from(Col::<f64>::from_fn(3 * nodes.len(), |i| {
+    //         state.u[(i % 3, i / 3)]
+    //     }));
+
+    //     // Take step and get convergence result
+    //     let res = solver.step(&mut state, &mut beams);
+
+    //     // Exit if failed to converge
+    //     if !res.converged {
+    //         println!("failed, step={i}, err={}", res.err);
+    //         process::exit(1);
+    //     }
+
+    //     // Get tip deflection
+    //     let tip_defl = tv_col[tv_col.nrows() - 2];
+
+    //     println!("{tip_defl}");
+
+    //     // Calculate energy dissipation
+    //     vel.copy_from(&Col::<f64>::from_fn(vel.nrows(), |j| {
+    //         state.v[(j % 6, j / 6)]
+    //     }));
+    //     matmul(
+    //         force.as_mut(),
+    //         solver.ct.as_ref(),
+    //         vel.as_ref(),
+    //         None,
+    //         1.,
+    //         Parallelism::None,
+    //     );
+    //     energy += (&force.transpose() * &vel) * time_step;
+
+    //     vsave.col_mut(i).copy_from(&vel);
+
+    //     // Dump matrices
+    //     // let n_dof_reduced = solver.n_dofs - 6;
+    //     // dump_matrix(
+    //     //     &format!("{dir}/m,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     solver.m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+    //     // );
+    //     // dump_matrix(
+    //     //     &format!("{dir}/k,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     solver.kt.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+    //     // );
+    //     // dump_matrix(
+    //     //     &format!("{dir}/c,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     solver.ct.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
+    //     // );
+
+    //     if ts[i] > 1. / f_n && tip_defl.abs() < 0.015 {
+    //         ts.resize_with(i + 1, |_| 0.);
+    //         vsave.resize_with(vsave.nrows(), i + 1, |_, _| 0.);
+    //         break;
+    //     }
+    // }
+
+    // println!("energy = {energy}");
+
+    // dump_matrix(&format!("vel.csv"), vsave.transpose());
+
+    // let mut file = File::create(format!("disp.csv")).unwrap();
+    // izip!(ts.iter(), tu.col_iter()).for_each(|(&t, tv)| {
+    //     file.write_fmt(format_args!("{t}")).unwrap();
+    //     for &v in tv.iter() {
+    //         file.write_fmt(format_args!(",{v}")).unwrap();
+    //     }
+    //     file.write(b"\n").unwrap();
+    // });
 }
+
+// fn modal_analysis_complex(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>, Mat<f64>) {
+//     // Calculate system based on initial state
+//     beams.calculate_system(&state);
+
+//     let mut m = Mat::<f64>::zeros(n_dofs, n_dofs);
+//     let mut c = Mat::<f64>::zeros(n_dofs, n_dofs);
+//     let mut k = Mat::<f64>::zeros(n_dofs, n_dofs);
+//     let mut r = Col::<f64>::zeros(n_dofs);
+
+//     // Get matrices
+//     beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+
+//     let n_reduced = n_dofs - 6;
+
+//     let m_lu = m.submatrix(6, 6, n_reduced, n_reduced).full_piv_lu();
+//     let m_inv_k = m_lu.solve(k.submatrix(6, 6, n_reduced, n_reduced));
+//     let m_inv_c = m_lu.solve(c.submatrix(6, 6, n_reduced, n_reduced));
+
+//     let mut a = Mat::<f64>::zeros(2 * n_reduced, 2 * n_reduced);
+//     a.submatrix_mut(0, n_reduced, n_reduced, n_reduced)
+//         .copy_from(&Mat::<f64>::identity(n_reduced, n_reduced));
+//     a.submatrix_mut(n_reduced, 0, n_reduced, n_reduced)
+//         .copy_from(&m_inv_k);
+//     a.submatrix_mut(n_reduced, n_reduced, n_reduced, n_reduced)
+//         .copy_from(&m_inv_c);
+
+//     let eig: Eigendecomposition<c64> = a.eigendecomposition();
+//     let eig_val_raw = eig.s().column_vector().to_owned();
+//     let eig_vec_raw = eig.u();
+
+//     println!("{:?}", eig_val_raw);
+
+//     let eig_val = eig_val_raw.iter().map(|c| c.norm()).collect_vec();
+
+//     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
+//     eig_order.sort_by(|&i, &j| eig_val[i].partial_cmp(&eig_val[j]).unwrap());
+//     // let eig_order = eig_order
+//     //     .iter()
+//     //     .filter_map(|&i| if eig_val_raw[i].re >= 0. {Some})
+//     //     .collect_vec();
+
+//     let eig_val = Col::<f64>::from_fn(eig_order.nrows(), |i| *eig_val_raw.get(eig_order[i]).re);
+//     let mut eig_vec = Mat::<f64>::from_fn(n_dofs, eig_vec_raw.ncols(), |i, j| {
+//         if i < 6 {
+//             0.
+//         } else {
+//             *eig_vec_raw.get(i - 6, eig_order[j]).re
+//         }
+//     });
+//     // normalize eigen vectors
+//     eig_vec.as_mut().col_iter_mut().for_each(|mut c| {
+//         let max = *c
+//             .as_ref()
+//             .iter()
+//             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
+//             .unwrap();
+//         zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
+//     });
+
+//     (eig_val, eig_vec)
+// }
 
 fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>, Mat<f64>) {
     // Calculate system based on initial state
@@ -139,7 +347,7 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
     let lu = m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(k.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<Complex64> = a.eigendecomposition();
+    let eig: Eigendecomposition<c64> = a.eigendecomposition();
     let eig_val_raw = eig.s().column_vector();
     let eig_vec_raw = eig.u();
 
@@ -152,12 +360,12 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
             .unwrap()
     });
 
-    let eig_val = Col::<f64>::from_fn(eig_val_raw.nrows(), |i| *eig_val_raw.get(eig_order[i]).re);
+    let eig_val = Col::<f64>::from_fn(eig_val_raw.nrows(), |i| eig_val_raw[eig_order[i]].re);
     let mut eig_vec = Mat::<f64>::from_fn(n_dofs, eig_vec_raw.ncols(), |i, j| {
         if i < 6 {
             0.
         } else {
-            *eig_vec_raw.get(i - 6, eig_order[j]).re
+            eig_vec_raw[(i - 6, eig_order[j])].re
         }
     });
     // normalize eigen vectors
@@ -268,6 +476,9 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     let mut r = Col::<f64>::zeros(4);
     r.as_mut()
         .quat_from_axis_angle(PI / 2., col![0., 1., 0.].as_ref());
+    let mut ru = Col::<f64>::zeros(4);
+    ru.as_mut()
+        .quat_from_axis_angle(-PI / 2., col![0., 1., 0.].as_ref());
 
     let nodes = node_position_raw
         .row_iter()
@@ -281,8 +492,12 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
             // Convert WM rotation to quaternion
             let c0 = 2. - (wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]) / 8.;
             let q = col![c0, wm[0], wm[1], wm[2]] * Scale(1. / (4. - c0));
+            let mut rt = col![0., 0., 0.];
+            let mut rq = col![0., 0., 0., 0.];
+            quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
+            rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
             NodeBuilder::new(i)
-                .position(pr[0], pr[1], pr[2], q[0], q[1], q[2], q[3])
+                .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
                 .build()
         })
         .collect_vec();
@@ -728,7 +943,8 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     let s = xi.iter().map(|&xi| (xi + 1.) / 2.).collect_vec();
 
     let input = BeamInput {
-        gravity: [-9.81, 0., 0.],
+        gravity: [0., 0., -9.81],
+        // gravity: [0., 0., 0.],
         damping: Damping::Mu(mu),
         // damping: Damping::None,
         elements: vec![BeamElement {

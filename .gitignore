@@ -1,2 +1,4 @@
 /target
+.vscode
 profile.json
+.DS_Store

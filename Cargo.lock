@@ -622,7 +622,6 @@ dependencies = [
  "faer",
  "gauss-quad",
  "itertools",
- "num-complex",
 ]
 
 [[package]]
