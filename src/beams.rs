@@ -21,23 +21,9 @@ pub struct BeamInput {
 }
 
 pub struct BeamElement {
-    pub nodes: Vec<BeamNode>,
+    pub node_ids: Vec<usize>,
     pub sections: Vec<BeamSection>,
     pub quadrature: Quadrature,
-}
-
-pub struct BeamNode {
-    pub si: f64,
-    pub node_id: usize,
-}
-
-impl BeamNode {
-    pub fn new(s: f64, node: &Node) -> Self {
-        Self {
-            si: s,
-            node_id: node.id,
-        }
-    }
 }
 
 pub struct BeamSection {
@@ -109,7 +95,11 @@ pub struct Beams {
 impl Beams {
     pub fn new(inp: &BeamInput, nodes: &[Node]) -> Self {
         // Total number of nodes to allocate (multiple of 8)
-        let total_nodes = inp.elements.iter().map(|e| (e.nodes.len())).sum::<usize>();
+        let total_nodes = inp
+            .elements
+            .iter()
+            .map(|e| (e.node_ids.len()))
+            .sum::<usize>();
         let alloc_nodes = total_nodes;
 
         // Total number of quadrature points (multiple of 8)
@@ -121,7 +111,12 @@ impl Beams {
         let alloc_qps = total_qps;
 
         // Max number of nodes in any element
-        let max_elem_nodes = inp.elements.iter().map(|e| (e.nodes.len())).max().unwrap();
+        let max_elem_nodes = inp
+            .elements
+            .iter()
+            .map(|e| (e.node_ids.len()))
+            .max()
+            .unwrap();
 
         // Build element index
         let mut index: Vec<ElemIndex> = vec![];
@@ -129,7 +124,7 @@ impl Beams {
         let mut start_qp = 0;
         let mut start_mat = 0;
         for (i, e) in inp.elements.iter().enumerate() {
-            let n_nodes = e.nodes.len();
+            let n_nodes = e.node_ids.len();
             let n_qps = e.quadrature.points.len();
             index.push(ElemIndex {
                 elem_id: i,
@@ -144,22 +139,15 @@ impl Beams {
             start_mat += n_nodes * n_nodes;
         }
 
-        // Get node IDs
-        let node_ids = inp
-            .elements
-            .iter()
-            .flat_map(|e| e.nodes.iter().map(|n| n.node_id).collect_vec())
-            .collect_vec();
-
         // let (x0, u, v, vd): (Vec<[f64; 7]>, Vec<[f64; 7]>, Vec<[f64; 6]>, Vec<[f64; 6]>) = inp
         let (x0, u, v, vd): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = multiunzip(
             inp.elements
                 .iter()
                 .flat_map(|e| {
-                    e.nodes
+                    e.node_ids
                         .iter()
-                        .map(|n| {
-                            let node = &nodes[n.node_id];
+                        .map(|&node_id| {
+                            let node = &nodes[node_id];
                             (node.x, node.u, node.v, node.vd)
                         })
                         .collect_vec()
@@ -175,7 +163,11 @@ impl Beams {
 
         let mut beams = Self {
             elem_index: index,
-            node_ids,
+            node_ids: inp
+                .elements
+                .iter()
+                .flat_map(|e| e.node_ids.to_owned())
+                .collect_vec(),
             gravity: Col::from_fn(3, |i| inp.gravity[i]),
             damping: inp.damping.clone(),
 
@@ -207,7 +199,11 @@ impl Beams {
         // Initialize element shape functions for interpolation and derivative
         for (ei, e) in izip!(beams.elem_index.iter(), inp.elements.iter()) {
             // Get node positions along beam [-1, 1]
-            let node_xi = e.nodes.iter().map(|n| 2. * n.si - 1.).collect_vec();
+            let node_xi = e
+                .node_ids
+                .iter()
+                .map(|&node_id| nodes[node_id].s * 2. - 1.)
+                .collect_vec();
 
             // Get shape interpolation matrix for this element
             let mut shape_interp =
@@ -947,146 +943,151 @@ mod tests {
 
         let mut model = Model::new();
 
-        model
-            .new_node()
-            .position(
-                0.,
-                0.,
-                0.,
-                0.9778215200524469,
-                -0.01733607539094763,
-                -0.09001900002195001,
-                -0.18831121859148398,
-            )
-            .build();
-        model
-            .new_node()
-            .position(
-                0.863365823230057,
-                -0.2558982639254171,
-                0.11304112106827427,
-                0.9950113028068008,
-                -0.002883848832932071,
-                -0.030192109815745303,
-                -0.09504013471947484,
-            )
-            .displacement(
-                0.002981602178886856,
-                -0.00246675949494302,
-                0.003084570715675624,
-                0.9999627302042724,
-                0.008633550973807708,
-                0.,
-                0.,
-            )
-            .velocity(
-                0.01726731646460114,
-                -0.014285714285714285,
-                0.003084570715675624,
-                0.01726731646460114,
-                -0.014285714285714285,
-                0.003084570715675624,
-            )
-            .acceleration(
-                0.01726731646460114,
-                -0.011304112106827427,
-                0.00606617289456248,
-                0.01726731646460114,
-                -0.014285714285714285,
-                -0.014285714285714285,
-            )
-            .build();
-        model
-            .new_node()
-            .position(
-                2.5,
-                -0.25,
-                0.,
-                0.9904718430204884,
-                -0.009526411091536478,
-                0.09620741150793366,
-                0.09807604012323785,
-            )
-            .displacement(
-                0.025,
-                -0.0125,
-                0.0275,
-                0.9996875162757026,
-                0.02499739591471221,
-                0.,
-                0.,
-            )
-            .velocity(0.05, -0.025, 0.0275, 0.05, -0.025, 0.0275)
-            .acceleration(0.05, 0., 0.0525, 0.05, -0.025, -0.025)
-            .build();
-        model
-            .new_node()
-            .position(
-                4.1366341767699435,
-                0.39875540678256005,
-                -0.5416125496397031,
-                0.9472312341234699,
-                -0.04969214162931507,
-                0.18127630174800594,
-                0.25965858850765167,
-            )
-            .displacement(
-                0.06844696924968459,
-                -0.011818954790771264,
-                0.07977257214146725,
-                0.9991445348823055,
-                0.04135454527402512,
-                0.,
-                0.,
-            )
-            .velocity(
-                0.08273268353539887,
-                -0.01428571428571428,
-                0.07977257214146725,
-                0.08273268353539887,
-                -0.01428571428571428,
-                0.07977257214146725,
-            )
-            .acceleration(
-                0.08273268353539887,
-                0.05416125496397031,
-                0.14821954139115184,
-                0.08273268353539887,
-                -0.01428571428571428,
-                -0.01428571428571428,
-            )
-            .build();
-        model
-            .new_node()
-            .position(
-                5.,
-                1.,
-                -1.,
-                0.9210746582719719,
-                -0.07193653093139739,
-                0.20507529985516368,
-                0.32309554437664584,
-            )
-            .displacement(
-                0.1,
-                0.,
-                0.12,
-                0.9987502603949663,
-                0.04997916927067825,
-                0.,
-                0.,
-            )
-            .velocity(0.1, 0., 0.12, 0.1, 0., 0.12)
-            .acceleration(0.1, 0.1, 0.22, 0.1, 0., 0.)
-            .build();
+        let node_ids = vec![
+            model
+                .new_node()
+                .element_location(node_s[0])
+                .position(
+                    0.,
+                    0.,
+                    0.,
+                    0.9778215200524469,
+                    -0.01733607539094763,
+                    -0.09001900002195001,
+                    -0.18831121859148398,
+                )
+                .build(),
+            model
+                .new_node()
+                .element_location(node_s[1])
+                .position(
+                    0.863365823230057,
+                    -0.2558982639254171,
+                    0.11304112106827427,
+                    0.9950113028068008,
+                    -0.002883848832932071,
+                    -0.030192109815745303,
+                    -0.09504013471947484,
+                )
+                .displacement(
+                    0.002981602178886856,
+                    -0.00246675949494302,
+                    0.003084570715675624,
+                    0.9999627302042724,
+                    0.008633550973807708,
+                    0.,
+                    0.,
+                )
+                .velocity(
+                    0.01726731646460114,
+                    -0.014285714285714285,
+                    0.003084570715675624,
+                    0.01726731646460114,
+                    -0.014285714285714285,
+                    0.003084570715675624,
+                )
+                .acceleration(
+                    0.01726731646460114,
+                    -0.011304112106827427,
+                    0.00606617289456248,
+                    0.01726731646460114,
+                    -0.014285714285714285,
+                    -0.014285714285714285,
+                )
+                .build(),
+            model
+                .new_node()
+                .element_location(node_s[2])
+                .position(
+                    2.5,
+                    -0.25,
+                    0.,
+                    0.9904718430204884,
+                    -0.009526411091536478,
+                    0.09620741150793366,
+                    0.09807604012323785,
+                )
+                .displacement(
+                    0.025,
+                    -0.0125,
+                    0.0275,
+                    0.9996875162757026,
+                    0.02499739591471221,
+                    0.,
+                    0.,
+                )
+                .velocity(0.05, -0.025, 0.0275, 0.05, -0.025, 0.0275)
+                .acceleration(0.05, 0., 0.0525, 0.05, -0.025, -0.025)
+                .build(),
+            model
+                .new_node()
+                .element_location(node_s[3])
+                .position(
+                    4.1366341767699435,
+                    0.39875540678256005,
+                    -0.5416125496397031,
+                    0.9472312341234699,
+                    -0.04969214162931507,
+                    0.18127630174800594,
+                    0.25965858850765167,
+                )
+                .displacement(
+                    0.06844696924968459,
+                    -0.011818954790771264,
+                    0.07977257214146725,
+                    0.9991445348823055,
+                    0.04135454527402512,
+                    0.,
+                    0.,
+                )
+                .velocity(
+                    0.08273268353539887,
+                    -0.01428571428571428,
+                    0.07977257214146725,
+                    0.08273268353539887,
+                    -0.01428571428571428,
+                    0.07977257214146725,
+                )
+                .acceleration(
+                    0.08273268353539887,
+                    0.05416125496397031,
+                    0.14821954139115184,
+                    0.08273268353539887,
+                    -0.01428571428571428,
+                    -0.01428571428571428,
+                )
+                .build(),
+            model
+                .new_node()
+                .element_location(node_s[4])
+                .position(
+                    5.,
+                    1.,
+                    -1.,
+                    0.9210746582719719,
+                    -0.07193653093139739,
+                    0.20507529985516368,
+                    0.32309554437664584,
+                )
+                .displacement(
+                    0.1,
+                    0.,
+                    0.12,
+                    0.9987502603949663,
+                    0.04997916927067825,
+                    0.,
+                    0.,
+                )
+                .velocity(0.1, 0., 0.12, 0.1, 0., 0.12)
+                .acceleration(0.1, 0.1, 0.22, 0.1, 0., 0.)
+                .build(),
+        ];
 
         let input = BeamInput {
             gravity: [0., 0., 9.81],
             damping: Damping::None,
             elements: vec![BeamElement {
-                nodes: izip!(node_s.iter(), model.nodes.iter())
-                    .map(|(&si, n)| BeamNode::new(si, n))
-                    .collect_vec(),
+                node_ids: node_ids,
                 quadrature: Quadrature {
                     points: vec![
                         -0.9491079123427585,
@@ -1122,7 +1123,12 @@ mod tests {
             }],
         };
 
-        Beams::new(&input, &model.nodes)
+        let mut beams = Beams::new(&input, &model.nodes);
+
+        let state = State::new(&model.nodes);
+        beams.calculate_system(&state);
+
+        beams
     }
 
     #[test]
@@ -1988,7 +1994,7 @@ mod tests {
 
         let mut model = Model::new();
 
-        let nodes = node_s
+        let node_ids = node_s
             .iter()
             .enumerate()
             .map(|(i, &si)| {
@@ -1996,6 +2002,7 @@ mod tests {
                 r.as_mut().quat_from_rotation_matrix(rot(si).as_ref());
                 model
                     .new_node()
+                    .element_location(si)
                     .position(
                         fx(si),
                         fy(si),
@@ -2068,15 +2075,19 @@ mod tests {
             gravity: [0., 0., 9.81],
             damping: Damping::None,
             elements: vec![BeamElement {
-                nodes: izip!(node_s.iter(), model.nodes.iter())
-                    .map(|(&si, n)| BeamNode::new(si, n))
-                    .collect_vec(),
+                node_ids: node_ids,
                 quadrature: gq,
                 sections,
             }],
         };
 
-        Beams::new(&input, &model.nodes)
+        let mut beams = Beams::new(&input, &model.nodes);
+
+        let state = State::new(&model.nodes);
+
+        beams.calculate_system(&state);
+
+        beams
     }
 
     #[test]

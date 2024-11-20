@@ -1,10 +1,10 @@
 use faer::{assert_matrix_eq, col, mat, Col, Mat, Scale};
 
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef, Damping},
+    beams::{BeamElement, BeamInput, BeamSection, Beams, ColAsMatRef, Damping},
     interp::gauss_legendre_lobotto_points,
-    model::{Model, NodeBuilder},
+    model::Model,
     quadrature::Quadrature,
     quaternion::{quat_derivative, quat_rotate_vector},
     solver::{Solver, StepParameters},
@@ -20,12 +20,16 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
 
     // Model
     let mut model = Model::new();
-    s.iter().for_each(|&si| {
-        model
-            .new_node()
-            .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
-            .build();
-    });
+    let node_ids = s
+        .iter()
+        .map(|&si| {
+            model
+                .new_node()
+                .element_location(si)
+                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+                .build()
+        })
+        .collect_vec();
 
     // Mass matrix 6x6
     let m_star = mat![
@@ -55,9 +59,7 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
         gravity: [0., 0., 0.],
         damping: Damping::None,
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), model.nodes.iter())
-                .map(|(&s, n)| BeamNode::new(s, n))
-                .collect_vec(),
+            node_ids,
             quadrature: gq,
             sections: vec![
                 BeamSection {

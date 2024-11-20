@@ -2,9 +2,9 @@ use std::{fs::File, io::Write, process};
 
 use faer::{col, mat, Scale};
 
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
+    beams::{BeamElement, BeamInput, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
@@ -21,12 +21,16 @@ fn main() {
 
     // Model
     let mut model = Model::new();
-    s.iter().for_each(|&si| {
-        model
-            .new_node()
-            .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
-            .build();
-    });
+    let node_ids = s
+        .iter()
+        .map(|&si| {
+            model
+                .new_node()
+                .element_location(si)
+                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+                .build()
+        })
+        .collect_vec();
 
     // Mass matrix 6x6
     let m_star = mat![
@@ -57,9 +61,7 @@ fn main() {
         // damping: Damping::None,
         damping: Damping::Mu(col![0.001, 0.001, 0.001, 0.001, 0.001, 0.001]),
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), model.nodes.iter())
-                .map(|(&s, n)| BeamNode::new(s, n))
-                .collect_vec(),
+            node_ids,
             quadrature: gq,
             sections: vec![
                 BeamSection {

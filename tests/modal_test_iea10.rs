@@ -11,7 +11,7 @@ use faer::{
 
 use itertools::{izip, Itertools};
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
+    beams::{BeamElement, BeamInput, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
     model::{Model, Node},
     quadrature::Quadrature,
@@ -472,6 +472,9 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         ],
     ];
 
+    let xi = gauss_legendre_lobotto_points(node_position_raw.nrows() - 1);
+    let s = xi.iter().map(|&xi| (xi + 1.) / 2.).collect_vec();
+
     let mut r = Col::<f64>::zeros(4);
     r.as_mut()
         .quat_from_axis_angle(PI / 2., col![0., 1., 0.].as_ref());
@@ -480,24 +483,29 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         .quat_from_axis_angle(-PI / 2., col![0., 1., 0.].as_ref());
 
     let mut model = Model::new();
-    node_position_raw.row_iter().for_each(|p| {
-        // Rotate positions and wm parameters
-        let mut pr = col![0., 0., 0.];
-        quat_rotate_vector(r.as_ref(), col![p[0], p[1], p[2]].as_ref(), pr.as_mut());
-        let mut wm = col![0., 0., 0.];
-        quat_rotate_vector(r.as_ref(), col![p[3], p[4], p[5]].as_ref(), wm.as_mut());
-        // Convert WM rotation to quaternion
-        let c0 = 2. - (wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]) / 8.;
-        let q = col![c0, wm[0], wm[1], wm[2]] * Scale(1. / (4. - c0));
-        let mut rt = col![0., 0., 0.];
-        let mut rq = col![0., 0., 0., 0.];
-        quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
-        rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
-        model
-            .new_node()
-            .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
-            .build();
-    });
+    let node_ids = node_position_raw
+        .row_iter()
+        .zip(s)
+        .map(|(p, s)| {
+            // Rotate positions and wm parameters
+            let mut pr = col![0., 0., 0.];
+            quat_rotate_vector(r.as_ref(), col![p[0], p[1], p[2]].as_ref(), pr.as_mut());
+            let mut wm = col![0., 0., 0.];
+            quat_rotate_vector(r.as_ref(), col![p[3], p[4], p[5]].as_ref(), wm.as_mut());
+            // Convert WM rotation to quaternion
+            let c0 = 2. - (wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]) / 8.;
+            let q = col![c0, wm[0], wm[1], wm[2]] * Scale(1. / (4. - c0));
+            let mut rt = col![0., 0., 0.];
+            let mut rq = col![0., 0., 0., 0.];
+            quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
+            rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
+            model
+                .new_node()
+                .element_location(s)
+                .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
+                .build()
+        })
+        .collect_vec();
 
     let quadrature = Quadrature {
         points: vec![
@@ -936,18 +944,13 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     // Create element
     //--------------------------------------------------------------------------
 
-    let xi = gauss_legendre_lobotto_points(model.nodes.len() - 1);
-    let s = xi.iter().map(|&xi| (xi + 1.) / 2.).collect_vec();
-
     let input = BeamInput {
         gravity: [0., 0., -9.81],
         // gravity: [0., 0., 0.],
         damping: Damping::Mu(mu),
         // damping: Damping::None,
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), model.nodes.iter())
-                .map(|(&s, n)| BeamNode::new(s, n))
-                .collect_vec(),
+            node_ids,
             quadrature,
             sections,
         }],
