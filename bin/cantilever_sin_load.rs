@@ -6,7 +6,7 @@ use itertools::{izip, Itertools};
 use ottr::{
     beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
-    node::NodeBuilder,
+    model::Model,
     quadrature::Quadrature,
     solver::{Solver, StepParameters},
     state::State,
@@ -19,16 +19,14 @@ fn main() {
     // Quadrature rule
     let gq = Quadrature::gauss(7);
 
-    // Node initial position
-    let nodes = s
-        .iter()
-        .enumerate()
-        .map(|(i, &si)| {
-            NodeBuilder::new(i)
-                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
-                .build()
-        })
-        .collect_vec();
+    // Model
+    let mut model = Model::new();
+    s.iter().for_each(|&si| {
+        model
+            .new_node()
+            .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+            .build();
+    });
 
     // Mass matrix 6x6
     let m_star = mat![
@@ -59,7 +57,7 @@ fn main() {
         // damping: Damping::None,
         damping: Damping::Mu(col![0.001, 0.001, 0.001, 0.001, 0.001, 0.001]),
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), nodes.iter())
+            nodes: izip!(s.iter(), model.nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
                 .collect_vec(),
             quadrature: gq,
@@ -78,13 +76,13 @@ fn main() {
         }],
     };
 
-    let mut beams = Beams::new(&input, &nodes);
+    let mut beams = Beams::new(&input, &model.nodes);
     let time_step = 0.005;
 
     let step_params = StepParameters::new(time_step, 0., 5);
-    let mut solver = Solver::new(step_params, &nodes, &vec![]);
+    let mut solver = Solver::new(step_params, &model.nodes, &vec![]);
 
-    let mut state = State::new(&nodes);
+    let mut state = State::new(&model.nodes);
 
     let mut file = match input.damping {
         Damping::None => File::create("damping-0.csv").unwrap(),

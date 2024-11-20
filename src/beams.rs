@@ -4,7 +4,7 @@ use crate::beams_qp::BeamQPs;
 use crate::interp::shape_interp_matrix;
 use crate::quadrature::Quadrature;
 use crate::state::State;
-use crate::{interp::shape_deriv_matrix, node::Node};
+use crate::{interp::shape_deriv_matrix, model::Node};
 use faer::linalg::matmul::matmul;
 use faer::{
     mat, unzipped, zipped, Col, ColMut, ColRef, Entity, Mat, MatMut, MatRef, Parallelism, Scale,
@@ -333,8 +333,9 @@ impl Beams {
         beams
     }
 
+    /// Calculate element properties
     pub fn calculate_system(&mut self, state: &State) {
-        // Copy displacement, velocity, and acceleration from nodes to beams
+        // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
         izip!(
             self.node_ids.iter(),
             self.node_u.col_iter_mut(),
@@ -360,6 +361,7 @@ impl Beams {
         self.integrate_matrices();
     }
 
+    /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
     pub fn assemble_system(
         &self,
         mut m: MatMut<f64>, // Mass
@@ -915,7 +917,7 @@ mod tests {
     use super::*;
 
     use crate::{
-        beams_qp::vec_tilde, interp::gauss_legendre_lobotto_points, node::NodeBuilder,
+        beams_qp::vec_tilde, interp::gauss_legendre_lobotto_points, model::Model,
         quadrature::Quadrature, quaternion::Quat,
     };
     use faer::{assert_matrix_eq, col, mat};
@@ -943,141 +945,146 @@ mod tests {
 
         let node_s = vec![0., 0.1726731646460114, 0.5, 0.82732683535398865, 1.0];
 
-        let nodes = vec![
-            NodeBuilder::new(0)
-                .position(
-                    0.,
-                    0.,
-                    0.,
-                    0.9778215200524469,
-                    -0.01733607539094763,
-                    -0.09001900002195001,
-                    -0.18831121859148398,
-                )
-                .build(),
-            NodeBuilder::new(1)
-                .position(
-                    0.863365823230057,
-                    -0.2558982639254171,
-                    0.11304112106827427,
-                    0.9950113028068008,
-                    -0.002883848832932071,
-                    -0.030192109815745303,
-                    -0.09504013471947484,
-                )
-                .displacement(
-                    0.002981602178886856,
-                    -0.00246675949494302,
-                    0.003084570715675624,
-                    0.9999627302042724,
-                    0.008633550973807708,
-                    0.,
-                    0.,
-                )
-                .velocity(
-                    0.01726731646460114,
-                    -0.014285714285714285,
-                    0.003084570715675624,
-                    0.01726731646460114,
-                    -0.014285714285714285,
-                    0.003084570715675624,
-                )
-                .acceleration(
-                    0.01726731646460114,
-                    -0.011304112106827427,
-                    0.00606617289456248,
-                    0.01726731646460114,
-                    -0.014285714285714285,
-                    -0.014285714285714285,
-                )
-                .build(),
-            NodeBuilder::new(2)
-                .position(
-                    2.5,
-                    -0.25,
-                    0.,
-                    0.9904718430204884,
-                    -0.009526411091536478,
-                    0.09620741150793366,
-                    0.09807604012323785,
-                )
-                .displacement(
-                    0.025,
-                    -0.0125,
-                    0.0275,
-                    0.9996875162757026,
-                    0.02499739591471221,
-                    0.,
-                    0.,
-                )
-                .velocity(0.05, -0.025, 0.0275, 0.05, -0.025, 0.0275)
-                .acceleration(0.05, 0., 0.0525, 0.05, -0.025, -0.025)
-                .build(),
-            NodeBuilder::new(3)
-                .position(
-                    4.1366341767699435,
-                    0.39875540678256005,
-                    -0.5416125496397031,
-                    0.9472312341234699,
-                    -0.04969214162931507,
-                    0.18127630174800594,
-                    0.25965858850765167,
-                )
-                .displacement(
-                    0.06844696924968459,
-                    -0.011818954790771264,
-                    0.07977257214146725,
-                    0.9991445348823055,
-                    0.04135454527402512,
-                    0.,
-                    0.,
-                )
-                .velocity(
-                    0.08273268353539887,
-                    -0.01428571428571428,
-                    0.07977257214146725,
-                    0.08273268353539887,
-                    -0.01428571428571428,
-                    0.07977257214146725,
-                )
-                .acceleration(
-                    0.08273268353539887,
-                    0.05416125496397031,
-                    0.14821954139115184,
-                    0.08273268353539887,
-                    -0.01428571428571428,
-                    -0.01428571428571428,
-                )
-                .build(),
-            NodeBuilder::new(4)
-                .position(
-                    5.,
-                    1.,
-                    -1.,
-                    0.9210746582719719,
-                    -0.07193653093139739,
-                    0.20507529985516368,
-                    0.32309554437664584,
-                )
-                .displacement(
-                    0.1,
-                    0.,
-                    0.12,
-                    0.9987502603949663,
-                    0.04997916927067825,
-                    0.,
-                    0.,
-                )
-                .velocity(0.1, 0., 0.12, 0.1, 0., 0.12)
-                .acceleration(0.1, 0.1, 0.22, 0.1, 0., 0.)
-                .build(),
-        ];
+        let mut model = Model::new();
+
+        model
+            .new_node()
+            .position(
+                0.,
+                0.,
+                0.,
+                0.9778215200524469,
+                -0.01733607539094763,
+                -0.09001900002195001,
+                -0.18831121859148398,
+            )
+            .build();
+        model
+            .new_node()
+            .position(
+                0.863365823230057,
+                -0.2558982639254171,
+                0.11304112106827427,
+                0.9950113028068008,
+                -0.002883848832932071,
+                -0.030192109815745303,
+                -0.09504013471947484,
+            )
+            .displacement(
+                0.002981602178886856,
+                -0.00246675949494302,
+                0.003084570715675624,
+                0.9999627302042724,
+                0.008633550973807708,
+                0.,
+                0.,
+            )
+            .velocity(
+                0.01726731646460114,
+                -0.014285714285714285,
+                0.003084570715675624,
+                0.01726731646460114,
+                -0.014285714285714285,
+                0.003084570715675624,
+            )
+            .acceleration(
+                0.01726731646460114,
+                -0.011304112106827427,
+                0.00606617289456248,
+                0.01726731646460114,
+                -0.014285714285714285,
+                -0.014285714285714285,
+            )
+            .build();
+        model
+            .new_node()
+            .position(
+                2.5,
+                -0.25,
+                0.,
+                0.9904718430204884,
+                -0.009526411091536478,
+                0.09620741150793366,
+                0.09807604012323785,
+            )
+            .displacement(
+                0.025,
+                -0.0125,
+                0.0275,
+                0.9996875162757026,
+                0.02499739591471221,
+                0.,
+                0.,
+            )
+            .velocity(0.05, -0.025, 0.0275, 0.05, -0.025, 0.0275)
+            .acceleration(0.05, 0., 0.0525, 0.05, -0.025, -0.025)
+            .build();
+        model
+            .new_node()
+            .position(
+                4.1366341767699435,
+                0.39875540678256005,
+                -0.5416125496397031,
+                0.9472312341234699,
+                -0.04969214162931507,
+                0.18127630174800594,
+                0.25965858850765167,
+            )
+            .displacement(
+                0.06844696924968459,
+                -0.011818954790771264,
+                0.07977257214146725,
+                0.9991445348823055,
+                0.04135454527402512,
+                0.,
+                0.,
+            )
+            .velocity(
+                0.08273268353539887,
+                -0.01428571428571428,
+                0.07977257214146725,
+                0.08273268353539887,
+                -0.01428571428571428,
+                0.07977257214146725,
+            )
+            .acceleration(
+                0.08273268353539887,
+                0.05416125496397031,
+                0.14821954139115184,
+                0.08273268353539887,
+                -0.01428571428571428,
+                -0.01428571428571428,
+            )
+            .build();
+        model
+            .new_node()
+            .position(
+                5.,
+                1.,
+                -1.,
+                0.9210746582719719,
+                -0.07193653093139739,
+                0.20507529985516368,
+                0.32309554437664584,
+            )
+            .displacement(
+                0.1,
+                0.,
+                0.12,
+                0.9987502603949663,
+                0.04997916927067825,
+                0.,
+                0.,
+            )
+            .velocity(0.1, 0., 0.12, 0.1, 0., 0.12)
+            .acceleration(0.1, 0.1, 0.22, 0.1, 0., 0.)
+            .build();
 
         let input = BeamInput {
             gravity: [0., 0., 9.81],
             damping: Damping::None,
             elements: vec![BeamElement {
-                nodes: izip!(node_s.iter(), nodes.iter())
+                nodes: izip!(node_s.iter(), model.nodes.iter())
                     .map(|(&si, n)| BeamNode::new(si, n))
                     .collect_vec(),
                 quadrature: Quadrature {
@@ -1115,7 +1122,7 @@ mod tests {
             }],
         };
 
-        Beams::new(&input, &nodes)
+        Beams::new(&input, &model.nodes)
     }
 
     #[test]
@@ -1979,13 +1986,16 @@ mod tests {
             ],
         ];
 
+        let mut model = Model::new();
+
         let nodes = node_s
             .iter()
             .enumerate()
             .map(|(i, &si)| {
                 let mut r = Col::<f64>::zeros(4);
                 r.as_mut().quat_from_rotation_matrix(rot(si).as_ref());
-                NodeBuilder::new(i)
+                model
+                    .new_node()
                     .position(
                         fx(si),
                         fy(si),
@@ -2058,7 +2068,7 @@ mod tests {
             gravity: [0., 0., 9.81],
             damping: Damping::None,
             elements: vec![BeamElement {
-                nodes: izip!(node_s.iter(), nodes.iter())
+                nodes: izip!(node_s.iter(), model.nodes.iter())
                     .map(|(&si, n)| BeamNode::new(si, n))
                     .collect_vec(),
                 quadrature: gq,
@@ -2066,7 +2076,7 @@ mod tests {
             }],
         };
 
-        Beams::new(&input, &nodes)
+        Beams::new(&input, &model.nodes)
     }
 
     #[test]

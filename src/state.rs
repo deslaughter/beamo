@@ -1,4 +1,4 @@
-use crate::node::Node;
+use crate::model::Node;
 use crate::quaternion::Quat;
 use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
@@ -139,7 +139,7 @@ impl State {
 mod tests {
 
     use super::*;
-    use crate::node::NodeBuilder;
+    use crate::model::Model;
     use faer::{assert_matrix_eq, col, mat};
     use std::f64::consts::PI;
 
@@ -150,20 +150,22 @@ mod tests {
             .quat_from_axis_angle(90. * PI / 180., col![1., 0., 0.].as_ref());
         q2.as_mut()
             .quat_from_axis_angle(45. * PI / 180., col![0., 1., 0.].as_ref());
-        State::new(&[
-            NodeBuilder::new(0)
-                .position(3., 5., 7., q1[0], q1[1], q1[2], q1[3])
-                .displacement(4., 6., 8., q1[0], q1[1], q1[2], q1[3])
-                .velocity(1., 2., 3., 4., 5., 6.)
-                .acceleration(7., 8., 9., 10., 11., 12.)
-                .build(),
-            NodeBuilder::new(1)
-                .position(2., -3., -5., q1[0], q1[1], q1[2], q1[3])
-                .displacement(1., 1., 6., q2[0], q2[1], q2[2], q2[3])
-                .velocity(-1., -2., -3., -4., -5., -6.)
-                .acceleration(-7., -8., -9., -10., -11., -12.)
-                .build(),
-        ])
+        let mut model = Model::new();
+        model
+            .new_node()
+            .position(3., 5., 7., q1[0], q1[1], q1[2], q1[3])
+            .displacement(4., 6., 8., q1[0], q1[1], q1[2], q1[3])
+            .velocity(1., 2., 3., 4., 5., 6.)
+            .acceleration(7., 8., 9., 10., 11., 12.)
+            .build();
+        model
+            .new_node()
+            .position(2., -3., -5., q1[0], q1[1], q1[2], q1[3])
+            .displacement(1., 1., 6., q2[0], q2[1], q2[2], q2[3])
+            .velocity(-1., -2., -3., -4., -5., -6.)
+            .acceleration(-7., -8., -9., -10., -11., -12.)
+            .build();
+        State::new(&model.nodes)
     }
 
     #[test]

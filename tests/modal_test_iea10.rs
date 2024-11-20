@@ -1,4 +1,4 @@
-use std::{f64::consts::PI, fs::File, io::Write, process};
+use std::{f64::consts::PI, fs::File, io::Write};
 
 use faer::{
     col,
@@ -11,12 +11,11 @@ use faer::{
 
 use itertools::{izip, Itertools};
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef, Damping},
+    beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
-    node::{Node, NodeBuilder},
+    model::{Model, Node},
     quadrature::Quadrature,
     quaternion::{quat_as_matrix, quat_rotate_vector, Quat},
-    solver::{Solver, StepParameters},
     state::State,
 };
 
@@ -133,17 +132,17 @@ fn test_modal_frequency() {
         beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
 
         // let n_dof_reduced = n_dofs - 6;
-        // let tip_defl = u.col(i)[u.nrows() - 5];
+        // let tip_deflection = u.col(i)[u.nrows() - 5];
         // dump_matrix(
-        //     &format!("matrices-0g/m,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     &format!("matrices-0g/m,t={:.3},d={tip_deflection:.3}.csv", t[i]),
         //     m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
         // );
         // dump_matrix(
-        //     &format!("matrices-0g/k,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     &format!("matrices-0g/k,t={:.3},d={tip_deflection:.3}.csv", t[i]),
         //     k.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
         // );
         // dump_matrix(
-        //     &format!("matrices-0g/c,t={:.3},d={tip_defl:.3}.csv", t[i]),
+        //     &format!("matrices-0g/c,t={:.3},d={tip_deflection:.3}.csv", t[i]),
         //     c.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
         // );
 
@@ -187,7 +186,7 @@ fn test_modal_frequency() {
 
     // let mut ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
     // let mut tu = Mat::<f64>::zeros(nodes.len() * 3, n_steps);
-    // let mut vsave = Mat::<f64>::zeros(nodes.len() * 6, n_steps);
+    // let mut vel_save = Mat::<f64>::zeros(nodes.len() * 6, n_steps);
 
     // let dir = "matrices-0g";
     // beams.gravity = col![0., 0., 0.];
@@ -213,9 +212,9 @@ fn test_modal_frequency() {
     //     }
 
     //     // Get tip deflection
-    //     let tip_defl = tv_col[tv_col.nrows() - 2];
+    //     let tip_deflection = tv_col[tv_col.nrows() - 2];
 
-    //     println!("{tip_defl}");
+    //     println!("{tip_deflection}");
 
     //     // Calculate energy dissipation
     //     vel.copy_from(&Col::<f64>::from_fn(vel.nrows(), |j| {
@@ -231,33 +230,33 @@ fn test_modal_frequency() {
     //     );
     //     energy += (&force.transpose() * &vel) * time_step;
 
-    //     vsave.col_mut(i).copy_from(&vel);
+    //     vel_save.col_mut(i).copy_from(&vel);
 
     //     // Dump matrices
     //     // let n_dof_reduced = solver.n_dofs - 6;
     //     // dump_matrix(
-    //     //     &format!("{dir}/m,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     &format!("{dir}/m,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
     //     //     solver.m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
     //     // );
     //     // dump_matrix(
-    //     //     &format!("{dir}/k,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     &format!("{dir}/k,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
     //     //     solver.kt.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
     //     // );
     //     // dump_matrix(
-    //     //     &format!("{dir}/c,t={:.3},d={tip_defl:.3}.csv", ts[i]),
+    //     //     &format!("{dir}/c,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
     //     //     solver.ct.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
     //     // );
 
-    //     if ts[i] > 1. / f_n && tip_defl.abs() < 0.015 {
+    //     if ts[i] > 1. / f_n && tip_deflection.abs() < 0.015 {
     //         ts.resize_with(i + 1, |_| 0.);
-    //         vsave.resize_with(vsave.nrows(), i + 1, |_, _| 0.);
+    //         vel_save.resize_with(vel_save.nrows(), i + 1, |_, _| 0.);
     //         break;
     //     }
     // }
 
     // println!("energy = {energy}");
 
-    // dump_matrix(&format!("vel.csv"), vsave.transpose());
+    // dump_matrix(&format!("vel.csv"), vel_save.transpose());
 
     // let mut file = File::create(format!("disp.csv")).unwrap();
     // izip!(ts.iter(), tu.col_iter()).for_each(|(&t, tv)| {
@@ -480,27 +479,25 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     ru.as_mut()
         .quat_from_axis_angle(-PI / 2., col![0., 1., 0.].as_ref());
 
-    let nodes = node_position_raw
-        .row_iter()
-        .enumerate()
-        .map(|(i, p)| {
-            // Rotate positions and wm parameters
-            let mut pr = col![0., 0., 0.];
-            quat_rotate_vector(r.as_ref(), col![p[0], p[1], p[2]].as_ref(), pr.as_mut());
-            let mut wm = col![0., 0., 0.];
-            quat_rotate_vector(r.as_ref(), col![p[3], p[4], p[5]].as_ref(), wm.as_mut());
-            // Convert WM rotation to quaternion
-            let c0 = 2. - (wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]) / 8.;
-            let q = col![c0, wm[0], wm[1], wm[2]] * Scale(1. / (4. - c0));
-            let mut rt = col![0., 0., 0.];
-            let mut rq = col![0., 0., 0., 0.];
-            quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
-            rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
-            NodeBuilder::new(i)
-                .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
-                .build()
-        })
-        .collect_vec();
+    let mut model = Model::new();
+    node_position_raw.row_iter().for_each(|p| {
+        // Rotate positions and wm parameters
+        let mut pr = col![0., 0., 0.];
+        quat_rotate_vector(r.as_ref(), col![p[0], p[1], p[2]].as_ref(), pr.as_mut());
+        let mut wm = col![0., 0., 0.];
+        quat_rotate_vector(r.as_ref(), col![p[3], p[4], p[5]].as_ref(), wm.as_mut());
+        // Convert WM rotation to quaternion
+        let c0 = 2. - (wm[0] * wm[0] + wm[1] * wm[1] + wm[2] * wm[2]) / 8.;
+        let q = col![c0, wm[0], wm[1], wm[2]] * Scale(1. / (4. - c0));
+        let mut rt = col![0., 0., 0.];
+        let mut rq = col![0., 0., 0., 0.];
+        quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
+        rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
+        model
+            .new_node()
+            .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
+            .build();
+    });
 
     let quadrature = Quadrature {
         points: vec![
@@ -939,7 +936,7 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     // Create element
     //--------------------------------------------------------------------------
 
-    let xi = gauss_legendre_lobotto_points(nodes.len() - 1);
+    let xi = gauss_legendre_lobotto_points(model.nodes.len() - 1);
     let s = xi.iter().map(|&xi| (xi + 1.) / 2.).collect_vec();
 
     let input = BeamInput {
@@ -948,7 +945,7 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         damping: Damping::Mu(mu),
         // damping: Damping::None,
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), nodes.iter())
+            nodes: izip!(s.iter(), model.nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
                 .collect_vec(),
             quadrature,
@@ -956,8 +953,8 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         }],
     };
 
-    let beams = Beams::new(&input, &nodes);
-    let state = State::new(&nodes);
+    let beams = Beams::new(&input, &model.nodes);
+    let state = State::new(&model.nodes);
 
-    (nodes, beams, state)
+    (model.nodes, beams, state)
 }

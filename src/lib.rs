@@ -2,7 +2,6 @@ pub mod beams;
 pub mod beams_qp;
 pub mod interp;
 pub mod model;
-pub mod node;
 pub mod quadrature;
 pub mod quaternion;
 pub mod solver;

@@ -5,7 +5,7 @@ use faer::{linalg::matmul::matmul, solvers::SpSolver, unzipped, zipped, Col, Mat
 use crate::{
     beams::{Beams, ColAsMatRef},
     beams_qp::vec_tilde,
-    node::Node,
+    model::Node,
     state::State,
 };
 

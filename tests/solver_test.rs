@@ -4,7 +4,7 @@ use itertools::{izip, Itertools};
 use ottr::{
     beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, ColAsMatRef, Damping},
     interp::gauss_legendre_lobotto_points,
-    node::NodeBuilder,
+    model::{Model, NodeBuilder},
     quadrature::Quadrature,
     quaternion::{quat_derivative, quat_rotate_vector},
     solver::{Solver, StepParameters},
@@ -18,16 +18,14 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
     // Quadrature rule
     let gq = Quadrature::gauss(7);
 
-    // Node initial position
-    let nodes = s
-        .iter()
-        .enumerate()
-        .map(|(i, &si)| {
-            NodeBuilder::new(i)
-                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
-                .build()
-        })
-        .collect_vec();
+    // Model
+    let mut model = Model::new();
+    s.iter().for_each(|&si| {
+        model
+            .new_node()
+            .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+            .build();
+    });
 
     // Mass matrix 6x6
     let m_star = mat![
@@ -57,7 +55,7 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
         gravity: [0., 0., 0.],
         damping: Damping::None,
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), nodes.iter())
+            nodes: izip!(s.iter(), model.nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
                 .collect_vec(),
             quadrature: gq,
@@ -76,13 +74,13 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
         }],
     };
 
-    let mut beams = Beams::new(&input, &nodes);
+    let mut beams = Beams::new(&input, &model.nodes);
 
     let step_params = StepParameters::new(0.005, 0., max_iter);
-    let mut solver = Solver::new(step_params, &nodes, &vec![]);
+    let mut solver = Solver::new(step_params, &model.nodes, &vec![]);
     solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * 0.005 as f64).sin();
 
-    let mut state = State::new(&nodes);
+    let mut state = State::new(&model.nodes);
     solver.step(&mut state, &mut beams);
 
     (beams, solver, state)

@@ -9,6 +9,7 @@ use faer::{
 };
 use itertools::izip;
 
+/// Beam quadrature point data
 pub struct BeamQPs {
     /// Integration weights `[n_qps]`
     pub weight: Col<f64>,
@@ -467,10 +468,10 @@ fn calc_e1_tilde(e1_tilde: MatMut<f64>, x0_prime: MatRef<f64>, u_prime: MatRef<f
         x0_prime.col_iter(),
         u_prime.col_iter()
     )
-    .for_each(|(x0pupss_col, x0_prime, u_prime)| {
+    .for_each(|(e1_tilde_col, x0_prime, u_prime)| {
         zipped!(&mut x0pup, x0_prime, u_prime)
             .for_each(|unzipped!(mut x0pup, x0p, up)| *x0pup = *x0p + *up);
-        vec_tilde(x0pup.as_ref(), x0pupss_col.as_mat_mut(3, 3));
+        vec_tilde(x0pup.as_ref(), e1_tilde_col.as_mat_mut(3, 3));
     });
 }
 
@@ -645,17 +646,17 @@ fn calc_fg(fg: MatMut<f64>, gravity: ColRef<f64>, m: ColRef<f64>, eta: MatRef<f6
 }
 
 #[inline]
-fn calc_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+fn calc_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, e1_tilde: MatRef<f64>, fc: MatRef<f64>) {
     izip!(
         ouu.col_iter_mut(),
         cuu.col_iter(),
-        x0pupss.col_iter(),
+        e1_tilde.col_iter(),
         fc.col_iter(),
     )
-    .for_each(|(ouu_col, cuu_col, x0pupss_col, fc)| {
+    .for_each(|(ouu_col, cuu_col, e1_tilde_col, fc)| {
         let mut ouu = ouu_col.as_mat_mut(6, 6);
         let cuu = cuu_col.as_mat_ref(6, 6);
-        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+        let e1_tilde = e1_tilde_col.as_mat_ref(3, 3);
 
         let mut ouu12 = ouu.as_mut().submatrix_mut(0, 3, 3, 3);
         let c11 = cuu.submatrix(0, 0, 3, 3);
@@ -663,7 +664,7 @@ fn calc_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
         matmul(
             ouu12.as_mut(),
             c11,
-            x0pupss,
+            e1_tilde,
             Some(-1.),
             1.,
             Parallelism::None,
@@ -675,7 +676,7 @@ fn calc_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
         matmul(
             ouu22.as_mut(),
             c21,
-            x0pupss,
+            e1_tilde,
             Some(-1.),
             1.,
             Parallelism::None,
@@ -684,18 +685,18 @@ fn calc_ouu(ouu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
 }
 
 #[inline]
-fn calc_puu(puu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+fn calc_puu(puu: MatMut<f64>, cuu: MatRef<f64>, e1_tilde: MatRef<f64>, fc: MatRef<f64>) {
     izip!(
         puu.col_iter_mut(),
         cuu.col_iter(),
-        x0pupss.col_iter(),
+        e1_tilde.col_iter(),
         fc.col_iter(),
     )
-    .for_each(|(mut puu_col, cuu_col, x0pupss_col, fc)| {
+    .for_each(|(mut puu_col, cuu_col, e1_tilde_col, fc)| {
         puu_col.fill(0.);
         let mut puu = puu_col.as_mat_mut(6, 6);
         let cuu = cuu_col.as_mat_ref(6, 6);
-        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+        let e1_tilde = e1_tilde_col.as_mat_ref(3, 3);
 
         let c11 = cuu.submatrix(0, 0, 3, 3);
         let c12 = cuu.submatrix(0, 3, 3, 3);
@@ -704,7 +705,7 @@ fn calc_puu(puu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
         vec_tilde(fc.subrows(0, 3), puu21.as_mut());
         matmul(
             puu21.as_mut(),
-            x0pupss.transpose(),
+            e1_tilde.transpose(),
             c11,
             Some(1.),
             1.,
@@ -714,7 +715,7 @@ fn calc_puu(puu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
         let mut puu22 = puu.as_mut().submatrix_mut(3, 3, 3, 3);
         matmul(
             puu22.as_mut(),
-            x0pupss.transpose(),
+            e1_tilde.transpose(),
             c12,
             None,
             1.,
@@ -724,27 +725,34 @@ fn calc_puu(puu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef
 }
 
 #[inline]
-fn calc_quu(quu: MatMut<f64>, cuu: MatRef<f64>, x0pupss: MatRef<f64>, fc: MatRef<f64>) {
+fn calc_quu(quu: MatMut<f64>, cuu: MatRef<f64>, e1_tilde: MatRef<f64>, fc: MatRef<f64>) {
     let mut mat = Mat::<f64>::zeros(3, 3);
     izip!(
         quu.col_iter_mut(),
         cuu.col_iter(),
-        x0pupss.col_iter(),
+        e1_tilde.col_iter(),
         fc.col_iter(),
     )
-    .for_each(|(mut quu_col, cuu_col, x0pupss_col, fc)| {
+    .for_each(|(mut quu_col, cuu_col, e1_tilde_col, fc)| {
         quu_col.fill(0.);
         let mut quu = quu_col.as_mat_mut(6, 6);
         let cuu = cuu_col.as_mat_ref(6, 6);
-        let x0pupss = x0pupss_col.as_mat_ref(3, 3);
+        let e1_tilde = e1_tilde_col.as_mat_ref(3, 3);
         vec_tilde(fc.subrows(0, 3), mat.as_mut()); // n_tilde
 
         let mut quu22 = quu.as_mut().submatrix_mut(3, 3, 3, 3);
         let c11 = cuu.submatrix(0, 0, 3, 3);
-        matmul(mat.as_mut(), c11, x0pupss, Some(-1.), 1., Parallelism::None);
+        matmul(
+            mat.as_mut(),
+            c11,
+            e1_tilde,
+            Some(-1.),
+            1.,
+            Parallelism::None,
+        );
         matmul(
             quu22.as_mut(),
-            x0pupss.transpose(),
+            e1_tilde.transpose(),
             mat.as_ref(),
             None,
             1.,

@@ -12,13 +12,14 @@ use itertools::{izip, Itertools};
 use ottr::{
     beams::{BeamElement, BeamInput, BeamNode, BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
-    node::{Node, NodeBuilder},
+    model::Model,
+    model::Node,
     quadrature::Quadrature,
     solver::{Solver, StepParameters},
     state::State,
 };
 
-fn setup_test() -> (Vec<Node>, Beams, State) {
+fn setup_test() -> (Model, Beams, State) {
     let xi = gauss_legendre_lobotto_points(6);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
 
@@ -27,16 +28,15 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     // Quadrature rule
     let gq = Quadrature::gauss(12);
 
-    // Node initial position
-    let nodes = s
-        .iter()
-        .enumerate()
-        .map(|(i, &si)| {
-            NodeBuilder::new(i)
-                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
-                .build()
-        })
-        .collect_vec();
+    // Model
+    let mut model = Model::new();
+    s.iter().for_each(|&si| {
+        model
+            .new_node()
+            .element_location(si)
+            .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+            .build();
+    });
 
     // Mass matrix 6x6
     let m_star = mat![
@@ -70,7 +70,7 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         damping: Damping::None,
         // damping: Damping::Mu(faer::col![0.0, 0.0, 0.1, 0.0, 0.0, 0.0]),
         elements: vec![BeamElement {
-            nodes: izip!(s.iter(), nodes.iter())
+            nodes: izip!(s.iter(), model.nodes.iter())
                 .map(|(&s, n)| BeamNode::new(s, n))
                 .collect_vec(),
             quadrature: gq,
@@ -89,16 +89,16 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
         }],
     };
 
-    let beams = Beams::new(&input, &nodes);
-    let state = State::new(&nodes);
+    let beams = Beams::new(&input, &model.nodes);
+    let state = State::new(&model.nodes);
 
-    (nodes, beams, state)
+    (model, beams, state)
 }
 
 #[test]
 fn test_modal_frequency() {
     // Initialize system
-    let (nodes, mut beams, mut state) = setup_test();
+    let (model, mut beams, mut state) = setup_test();
 
     // Perform modal analysis
     let (eig_val, eig_vec) = modal_analysis(&mut beams, &state, state.u.ncols() * 6);
@@ -143,15 +143,15 @@ fn test_modal_frequency() {
     let n_steps = 600;
     let mut solver = Solver::new(
         StepParameters::new(time_step, rho_inf, max_iter),
-        &nodes,
+        &model.nodes,
         &vec![],
     );
 
     let ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
-    let mut tv = Mat::<f64>::zeros(nodes.len() * 3, n_steps);
+    let mut tv = Mat::<f64>::zeros(model.nodes.len() * 3, n_steps);
 
     for mut tv_col in tv.col_iter_mut() {
-        tv_col.copy_from(Col::<f64>::from_fn(3 * nodes.len(), |i| {
+        tv_col.copy_from(Col::<f64>::from_fn(3 * model.nodes.len(), |i| {
             state.u[(i % 3, i / 3)]
         }));
 
