@@ -1,12 +1,88 @@
+use faer::{Col, Mat};
+use itertools::Itertools;
+
+use crate::constraints::{ConstraintInput, ConstraintKind, Constraints};
+use crate::elements::beams::{BeamElement, BeamSection, Beams, Damping};
+use crate::elements::masses::{MassElement, Masses};
+use crate::elements::Elements;
+use crate::node::{ActiveDOFs, Node, NodeFreedomMap};
+use crate::quadrature::Quadrature;
+use crate::solver::{Solver, StepParameters};
+use crate::state::State;
+
 pub struct Model {
+    gravity: [f64; 3],
+    h: f64,
+    rho_inf: f64,
+    max_iter: usize,
+    enable_beam_damping: bool,
     pub nodes: Vec<Node>,
+    pub beam_elements: Vec<BeamElement>,
+    pub mass_elements: Vec<MassElement>,
+    constraints: Vec<ConstraintInput>,
 }
 
 impl Model {
+    /// Creates and initializes a model
     pub fn new() -> Model {
-        Model { nodes: vec![] }
+        Model {
+            gravity: [0., 0., 0.],
+            h: 0.01,
+            rho_inf: 1.,
+            max_iter: 6,
+            enable_beam_damping: false,
+            nodes: vec![],
+            beam_elements: vec![],
+            mass_elements: vec![],
+            constraints: vec![],
+        }
     }
-    // Creates and returns a node builder for adding a new node to the model
+
+    pub fn create_node_freedom_map(&self) -> NodeFreedomMap {
+        NodeFreedomMap::new(&self.nodes)
+    }
+
+    /// Set the gravity acceleration in each direction
+    pub fn set_gravity(&mut self, x: f64, y: f64, z: f64) {
+        self.gravity[0] = x;
+        self.gravity[1] = y;
+        self.gravity[2] = z;
+    }
+
+    pub fn set_time_step(&mut self, h: f64) {
+        self.h = h;
+    }
+
+    pub fn set_rho_inf(&mut self, rho_inf: f64) {
+        self.rho_inf = rho_inf;
+    }
+
+    pub fn set_max_iter(&mut self, max_iter: usize) {
+        self.max_iter = max_iter;
+    }
+
+    /// Create solver
+    pub fn create_solver(&self) -> Solver {
+        let nfm = self.create_node_freedom_map();
+        let constraints = Constraints::new(&self.constraints, &nfm);
+        let elements = self.create_elements();
+        let step_parameters = StepParameters::new(self.h, self.rho_inf, self.max_iter);
+        Solver::new(step_parameters, nfm, elements, constraints)
+    }
+
+    /// Create elements
+    pub fn create_elements(&self) -> Elements {
+        Elements {
+            beam: self.create_beams(),
+            mass: self.create_masses(),
+        }
+    }
+
+    pub fn create_masses(&self) -> Masses {
+        Masses::new(&self.mass_elements, &self.gravity, &self.nodes)
+    }
+
+    /// Creates and returns a node builder for adding a new node to the model
     pub fn new_node(&mut self) -> NodeBuilder {
         self.nodes.push(Node {
             id: self.nodes.len(),
@@ -15,7 +91,7 @@ impl Model {
             u: [0., 0., 0., 1., 0., 0., 0.],
             v: [0., 0., 0., 0., 0., 0.],
             vd: [0., 0., 0., 0., 0., 0.],
-            dofs: 0,
+            active_dofs: ActiveDOFs::None,
         });
 
         // Return builder
@@ -24,31 +100,108 @@ impl Model {
             built: false,
         }
     }
+
+    /// Creates and returns state object
+    pub fn create_state(&self) -> State {
+        State::new(&self.nodes)
+    }
+
+    /// Add rigid constraint
+    pub fn add_rigid_constraint(&mut self, base_node_id: usize, target_node_id: usize) -> usize {
+        let base_node = &self.nodes[base_node_id];
+        let target_node = &self.nodes[target_node_id];
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::Rigid,
+            node_id_base: base_node_id,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            vec: Col::zeros(3),
+        });
+        self.constraints.last().unwrap().id
+    }
+
+    /// Add prescribed constraint
+    pub fn add_prescribed_constraint(&mut self, target_node_id: usize) -> usize {
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::Prescribed,
+            node_id_base: 0,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::zeros(3),
+            vec: Col::zeros(3),
+        });
+        self.constraints.last().unwrap().id
+    }
+
+    pub fn add_beam_element(
+        &mut self,
+        node_ids: &[usize],
+        quadrature: &Quadrature,
+        sections: &[BeamSection],
+        damping: Damping,
+    ) -> usize {
+        let id = self.beam_elements.len();
+        match damping {
+            Damping::None => {}
+            _ => self.enable_beam_damping = true,
+        };
+        self.beam_elements.push(BeamElement {
+            id,
+            node_ids: node_ids.to_vec(),
+            quadrature: quadrature.clone(),
+            sections: sections
+                .iter()
+                .map(|s| BeamSection {
+                    s: s.s,
+                    m_star: s.m_star.clone(),
+                    c_star: s.c_star.clone(),
+                })
+                .collect_vec(),
+            damping,
+        });
+        id
+    }
+
+    pub fn add_mass_element(&mut self, node_id: usize, mass_matrix: Mat<f64>) -> usize {
+        let id = self.mass_elements.len();
+        self.mass_elements.push(MassElement {
+            id,
+            node_id,
+            m: mass_matrix,
+        });
+        id
+    }
+
+    pub fn create_beams(&self) -> Beams {
+        Beams::new(
+            &self.beam_elements,
+            &self.gravity,
+            &self.nodes,
+            self.enable_beam_damping,
+        )
+    }
+
+    pub fn n_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn disable_beam_damping(&mut self) {
+        self.enable_beam_damping = false;
+    }
+
+    pub fn enable_beam_damping(&mut self) {
+        self.enable_beam_damping = true;
+    }
 }
 
 //------------------------------------------------------------------------------
-// Node
+// Degrees of freedom
 //------------------------------------------------------------------------------
 
-const TRANSLATION_DOFS: u8 = 7;
-const ROTATION_DOFS: u8 = 56;
-
-pub struct Node {
-    /// Node identifier
-    pub id: usize,
-    /// Position along beam element length [0-1]
-    pub s: f64,
-    /// Initial position
-    pub x: [f64; 7],
-    /// Initial displacement
-    pub u: [f64; 7],
-    /// Initial velocity
-    pub v: [f64; 6],
-    /// Initial acceleration
-    pub vd: [f64; 6],
-    /// Packed active degrees of freedom
-    pub dofs: u8,
-}
+//------------------------------------------------------------------------------
+// Builder
+//------------------------------------------------------------------------------
 
 pub struct NodeBuilder<'a> {
     node: &'a mut Node,
@@ -59,7 +212,7 @@ impl<'a> NodeBuilder<'a> {
     /// Sets position of node within beam element
     pub fn element_location(self, s: f64) -> Self {
         self.node.s = s;
-        self.node.dofs |= TRANSLATION_DOFS | ROTATION_DOFS;
+        self.node.active_dofs = ActiveDOFs::All;
         self
     }
 
@@ -72,7 +225,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.x[4] = i;
         self.node.x[5] = j;
         self.node.x[6] = k;
-        self.node.dofs |= TRANSLATION_DOFS | ROTATION_DOFS;
+        self.node.active_dofs = ActiveDOFs::All;
         self
     }
 
@@ -85,7 +238,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.u[4] = i;
         self.node.u[5] = j;
         self.node.u[6] = k;
-        self.node.dofs |= TRANSLATION_DOFS | ROTATION_DOFS;
+        self.node.active_dofs = ActiveDOFs::All;
         self
     }
 
@@ -97,7 +250,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.v[3] = i;
         self.node.v[4] = j;
         self.node.v[5] = k;
-        self.node.dofs |= TRANSLATION_DOFS | ROTATION_DOFS;
+        self.node.active_dofs = ActiveDOFs::All;
         self
     }
 
@@ -109,7 +262,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.vd[3] = i;
         self.node.vd[4] = j;
         self.node.vd[5] = k;
-        self.node.dofs |= TRANSLATION_DOFS | ROTATION_DOFS;
+        self.node.active_dofs = ActiveDOFs::All;
         self
     }
 
@@ -118,7 +271,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.x[0] = x;
         self.node.x[1] = y;
         self.node.x[2] = z;
-        self.node.dofs |= TRANSLATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Translation);
         self
     }
 
@@ -128,7 +281,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.x[4] = x;
         self.node.x[5] = y;
         self.node.x[6] = z;
-        self.node.dofs |= ROTATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }
 
@@ -137,7 +290,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.u[0] = x;
         self.node.u[1] = y;
         self.node.u[2] = z;
-        self.node.dofs |= TRANSLATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Translation);
         self
     }
 
@@ -147,7 +300,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.u[4] = x;
         self.node.u[5] = y;
         self.node.u[6] = z;
-        self.node.dofs |= ROTATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }
 
@@ -156,7 +309,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.v[0] = x;
         self.node.v[1] = y;
         self.node.v[2] = z;
-        self.node.dofs |= TRANSLATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Translation);
         self
     }
 
@@ -165,7 +318,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.v[3] = x;
         self.node.v[4] = y;
         self.node.v[5] = z;
-        self.node.dofs |= ROTATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }
 
@@ -174,7 +327,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.vd[0] = x;
         self.node.vd[1] = y;
         self.node.vd[2] = z;
-        self.node.dofs |= TRANSLATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Translation);
         self
     }
 
@@ -183,7 +336,7 @@ impl<'a> NodeBuilder<'a> {
         self.node.vd[3] = x;
         self.node.vd[4] = y;
         self.node.vd[5] = z;
-        self.node.dofs |= ROTATION_DOFS;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }
 

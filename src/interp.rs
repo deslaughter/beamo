@@ -309,7 +309,7 @@ mod test_integration {
     use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, Mat, Parallelism};
     use itertools::Itertools;
 
-    use crate::quaternion::{quat_as_matrix, Quat};
+    use crate::util::{quat_as_matrix, Quat};
 
     use super::*;
 

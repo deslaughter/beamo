@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct Quadrature {
     pub points: Vec<f64>,
     pub weights: Vec<f64>,

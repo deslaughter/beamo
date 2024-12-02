@@ -1,29 +1,21 @@
 use std::ops::Rem;
 
-use crate::beams_qp::BeamQPs;
-use crate::interp::shape_interp_matrix;
+use crate::elements::beam_qps::BeamQPs;
+use crate::interp::{shape_deriv_matrix, shape_interp_matrix};
+use crate::node::{Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
 use crate::state::State;
-use crate::{interp::shape_deriv_matrix, model::Node};
+use crate::util::ColAsMatRef;
 use faer::linalg::matmul::matmul;
-use faer::{
-    mat, unzipped, zipped, Col, ColMut, ColRef, Entity, Mat, MatMut, MatRef, Parallelism, Scale,
-};
+use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
 use itertools::{izip, multiunzip, Itertools};
 
-pub struct BeamInput {
-    /// Gravity in XYZ directions
-    pub gravity: [f64; 3],
-    /// Damping formulation
-    pub damping: Damping,
-    /// Vector of beam elements
-    pub elements: Vec<BeamElement>,
-}
-
 pub struct BeamElement {
+    pub id: usize,
     pub node_ids: Vec<usize>,
     pub sections: Vec<BeamSection>,
     pub quadrature: Quadrature,
+    pub damping: Damping,
 }
 
 pub struct BeamSection {
@@ -52,11 +44,10 @@ pub struct ElemIndex {
 }
 
 pub struct Beams {
+    enable_damping: bool,
     elem_index: Vec<ElemIndex>,
     node_ids: Vec<usize>,
     pub gravity: Col<f64>, // Gravity components `[3]`
-    pub damping: Damping,  // Damping formulation
-
     /// Initial position/rotation `[7][n_nodes]`
     pub node_x0: Mat<f64>,
     /// State: translation/rotation displacement `[7][n_nodes]`
@@ -93,37 +84,36 @@ pub struct Beams {
 }
 
 impl Beams {
-    pub fn new(inp: &BeamInput, nodes: &[Node]) -> Self {
+    pub fn new(
+        elements: &[BeamElement],
+        gravity: &[f64; 3],
+        nodes: &[Node],
+        enable_damping: bool,
+    ) -> Self {
         // Total number of nodes to allocate (multiple of 8)
-        let total_nodes = inp
-            .elements
-            .iter()
-            .map(|e| (e.node_ids.len()))
-            .sum::<usize>();
+        let total_nodes = elements.iter().map(|e| (e.node_ids.len())).sum::<usize>();
         let alloc_nodes = total_nodes;
 
         // Total number of quadrature points (multiple of 8)
-        let total_qps = inp
-            .elements
+        let total_qps = elements
             .iter()
             .map(|e| (e.quadrature.points.len()))
             .sum::<usize>();
         let alloc_qps = total_qps;
 
         // Max number of nodes in any element
-        let max_elem_nodes = inp
-            .elements
+        let max_elem_nodes = elements
             .iter()
             .map(|e| (e.node_ids.len()))
             .max()
-            .unwrap();
+            .unwrap_or(0);
 
         // Build element index
         let mut index: Vec<ElemIndex> = vec![];
         let mut start_node = 0;
         let mut start_qp = 0;
         let mut start_mat = 0;
-        for (i, e) in inp.elements.iter().enumerate() {
+        for (i, e) in elements.iter().enumerate() {
             let n_nodes = e.node_ids.len();
             let n_qps = e.quadrature.points.len();
             index.push(ElemIndex {
@@ -141,7 +131,7 @@ impl Beams {
 
         // let (x0, u, v, vd): (Vec<[f64; 7]>, Vec<[f64; 7]>, Vec<[f64; 6]>, Vec<[f64; 6]>) = inp
         let (x0, u, v, vd): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = multiunzip(
-            inp.elements
+            elements
                 .iter()
                 .flat_map(|e| {
                     e.node_ids
@@ -155,21 +145,19 @@ impl Beams {
                 .collect_vec(),
         );
 
-        let qp_weights = inp
-            .elements
+        let qp_weights = elements
             .iter()
             .flat_map(|e| e.quadrature.weights.clone())
             .collect_vec();
 
         let mut beams = Self {
+            enable_damping,
             elem_index: index,
-            node_ids: inp
-                .elements
+            node_ids: elements
                 .iter()
                 .flat_map(|e| e.node_ids.to_owned())
                 .collect_vec(),
-            gravity: Col::from_fn(3, |i| inp.gravity[i]),
-            damping: inp.damping.clone(),
+            gravity: Col::from_fn(3, |i| gravity[i]),
 
             // Nodes
             node_x0: Mat::from_fn(7, alloc_nodes, |i, j| x0[j][i]),
@@ -197,7 +185,7 @@ impl Beams {
         //----------------------------------------------------------------------
 
         // Initialize element shape functions for interpolation and derivative
-        for (ei, e) in izip!(beams.elem_index.iter(), inp.elements.iter()) {
+        for (ei, e) in izip!(beams.elem_index.iter(), elements.iter()) {
             // Get node positions along beam [-1, 1]
             let node_xi = e
                 .node_ids
@@ -228,7 +216,7 @@ impl Beams {
         // Quadrature points
         //----------------------------------------------------------------------
 
-        for ei in beams.elem_index.iter() {
+        for (i, ei) in beams.elem_index.iter().enumerate() {
             // Get shape derivative matrix for this element
             let shape_interp = beams
                 .shape_interp
@@ -275,7 +263,7 @@ impl Beams {
                 },
             );
 
-            let sections = &inp.elements[ei.elem_id].sections;
+            let sections = &elements[ei.elem_id].sections;
             let section_s = sections.iter().map(|section| section.s).collect_vec();
             let section_m_star = sections
                 .iter()
@@ -288,7 +276,7 @@ impl Beams {
 
             // Interpolate mass and stiffness matrices
             let qp_s = Col::<f64>::from_fn(ei.n_qps, |i| {
-                (inp.elements[ei.elem_id].quadrature.points[i] + 1.) / 2.
+                (elements[ei.elem_id].quadrature.points[i] + 1.) / 2.
             });
 
             qp_s.iter().enumerate().for_each(|(i, &qp_s)| {
@@ -324,6 +312,15 @@ impl Beams {
                     }
                 }
             });
+
+            // Populate damping
+            let qp_mu = beams.qp.mu.subcols_mut(ei.i_qp_start, ei.n_qps);
+            match &elements[i].damping {
+                Damping::None => (),
+                Damping::Mu(mu) => {
+                    qp_mu.col_iter_mut().for_each(|mut c| c.copy_from(mu));
+                }
+            }
         }
 
         beams
@@ -347,8 +344,13 @@ impl Beams {
         // Interpolate node data to quadrature points
         self.interp_to_qps();
 
-        // Calculate quadrature point data
-        self.qp.calc(self.gravity.as_ref(), &self.damping);
+        // Calculate quadrature point values
+        self.qp.calc(self.gravity.as_ref());
+
+        // Calculate quadrature point damping values
+        if self.enable_damping {
+            self.qp.calc_damping();
+        }
 
         // Integrate forces
         self.integrate_forces();
@@ -360,6 +362,7 @@ impl Beams {
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
     pub fn assemble_system(
         &self,
+        nfm: &NodeFreedomMap,
         mut m: MatMut<f64>, // Mass
         mut g: MatMut<f64>, // Damping
         mut k: MatMut<f64>, // Stiffness
@@ -374,7 +377,12 @@ impl Beams {
             let elem_dof_start_pairs = node_ids
                 .iter()
                 .cartesian_product(node_ids)
-                .map(|(&i, &j)| (i * 6, j * 6))
+                .map(|(&i, &j)| {
+                    (
+                        nfm.node_dofs[i].first_dof_index,
+                        nfm.node_dofs[j].first_dof_index,
+                    )
+                })
                 .collect_vec();
 
             // Mass matrix
@@ -529,10 +537,10 @@ impl Beams {
     #[inline]
     fn integrate_forces(&mut self) {
         // Zero matrices
-        self.node_fe.fill(0.);
-        self.node_fi.fill(0.);
-        self.node_fx.fill(0.);
-        self.node_fg.fill(0.);
+        self.node_fe.fill_zero();
+        self.node_fi.fill_zero();
+        self.node_fx.fill_zero();
+        self.node_fg.fill_zero();
 
         // Loop through elements
         for ei in self.elem_index.iter() {
@@ -608,9 +616,9 @@ impl Beams {
 
     #[inline]
     fn integrate_matrices(&mut self) {
-        self.node_muu.fill(0.);
-        self.node_guu.fill(0.);
-        self.node_kuu.fill(0.);
+        self.node_muu.fill_zero();
+        self.node_guu.fill_zero();
+        self.node_kuu.fill_zero();
 
         // Loop through elements
         for ei in self.elem_index.iter() {
@@ -669,7 +677,7 @@ fn integrate_fe(
         shape_deriv.col_iter()
     )
     .for_each(|(mut fe, phi, phi_prime)| {
-        acc.fill(0.);
+        acc.fill_zero();
         izip!(
             qp_w.iter(),
             qp_j.iter(),
@@ -699,7 +707,7 @@ fn integrate_f(
 ) {
     let mut acc = Col::<f64>::zeros(6);
     izip!(node_f.col_iter_mut(), shape_interp.col_iter()).for_each(|(mut node_f, phi)| {
-        acc.fill(0.);
+        acc.fill_zero();
         izip!(qp_w.iter(), qp_j.iter(), phi.iter(), qp_f.col_iter(),).for_each(
             |(&w, &j, &phi, qp_f)| {
                 zipped!(&mut acc, &qp_f).for_each(|unzipped!(mut acc, f)| *acc += *f * phi * j * w);
@@ -745,7 +753,7 @@ fn integrate_element_matrices(
         .zip(node_m.col_iter_mut())
         .for_each(|(&(i, j), mut m_col)| {
             // Reset accumulator
-            acc.fill(0.);
+            acc.fill_zero();
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
@@ -762,7 +770,7 @@ fn integrate_element_matrices(
         .zip(node_g.col_iter_mut())
         .for_each(|(&(i, j), mut g_col)| {
             // Reset accumulator
-            acc.fill(0.);
+            acc.fill_zero();
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
@@ -805,7 +813,7 @@ fn integrate_element_matrices(
         .zip(node_k.col_iter_mut())
         .for_each(|(&(i, j), mut k_col)| {
             // Reset accumulator
-            acc.fill(0.);
+            acc.fill_zero();
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
@@ -855,54 +863,6 @@ fn integrate_mat(mut node_mat: ColMut<f64>, c: ColRef<f64>, qp_mat: MatRef<f64>)
     });
 }
 
-pub trait ColAsMatMut<'a, T>
-where
-    T: Entity,
-{
-    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T>;
-    fn as_mat_mut(self, nrows: usize, ncols: usize) -> MatMut<'a, T>;
-}
-
-impl<'a, T> ColAsMatMut<'a, T> for Col<T>
-where
-    T: Entity,
-{
-    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
-        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
-    }
-    fn as_mat_mut(mut self, nrows: usize, ncols: usize) -> MatMut<'a, T> {
-        unsafe { mat::from_raw_parts_mut(self.as_ptr_mut(), nrows, ncols, 1, nrows as isize) }
-    }
-}
-
-impl<'a, T> ColAsMatMut<'a, T> for ColMut<'a, T>
-where
-    T: Entity,
-{
-    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
-        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
-    }
-    fn as_mat_mut(self, nrows: usize, ncols: usize) -> MatMut<'a, T> {
-        unsafe { mat::from_raw_parts_mut(self.as_ptr_mut(), nrows, ncols, 1, nrows as isize) }
-    }
-}
-
-pub trait ColAsMatRef<'a, T>
-where
-    T: Entity,
-{
-    fn as_mat_ref(self, nrows: usize, ncols: usize) -> MatRef<'a, T>;
-}
-
-impl<'a, T> ColAsMatRef<'a, T> for ColRef<'a, T>
-where
-    T: Entity,
-{
-    fn as_mat_ref(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
-        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
-    }
-}
-
 //------------------------------------------------------------------------------
 // Testing
 //------------------------------------------------------------------------------
@@ -913,8 +873,8 @@ mod tests {
     use super::*;
 
     use crate::{
-        beams_qp::vec_tilde, interp::gauss_legendre_lobotto_points, model::Model,
-        quadrature::Quadrature, quaternion::Quat,
+        interp::gauss_legendre_lobotto_points, model::Model, quadrature::Quadrature,
+        util::vec_tilde, util::Quat,
     };
     use faer::{assert_matrix_eq, col, mat};
 
@@ -1083,49 +1043,47 @@ mod tests {
                 .build(),
         ];
 
-        let input = BeamInput {
-            gravity: [0., 0., 9.81],
-            damping: Damping::None,
-            elements: vec![BeamElement {
-                node_ids: node_ids,
-                quadrature: Quadrature {
-                    points: vec![
-                        -0.9491079123427585,
-                        -0.7415311855993943,
-                        -0.40584515137739696,
-                        6.123233995736766e-17,
-                        0.4058451513773971,
-                        0.7415311855993945,
-                        0.9491079123427585,
-                    ],
-                    weights: vec![
-                        0.1294849661688697,
-                        0.27970539148927664,
-                        0.3818300505051189,
-                        0.4179591836734694,
-                        0.3818300505051189,
-                        0.27970539148927664,
-                        0.1294849661688697,
-                    ],
-                },
-                sections: vec![
-                    BeamSection {
-                        s: 0.,
-                        m_star: m_star.clone(),
-                        c_star: c_star.clone(),
-                    },
-                    BeamSection {
-                        s: 1.,
-                        m_star: m_star.clone(),
-                        c_star: c_star.clone(),
-                    },
+        model.set_gravity(0., 0., 9.81);
+
+        model.add_beam_element(
+            &node_ids,
+            &Quadrature {
+                points: vec![
+                    -0.9491079123427585,
+                    -0.7415311855993943,
+                    -0.40584515137739696,
+                    6.123233995736766e-17,
+                    0.4058451513773971,
+                    0.7415311855993945,
+                    0.9491079123427585,
                 ],
-            }],
-        };
+                weights: vec![
+                    0.1294849661688697,
+                    0.27970539148927664,
+                    0.3818300505051189,
+                    0.4179591836734694,
+                    0.3818300505051189,
+                    0.27970539148927664,
+                    0.1294849661688697,
+                ],
+            },
+            &[
+                BeamSection {
+                    s: 0.,
+                    m_star: m_star.clone(),
+                    c_star: c_star.clone(),
+                },
+                BeamSection {
+                    s: 1.,
+                    m_star: m_star.clone(),
+                    c_star: c_star.clone(),
+                },
+            ],
+            Damping::None,
+        );
 
-        let mut beams = Beams::new(&input, &model.nodes);
-
-        let state = State::new(&model.nodes);
+        let mut beams = model.create_beams();
+        let state = model.create_state();
         beams.calculate_system(&state);
 
         beams
@@ -2057,33 +2015,29 @@ mod tests {
         // Create quadrature points and weights
         let gq = Quadrature::gauss(7);
 
-        // Create element from nodes
-        let sections = vec![
-            BeamSection {
-                s: 0.,
-                m_star: m_star.clone(),
-                c_star: c_star.clone(),
-            },
-            BeamSection {
-                s: 1.,
-                m_star: m_star.clone(),
-                c_star: c_star.clone(),
-            },
-        ];
+        model.set_gravity(0., 0., 9.81);
 
-        let input = BeamInput {
-            gravity: [0., 0., 9.81],
-            damping: Damping::None,
-            elements: vec![BeamElement {
-                node_ids: node_ids,
-                quadrature: gq,
-                sections,
-            }],
-        };
+        model.add_beam_element(
+            &node_ids,
+            &gq,
+            &[
+                BeamSection {
+                    s: 0.,
+                    m_star: m_star.clone(),
+                    c_star: c_star.clone(),
+                },
+                BeamSection {
+                    s: 1.,
+                    m_star: m_star.clone(),
+                    c_star: c_star.clone(),
+                },
+            ],
+            Damping::None,
+        );
 
-        let mut beams = Beams::new(&input, &model.nodes);
+        let mut beams = model.create_beams();
 
-        let state = State::new(&model.nodes);
+        let state = model.create_state();
 
         beams.calculate_system(&state);
 

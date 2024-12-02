@@ -1,5 +1,7 @@
 /target
 .vscode
-profile.json
 .DS_Store
 output
+
+profile.json
+*.csv

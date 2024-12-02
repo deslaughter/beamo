@@ -1,13 +1,15 @@
-use crate::model::Node;
-use crate::quaternion::Quat;
+use crate::node::Node;
+use crate::util::Quat;
 use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
 
 pub struct State {
+    /// Number of nodes
+    pub n_nodes: usize,
     /// Initial global position/rotation `[7][n_nodes]`
-    x0: Mat<f64>,
+    pub x0: Mat<f64>,
     /// Current global position/rotation `[7][n_nodes]`
-    x: Mat<f64>,
+    pub x: Mat<f64>,
     /// Displacement increment `[6][n_nodes]`
     pub u_delta: Mat<f64>,
     /// Previous state `[7][n_nodes]`
@@ -24,22 +26,24 @@ pub struct State {
 
 impl State {
     pub fn new(nodes: &[Node]) -> Self {
-        let num_system_nodes = nodes.len();
+        let n_nodes = nodes.len();
         let mut state = Self {
-            x0: Mat::from_fn(7, num_system_nodes, |i, j| nodes[j].x[i]),
-            x: Mat::zeros(7, num_system_nodes),
-            u_delta: Mat::zeros(6, num_system_nodes),
-            u_prev: Mat::from_fn(7, num_system_nodes, |i, j| nodes[j].u[i]),
-            u: Mat::zeros(7, num_system_nodes),
-            v: Mat::from_fn(6, num_system_nodes, |i, j| nodes[j].v[i]),
-            vd: Mat::from_fn(6, num_system_nodes, |i, j| nodes[j].vd[i]),
-            a: Mat::zeros(6, num_system_nodes),
+            n_nodes,
+            x0: Mat::from_fn(7, n_nodes, |i, j| nodes[j].x[i]),
+            x: Mat::zeros(7, n_nodes),
+            u_delta: Mat::zeros(6, n_nodes),
+            u_prev: Mat::from_fn(7, n_nodes, |i, j| nodes[j].u[i]),
+            u: Mat::zeros(7, n_nodes),
+            v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
+            vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
+            a: Mat::zeros(6, n_nodes),
         };
         state.calc_displacement(0.);
         state.calculate_x();
         state
     }
 
+    /// Calculate current displacement from previous displacement and displacement increment
     pub fn calc_displacement(&mut self, h: f64) {
         // Get translation parts of matrices
         let mut q_t = self.u.subrows_mut(0, 3);
@@ -71,6 +75,7 @@ impl State {
         );
     }
 
+    /// Calculate current position from initial position and displacement
     pub fn calculate_x(&mut self) {
         let mut x_t = self.x.subrows_mut(0, 3);
         let x0_t = self.x0.subrows(0, 3);
@@ -90,6 +95,7 @@ impl State {
             .for_each(|(x0, q, mut x)| x.quat_compose(q, x0));
     }
 
+    /// Calculate state prediction at end of next time step
     pub fn predict_next_state(
         &mut self,
         h: f64,
@@ -112,6 +118,7 @@ impl State {
         self.calc_displacement(h);
     }
 
+    /// Update state prediction from iteration increment
     pub fn update_prediction(
         &mut self,
         h: f64,
@@ -130,6 +137,7 @@ impl State {
         self.calc_displacement(h);
     }
 
+    /// Calculate algorithmic acceleration for next step
     pub fn update_algorithmic_acceleration(&mut self, alpha_m: f64, alpha_f: f64) {
         self.a += (1. - alpha_f) / (1. - alpha_m) * &self.vd;
     }
@@ -165,7 +173,7 @@ mod tests {
             .velocity(-1., -2., -3., -4., -5., -6.)
             .acceleration(-7., -8., -9., -10., -11., -12.)
             .build();
-        State::new(&model.nodes)
+        model.create_state()
     }
 
     #[test]

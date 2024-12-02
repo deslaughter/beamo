@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use faer::{col, mat, Col, ColMut, ColRef, MatMut, MatRef};
+use faer::{col, mat, unzipped, zipped, Col, ColMut, ColRef, Entity, MatMut, MatRef};
 
 pub trait Quat {
     fn quat_from_rotation_vector(&mut self, v: ColRef<f64>);
@@ -11,6 +11,33 @@ pub trait Quat {
     fn quat_from_identity(&mut self);
 }
 
+#[inline]
+pub fn axial_vector_of_matrix(m: MatRef<f64>, mut v: ColMut<f64>) {
+    v[0] = (m[(2, 1)] - m[(1, 2)]) / 2.;
+    v[1] = (m[(0, 2)] - m[(2, 0)]) / 2.;
+    v[2] = (m[(1, 0)] - m[(0, 1)]) / 2.;
+}
+
+#[inline]
+/// AX(A) = tr(A)/2 * I - A/2, where I is the identity matrix
+pub fn matrix_ax(m: MatRef<f64>, mut ax: MatMut<f64>) {
+    zipped!(&mut ax, &m).for_each(|unzipped!(mut ax, m)| *ax = -*m / 2.);
+    let trace_2 = m.diagonal().column_vector().sum() / 2.;
+    ax[(0, 0)] += trace_2;
+    ax[(1, 1)] += trace_2;
+    ax[(2, 2)] += trace_2;
+}
+
+#[inline]
+pub fn quat_inverse(q_in: ColRef<f64>, mut q_out: ColMut<f64>) {
+    let length = q_in.norm_l2();
+    q_out[0] = q_in[0] / length;
+    q_out[1] = -q_in[1] / length;
+    q_out[2] = -q_in[2] / length;
+    q_out[3] = -q_in[3] / length;
+}
+
+#[inline]
 pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
     let norm = q.norm_l2();
     let (w, x, y, z) = (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
@@ -22,13 +49,25 @@ pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
     // To avoid division by zero, check if sin_half_angle is very small
     if sin_half_angle < 1e-10 {
         // If sin_half_angle is close to zero, the rotation is very small; return a zero vector
-        v.fill(0.);
+        v.fill_zero();
+    } else {
+        // Compute the rotation vector (axis * angle)
+        v[0] = x / sin_half_angle * angle;
+        v[1] = y / sin_half_angle * angle;
+        v[2] = z / sin_half_angle * angle;
     }
+}
 
-    // Compute the rotation vector (axis * angle)
-    v[0] = x / sin_half_angle * angle;
-    v[1] = y / sin_half_angle * angle;
-    v[2] = z / sin_half_angle * angle;
+#[inline]
+pub fn quat_as_euler_angles(q: ColRef<f64>, mut v: ColMut<f64>) {
+    let norm = q.norm_l2();
+    let (w, x, y, z) = (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
+
+    v[0] = (2. * (w * x + y * z)).atan2(1. - 2. * (x * x + y * y));
+    let a = (1. + 2. * (w * y - x * z)).sqrt();
+    let b = (1. - 2. * (w * y - x * z)).sqrt();
+    v[1] = -PI / 2. + 2. * a.atan2(b);
+    v[2] = (2. * (w * z + x * y)).atan2(1. - 2. * (y * y + z * z));
 }
 
 /// Populates matrix with rotation matrix equivalent of quaternion.
@@ -273,4 +312,67 @@ pub fn cross(a: ColRef<f64>, b: ColRef<f64>, mut c: ColMut<f64>) {
     c[0] = a[1] * b[2] - a[2] * b[1];
     c[1] = a[2] * b[0] - a[0] * b[2];
     c[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+pub fn vec_tilde(v: ColRef<f64>, mut m: MatMut<f64>) {
+    // [0., -v[2], v[1]]
+    // [v[2], 0., -v[0]]
+    // [-v[1], v[0], 0.]
+    m[(0, 0)] = 0.;
+    m[(1, 0)] = v[2];
+    m[(2, 0)] = -v[1];
+    m[(0, 1)] = -v[2];
+    m[(1, 1)] = 0.;
+    m[(2, 1)] = v[0];
+    m[(0, 2)] = v[1];
+    m[(1, 2)] = -v[0];
+    m[(2, 2)] = 0.;
+}
+
+pub trait ColAsMatMut<'a, T>
+where
+    T: Entity,
+{
+    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T>;
+    fn as_mat_mut(self, nrows: usize, ncols: usize) -> MatMut<'a, T>;
+}
+
+impl<'a, T> ColAsMatMut<'a, T> for Col<T>
+where
+    T: Entity,
+{
+    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
+        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
+    }
+    fn as_mat_mut(mut self, nrows: usize, ncols: usize) -> MatMut<'a, T> {
+        unsafe { mat::from_raw_parts_mut(self.as_ptr_mut(), nrows, ncols, 1, nrows as isize) }
+    }
+}
+
+impl<'a, T> ColAsMatMut<'a, T> for ColMut<'a, T>
+where
+    T: Entity,
+{
+    fn as_shape(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
+        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
+    }
+    fn as_mat_mut(self, nrows: usize, ncols: usize) -> MatMut<'a, T> {
+        unsafe { mat::from_raw_parts_mut(self.as_ptr_mut(), nrows, ncols, 1, nrows as isize) }
+    }
+}
+
+pub trait ColAsMatRef<'a, T>
+where
+    T: Entity,
+{
+    fn as_mat_ref(self, nrows: usize, ncols: usize) -> MatRef<'a, T>;
+}
+
+impl<'a, T> ColAsMatRef<'a, T> for ColRef<'a, T>
+where
+    T: Entity,
+{
+    fn as_mat_ref(self, nrows: usize, ncols: usize) -> MatRef<'a, T> {
+        unsafe { mat::from_raw_parts(self.as_ptr(), nrows, ncols, 1, nrows as isize) }
+    }
 }

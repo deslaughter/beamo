@@ -11,12 +11,13 @@ use faer::{
 
 use itertools::{izip, Itertools};
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamSection, Beams, Damping},
+    elements::beams::{BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
-    model::{Model, Node},
+    model::Model,
+    node::NodeFreedomMap,
     quadrature::Quadrature,
-    quaternion::{quat_as_matrix, quat_rotate_vector, Quat},
     state::State,
+    util::{quat_as_matrix, quat_rotate_vector, Quat},
 };
 
 fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
@@ -35,10 +36,14 @@ fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
 #[test]
 fn test_modal_frequency() {
     // Initialize system
-    let (nodes, mut beams, mut state) = setup_test();
+    let model = setup_test();
+
+    let nfm = model.create_node_freedom_map();
+    let mut beams = model.create_beams();
+    let mut state = model.create_state();
 
     // Perform modal analysis
-    let (eig_val, eig_vec) = modal_analysis(&mut beams, &state, state.u.ncols() * 6);
+    let (eig_val, eig_vec) = modal_analysis(&nfm, &mut beams, &state, state.u.ncols() * 6);
     let mut file = File::create(format!("shapes.csv")).unwrap();
     izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
         file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
@@ -51,8 +56,6 @@ fn test_modal_frequency() {
 
     // Apply scaled mode shape to state as initial velocity
     let i_mode = 1;
-    // let scale = 8.6;
-    // let scale = 9.;
     let omega_n = eig_val[i_mode].sqrt();
     let f_n = omega_n / (2. * PI);
     let period = 1. / f_n;
@@ -79,13 +82,12 @@ fn test_modal_frequency() {
         vd.copy_from(eig_vec.col(i_mode) * Scale(-a_tip * omega_n.powi(2) * (omega_n * t).sin()));
     });
 
-    let n_dofs = nodes.len() * 6;
-    let mut m = Mat::<f64>::zeros(n_dofs, n_dofs);
-    let mut c = Mat::<f64>::zeros(n_dofs, n_dofs);
-    let mut k = Mat::<f64>::zeros(n_dofs, n_dofs);
-    let mut r = Col::<f64>::zeros(n_dofs);
+    let mut m = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
+    let mut c = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
+    let mut k = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
+    let mut r = Col::<f64>::zeros(nfm.total_dofs);
     beams.calculate_system(&state);
-    beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+    beams.assemble_system(&nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
 
     dump_matrix(&format!("m.csv"), m.as_ref());
     dump_matrix(&format!("c.csv"), c.as_ref());
@@ -94,7 +96,7 @@ fn test_modal_frequency() {
     dump_matrix(&format!("v.csv"), v.transpose());
     dump_matrix(&format!("vd.csv"), vd.transpose());
 
-    let mut force = Col::<f64>::zeros(n_dofs);
+    let mut force = Col::<f64>::zeros(nfm.total_dofs);
 
     (0..n).for_each(|i| {
         let mut q = col![0., 0., 0., 0.];
@@ -123,28 +125,13 @@ fn test_modal_frequency() {
             .enumerate()
             .for_each(|(j, mut c)| c.copy_from(vd.col(i).subrows(j * 6, 6)));
 
-        m.fill(0.);
-        c.fill(0.);
-        k.fill(0.);
-        r.fill(0.);
+        m.fill_zero();
+        c.fill_zero();
+        k.fill_zero();
+        r.fill_zero();
 
         beams.calculate_system(&state);
-        beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
-
-        // let n_dof_reduced = n_dofs - 6;
-        // let tip_deflection = u.col(i)[u.nrows() - 5];
-        // dump_matrix(
-        //     &format!("matrices-0g/m,t={:.3},d={tip_deflection:.3}.csv", t[i]),
-        //     m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-        // );
-        // dump_matrix(
-        //     &format!("matrices-0g/k,t={:.3},d={tip_deflection:.3}.csv", t[i]),
-        //     k.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-        // );
-        // dump_matrix(
-        //     &format!("matrices-0g/c,t={:.3},d={tip_deflection:.3}.csv", t[i]),
-        //     c.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-        // );
+        beams.assemble_system(&nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
 
         // Calculate energy dissipation
         matmul(
@@ -164,108 +151,6 @@ fn test_modal_frequency() {
         / (dt * (n as f64));
 
     println!("energy = {total_energy}");
-
-    // let v = eig_vec.col(i_mode) * Scale(scale);
-    // state
-    //     .v
-    //     .col_iter_mut()
-    //     .enumerate()
-    //     .for_each(|(i_node, mut node_v)| {
-    //         node_v.copy_from(v.subrows(i_node * 6, 6));
-    //     });
-
-    // let rho_inf = 1.0;
-    // let max_iter = 5;
-    // let time_step = 0.01;
-    // let n_steps = 200;
-    // let mut solver = Solver::new(
-    //     StepParameters::new(time_step, rho_inf, max_iter),
-    //     &nodes,
-    //     &vec![],
-    // );
-
-    // let mut ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
-    // let mut tu = Mat::<f64>::zeros(nodes.len() * 3, n_steps);
-    // let mut vel_save = Mat::<f64>::zeros(nodes.len() * 6, n_steps);
-
-    // let dir = "matrices-0g";
-    // beams.gravity = col![0., 0., 0.];
-    // // let dir = "matrices-1g";
-    // // beams.gravity = col![0., 0., -9.81];
-
-    // let mut vel = Col::<f64>::zeros(solver.n_dofs);
-    // let mut force = Col::<f64>::zeros(solver.n_dofs);
-    // let mut energy = 0.;
-
-    // for (i, mut tv_col) in tu.col_iter_mut().enumerate() {
-    //     tv_col.copy_from(Col::<f64>::from_fn(3 * nodes.len(), |i| {
-    //         state.u[(i % 3, i / 3)]
-    //     }));
-
-    //     // Take step and get convergence result
-    //     let res = solver.step(&mut state, &mut beams);
-
-    //     // Exit if failed to converge
-    //     if !res.converged {
-    //         println!("failed, step={i}, err={}", res.err);
-    //         process::exit(1);
-    //     }
-
-    //     // Get tip deflection
-    //     let tip_deflection = tv_col[tv_col.nrows() - 2];
-
-    //     println!("{tip_deflection}");
-
-    //     // Calculate energy dissipation
-    //     vel.copy_from(&Col::<f64>::from_fn(vel.nrows(), |j| {
-    //         state.v[(j % 6, j / 6)]
-    //     }));
-    //     matmul(
-    //         force.as_mut(),
-    //         solver.ct.as_ref(),
-    //         vel.as_ref(),
-    //         None,
-    //         1.,
-    //         Parallelism::None,
-    //     );
-    //     energy += (&force.transpose() * &vel) * time_step;
-
-    //     vel_save.col_mut(i).copy_from(&vel);
-
-    //     // Dump matrices
-    //     // let n_dof_reduced = solver.n_dofs - 6;
-    //     // dump_matrix(
-    //     //     &format!("{dir}/m,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
-    //     //     solver.m.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-    //     // );
-    //     // dump_matrix(
-    //     //     &format!("{dir}/k,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
-    //     //     solver.kt.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-    //     // );
-    //     // dump_matrix(
-    //     //     &format!("{dir}/c,t={:.3},d={tip_deflection:.3}.csv", ts[i]),
-    //     //     solver.ct.submatrix(6, 6, n_dof_reduced, n_dof_reduced),
-    //     // );
-
-    //     if ts[i] > 1. / f_n && tip_deflection.abs() < 0.015 {
-    //         ts.resize_with(i + 1, |_| 0.);
-    //         vel_save.resize_with(vel_save.nrows(), i + 1, |_, _| 0.);
-    //         break;
-    //     }
-    // }
-
-    // println!("energy = {energy}");
-
-    // dump_matrix(&format!("vel.csv"), vel_save.transpose());
-
-    // let mut file = File::create(format!("disp.csv")).unwrap();
-    // izip!(ts.iter(), tu.col_iter()).for_each(|(&t, tv)| {
-    //     file.write_fmt(format_args!("{t}")).unwrap();
-    //     for &v in tv.iter() {
-    //         file.write_fmt(format_args!(",{v}")).unwrap();
-    //     }
-    //     file.write(b"\n").unwrap();
-    // });
 }
 
 // fn modal_analysis_complex(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>, Mat<f64>) {
@@ -330,7 +215,12 @@ fn test_modal_frequency() {
 //     (eig_val, eig_vec)
 // }
 
-fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>, Mat<f64>) {
+fn modal_analysis(
+    nfm: &NodeFreedomMap,
+    beams: &mut Beams,
+    state: &State,
+    n_dofs: usize,
+) -> (Col<f64>, Mat<f64>) {
     // Calculate system based on initial state
     beams.calculate_system(&state);
 
@@ -340,7 +230,7 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
     let mut r = Col::<f64>::zeros(n_dofs);
 
     // Get matrices
-    beams.assemble_system(m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+    beams.assemble_system(nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
 
     let ndof_bc = n_dofs - 6;
     let lu = m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
@@ -380,7 +270,7 @@ fn modal_analysis(beams: &mut Beams, state: &State, n_dofs: usize) -> (Col<f64>,
     (eig_val, eig_vec)
 }
 
-fn setup_test() -> (Vec<Node>, Beams, State) {
+fn setup_test() -> Model {
     let node_position_raw = mat![
         [
             0.,
@@ -944,20 +834,9 @@ fn setup_test() -> (Vec<Node>, Beams, State) {
     // Create element
     //--------------------------------------------------------------------------
 
-    let input = BeamInput {
-        gravity: [0., 0., -9.81],
-        // gravity: [0., 0., 0.],
-        damping: Damping::Mu(mu),
-        // damping: Damping::None,
-        elements: vec![BeamElement {
-            node_ids,
-            quadrature,
-            sections,
-        }],
-    };
+    model.set_gravity(0., 0., -9.81);
 
-    let beams = Beams::new(&input, &model.nodes);
-    let state = State::new(&model.nodes);
+    model.add_beam_element(&node_ids, &quadrature, &sections, Damping::Mu(mu));
 
-    (model.nodes, beams, state)
+    model
 }

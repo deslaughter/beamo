@@ -2,16 +2,21 @@ use faer::{assert_matrix_eq, col, mat, Col, Mat, Scale};
 
 use itertools::Itertools;
 use ottr::{
-    beams::{BeamElement, BeamInput, BeamSection, Beams, ColAsMatRef, Damping},
+    elements::beams::{BeamSection, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,
+    node::Direction,
     quadrature::Quadrature,
-    quaternion::{quat_derivative, quat_rotate_vector},
-    solver::{Solver, StepParameters},
+    solver::Solver,
     state::State,
+    util::{quat_derivative, quat_rotate_vector, ColAsMatRef},
 };
 
-fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
+fn setup_test(max_iter: usize) -> (Solver, State) {
+    //--------------------------------------------------------------------------
+    // Create element
+    //--------------------------------------------------------------------------
+
     let xi = gauss_legendre_lobotto_points(2);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
 
@@ -51,49 +56,55 @@ fn setup_test(max_iter: usize) -> (Beams, Solver, State) {
         [0., 0., 0., -0.351, -0.370, 141.47],
     ] * Scale(1e3);
 
+    model.add_beam_element(
+        &node_ids,
+        &gq,
+        &[
+            BeamSection {
+                s: 0.,
+                m_star: m_star.clone(),
+                c_star: c_star.clone(),
+            },
+            BeamSection {
+                s: 1.,
+                m_star: m_star.clone(),
+                c_star: c_star.clone(),
+            },
+        ],
+        Damping::None,
+    );
+
     //--------------------------------------------------------------------------
-    // Create element
+    // Add constraint
     //--------------------------------------------------------------------------
 
-    let input = BeamInput {
-        gravity: [0., 0., 0.],
-        damping: Damping::None,
-        elements: vec![BeamElement {
-            node_ids,
-            quadrature: gq,
-            sections: vec![
-                BeamSection {
-                    s: 0.,
-                    m_star: m_star.clone(),
-                    c_star: c_star.clone(),
-                },
-                BeamSection {
-                    s: 1.,
-                    m_star: m_star.clone(),
-                    c_star: c_star.clone(),
-                },
-            ],
-        }],
-    };
+    model.add_prescribed_constraint(node_ids[0]);
 
-    let mut beams = Beams::new(&input, &model.nodes);
+    //--------------------------------------------------------------------------
+    // Create solver
+    //--------------------------------------------------------------------------
 
-    let step_params = StepParameters::new(0.005, 0., max_iter);
-    let mut solver = Solver::new(step_params, &model.nodes, &vec![]);
-    solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * 0.005 as f64).sin();
+    let mut state = model.create_state();
 
-    let mut state = State::new(&model.nodes);
-    solver.step(&mut state, &mut beams);
+    model.set_time_step(0.005);
+    model.set_rho_inf(0.);
+    model.set_max_iter(max_iter);
+    let mut solver = model.create_solver();
 
-    (beams, solver, state)
+    let tip_z_dof = solver.nfm.get_dof(state.n_nodes - 1, Direction::Z).unwrap();
+    solver.fx[tip_z_dof] = 100. * (10.0 * 0.005 as f64).sin();
+
+    solver.step(&mut state);
+
+    (solver, state)
 }
 
 #[test]
 fn test_iter_0_qp_weight() {
-    let (beams, _, _) = setup_test(1);
+    let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        beams.qp.weight.as_2d(),
+        solver.elements.beam.qp.weight.as_2d(),
         col![
             0.1294849661688697,
             0.27970539148927664,
@@ -110,10 +121,10 @@ fn test_iter_0_qp_weight() {
 
 #[test]
 fn test_iter_0_qp_jacobian() {
-    let (beams, _, _) = setup_test(1);
+    let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        beams.qp.jacobian.as_2d(),
+        solver.elements.beam.qp.jacobian.as_2d(),
         col![4.999999999999998, 5., 5., 5., 5., 5., 5.].as_2d(),
         comp = float
     );
@@ -121,7 +132,7 @@ fn test_iter_0_qp_jacobian() {
 
 #[test]
 fn test_iter_0_x_delta() {
-    let (_, solver, _) = setup_test(1);
+    let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
         solver.x_delta,
@@ -139,10 +150,10 @@ fn test_iter_0_x_delta() {
 
 #[test]
 fn test_iter_0_shape_interp() {
-    let (beams, _, _) = setup_test(1);
+    let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        beams.shape_interp,
+        solver.elements.beam.shape_interp,
         mat![
             [
                 0.9249568708071938,
@@ -174,10 +185,10 @@ fn test_iter_0_shape_interp() {
 
 #[test]
 fn test_iter_0_shape_deriv() {
-    let (beams, _, _) = setup_test(1);
+    let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        beams.shape_deriv,
+        solver.elements.beam.shape_deriv,
         mat![
             [-1.4491079123427584, 1.8982158246855168, -0.4491079123427585],
             [
@@ -205,7 +216,7 @@ fn test_iter_0_shape_deriv() {
 
 #[test]
 fn test_iter_0_qp_u() {
-    let (_, _, state) = setup_test(1);
+    let (_, state) = setup_test(1);
 
     assert_matrix_eq!(
         state.u,
@@ -228,7 +239,7 @@ fn test_iter_0_qp_u() {
 
 #[test]
 fn test_iter_0_qp_v() {
-    let (_, _, state) = setup_test(1);
+    let (_, state) = setup_test(1);
     assert_matrix_eq!(
         state.v,
         mat![
@@ -245,15 +256,15 @@ fn test_iter_0_qp_v() {
 
 #[test]
 fn test_iter_0_qp_vd() {
-    let (_, _, state) = setup_test(1);
+    let (_, state) = setup_test(1);
     assert_matrix_eq!(
         state.vd,
         mat![
             [0., 0., 0.],
             [0., 0.001015843345459189, -0.005041169761945243],
             [0., -1.4160473027625755, 39.52653734648247],
-            [0., -0.016432965771551285, 5.843105528406853],
-            [0., -3.626986648022816, -11.976853896917072],
+            [0., -0.016432965771553152, 5.843105528406853],
+            [0., -3.6269866480228137, -11.976853896917072],
             [0., -0.0005696780036565475, -0.0030671250241513736],
         ],
         comp = float
@@ -262,11 +273,11 @@ fn test_iter_0_qp_vd() {
 
 #[test]
 fn test_iter_1_u() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     // u
     assert_matrix_eq!(
-        beams.qp.u.col(5).as_2d(),
+        solver.elements.beam.qp.u.col(5).as_2d(),
         col![
             0.,
             -0.000000034972742889838454,
@@ -283,10 +294,17 @@ fn test_iter_1_u() {
 
 #[test]
 fn test_iter_1_x0_prime() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.x0_prime.col(5).subrows(0, 3).as_2d(),
+        solver
+            .elements
+            .beam
+            .qp
+            .x0_prime
+            .col(5)
+            .subrows(0, 3)
+            .as_2d(),
         col![1., 0., 0.].as_2d(),
         comp = float
     );
@@ -294,10 +312,10 @@ fn test_iter_1_x0_prime() {
 
 #[test]
 fn test_iter_1_u_prime() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.u_prime.col(5).as_2d(),
+        solver.elements.beam.qp.u_prime.col(5).as_2d(),
         col![
             0.,
             -0.000000019413321280097275,
@@ -314,11 +332,11 @@ fn test_iter_1_u_prime() {
 
 #[test]
 fn test_iter_1_r_x0_prime() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     let mut r_x0_prime = Col::<f64>::zeros(3);
-    let r = beams.qp.u.col(5).subrows(3, 4);
-    let x0_prime = beams.qp.x0_prime.col(5).subrows(0, 3);
+    let r = solver.elements.beam.qp.u.col(5).subrows(3, 4);
+    let x0_prime = solver.elements.beam.qp.x0_prime.col(5).subrows(0, 3);
     quat_rotate_vector(r, x0_prime, r_x0_prime.as_mut());
 
     assert_matrix_eq!(
@@ -335,9 +353,9 @@ fn test_iter_1_r_x0_prime() {
 
 #[test]
 fn test_iter_1_r_deriv() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
-    let r = beams.qp.u.col(0).subrows(3, 4).to_owned();
+    let r = solver.elements.beam.qp.u.col(0).subrows(3, 4).to_owned();
     let mut rd = Mat::<f64>::zeros(3, 4);
     quat_derivative(r.as_ref(), rd.as_mut());
     assert_matrix_eq!(
@@ -368,10 +386,10 @@ fn test_iter_1_r_deriv() {
 
 #[test]
 fn test_iter_1_strain() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.strain.col(4).as_2d(),
+        solver.elements.beam.qp.strain.col(4).as_2d(),
         col![
             0.0000000032464819721411686,
             0.00000000424025658973485,
@@ -386,7 +404,7 @@ fn test_iter_1_strain() {
     );
 
     assert_matrix_eq!(
-        beams.qp.strain.col(5).as_2d(),
+        solver.elements.beam.qp.strain.col(5).as_2d(),
         col![
             0.000000006853385969840531,
             0.000000011302885823029263,
@@ -403,10 +421,10 @@ fn test_iter_1_strain() {
 
 #[test]
 fn test_iter_1_qp_x() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.x.col(5).as_2d(),
+        solver.elements.beam.qp.x.col(5).as_2d(),
         col![
             10.707655927996973,
             -0.000000034972742889838375,
@@ -423,14 +441,28 @@ fn test_iter_1_qp_x() {
 
 #[test]
 fn test_iter_1_rr0() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.rr0.col(4).as_mat_ref(6, 6).submatrix(3, 0, 3, 3),
+        solver
+            .elements
+            .beam
+            .qp
+            .rr0
+            .col(4)
+            .as_mat_ref(6, 6)
+            .submatrix(3, 0, 3, 3),
         Mat::<f64>::zeros(3, 3)
     );
     assert_matrix_eq!(
-        beams.qp.rr0.col(4).as_mat_ref(6, 6).submatrix(0, 3, 3, 3),
+        solver
+            .elements
+            .beam
+            .qp
+            .rr0
+            .col(4)
+            .as_mat_ref(6, 6)
+            .submatrix(0, 3, 3, 3),
         Mat::<f64>::zeros(3, 3)
     );
 
@@ -453,14 +485,28 @@ fn test_iter_1_rr0() {
     ];
 
     assert_matrix_eq!(
-        beams.qp.rr0.col(4).as_mat_ref(6, 6).submatrix(0, 0, 3, 3),
+        solver
+            .elements
+            .beam
+            .qp
+            .rr0
+            .col(4)
+            .as_mat_ref(6, 6)
+            .submatrix(0, 0, 3, 3),
         rr0,
         comp = abs,
         tol = 1e-15
     );
 
     assert_matrix_eq!(
-        beams.qp.rr0.col(4).as_mat_ref(6, 6).submatrix(3, 3, 3, 3),
+        solver
+            .elements
+            .beam
+            .qp
+            .rr0
+            .col(4)
+            .as_mat_ref(6, 6)
+            .submatrix(3, 3, 3, 3),
         rr0,
         comp = abs,
         tol = 1e-15
@@ -469,9 +515,9 @@ fn test_iter_1_rr0() {
 
 #[test]
 fn test_iter_1_qp_c_star() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
     assert_matrix_eq!(
-        beams.qp.c_star.col(4).as_mat_ref(6, 6),
+        solver.elements.beam.qp.c_star.col(4).as_mat_ref(6, 6),
         mat![
             [1368170., 0., 0., 0., 0., 0.],
             [0., 88560., 0., 0., 0., 0.],
@@ -485,9 +531,9 @@ fn test_iter_1_qp_c_star() {
 
 #[test]
 fn test_iter_1_cuu() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
     assert_matrix_eq!(
-        beams.qp.cuu.col(4).as_mat_ref(6, 6),
+        solver.elements.beam.qp.cuu.col(4).as_mat_ref(6, 6),
         mat![
             [
                 1368169.991368319,
@@ -500,7 +546,7 @@ fn test_iter_1_cuu() {
             [
                 -0.022754931292556416,
                 88559.99997874272,
-                1.0286903413354573,
+                1.0286903413354556,
                 0.,
                 0.,
                 0.
@@ -542,7 +588,7 @@ fn test_iter_1_cuu() {
     );
 
     assert_matrix_eq!(
-        beams.qp.cuu.col(5).as_mat_ref(6, 6),
+        solver.elements.beam.qp.cuu.col(5).as_mat_ref(6, 6),
         mat![
             [
                 1368169.9817783544,
@@ -599,10 +645,10 @@ fn test_iter_1_cuu() {
 
 #[test]
 fn test_iter_1_qp_fc() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.fe_c.col(4).as_2d(),
+        solver.elements.beam.qp.fe_c.col(4).as_2d(),
         col![
             0.005706498962533676,
             0.00038766265036750165,
@@ -616,7 +662,7 @@ fn test_iter_1_qp_fc() {
     );
 
     assert_matrix_eq!(
-        beams.qp.fe_c.col(5).as_2d(),
+        solver.elements.beam.qp.fe_c.col(5).as_2d(),
         col![
             0.011066510391149387,
             0.0010264240944318046,
@@ -632,10 +678,10 @@ fn test_iter_1_qp_fc() {
 
 #[test]
 fn test_iter_1_fd() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.fe_d.col(5).as_2d(),
+        solver.elements.beam.qp.fe_d.col(5).as_2d(),
         col![
             0.,
             0.,
@@ -651,16 +697,16 @@ fn test_iter_1_fd() {
 
 #[test]
 fn test_iter_1_node_fe() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.node_fe.col(1).as_2d(),
+        solver.elements.beam.node_fe.col(1).as_2d(),
         col![
             -0.0102686183575055,
             -0.0004199570868555979,
             -1.6050404609812177,
             -0.05495726086162327,
-            0.11197003815796486,
+            0.11197003815796863,
             -0.0001627864101682751,
         ]
         .as_2d(),
@@ -670,10 +716,10 @@ fn test_iter_1_node_fe() {
 
 #[test]
 fn test_iter_1_qp_fi() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.qp.fi.col(5).as_2d(),
+        solver.elements.beam.qp.fi.col(5).as_2d(),
         col![
             0.,
             -0.0002388778230347526,
@@ -689,10 +735,10 @@ fn test_iter_1_qp_fi() {
 
 #[test]
 fn test_iter_1_node_fi() {
-    let (beams, _, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        beams.node_fi.col(0).as_2d(),
+        solver.elements.beam.node_fi.col(0).as_2d(),
         col![
             0.,
             0.0002012934946484987,
@@ -708,14 +754,14 @@ fn test_iter_1_node_fi() {
 
 #[test]
 fn test_iter_1_residual() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.r.as_2d(),
         col![
             0.0012173682910865844,
             -0.00010155750689772104,
-            -0.17930459513193542,
+            -0.17930459513193653,
             0.13897470634900289,
             -2.4178786375004435,
             -0.004334235313041529,
@@ -723,7 +769,7 @@ fn test_iter_1_residual() {
             -0.0002443260439172247,
             -0.0000012550054029336621,
             0.00000016121327066354052,
-            -0.00000028548222816282554,
+            -0.0000002854822252623679,
             -0.0002040543566753146,
             0.009051250066418914,
             0.00020674312592550842,
@@ -739,7 +785,7 @@ fn test_iter_1_residual() {
 
 #[test]
 fn test_iter_1_solver_kt() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.kt,
@@ -1112,7 +1158,7 @@ fn test_iter_1_solver_kt() {
 
 #[test]
 fn test_iter_1_solver_m() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.m,
@@ -1484,7 +1530,7 @@ fn test_iter_1_solver_m() {
 
 #[test]
 fn test_iter_1_solver_ct() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.ct,
@@ -1685,7 +1731,7 @@ fn test_iter_1_solver_ct() {
 
 #[test]
 fn test_iter_1_solver_t() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.t,
@@ -1829,10 +1875,10 @@ fn test_iter_1_solver_t() {
 
 #[test]
 fn test_iter_1_solver_st() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.st,
+        solver.st.submatrix(0, 0, solver.n_system, solver.n_system),
         mat![
             [
                 328346.8663653215,
@@ -2202,10 +2248,10 @@ fn test_iter_1_solver_st() {
 
 #[test]
 fn test_iter_1_x() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.x.as_2d(),
+        solver.x.subrows(0, solver.n_system).as_2d(),
         col![
             0.,
             0.,
@@ -2233,7 +2279,7 @@ fn test_iter_1_x() {
 
 #[test]
 fn test_iter_1_x_delta() {
-    let (_, solver, _) = setup_test(2);
+    let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
         solver.x_delta,
@@ -2267,12 +2313,13 @@ fn test_iter_1_x_delta() {
 
 #[test]
 fn test_steps() {
-    let (mut beams, mut solver, mut state) = setup_test(5);
+    let (mut solver, mut state) = setup_test(5);
+
+    let tip_z_dof = solver.nfm.get_dof(state.n_nodes - 1, Direction::Z).unwrap();
 
     for i in 2..100 {
-        // println!("step {i}");
-        solver.fx[(2, solver.n_nodes - 1)] = 100. * (10.0 * (i as f64) * 0.005).sin();
-        let res = solver.step(&mut state, &mut beams);
+        solver.fx[tip_z_dof] = 100. * (10.0 * (i as f64) * 0.005).sin();
+        let res = solver.step(&mut state);
         assert_eq!(res.converged, true)
     }
 }
