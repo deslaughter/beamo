@@ -3,6 +3,7 @@ use crate::util::Quat;
 use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
 
+#[derive(Debug, Clone)]
 pub struct State {
     /// Number of nodes
     pub n_nodes: usize,
@@ -30,16 +31,15 @@ impl State {
         let mut state = Self {
             n_nodes,
             x0: Mat::from_fn(7, n_nodes, |i, j| nodes[j].x[i]),
-            x: Mat::zeros(7, n_nodes),
+            x: Mat::from_fn(7, n_nodes, |i, j| nodes[j].x[i]),
             u_delta: Mat::zeros(6, n_nodes),
             u_prev: Mat::from_fn(7, n_nodes, |i, j| nodes[j].u[i]),
             u: Mat::zeros(7, n_nodes),
             v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
-            a: Mat::zeros(6, n_nodes),
+            a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
         };
         state.calc_displacement(0.);
-        state.calculate_x();
         state
     }
 
@@ -160,14 +160,14 @@ mod tests {
             .quat_from_axis_angle(45. * PI / 180., col![0., 1., 0.].as_ref());
         let mut model = Model::new();
         model
-            .new_node()
+            .add_node()
             .position(3., 5., 7., q1[0], q1[1], q1[2], q1[3])
             .displacement(4., 6., 8., q1[0], q1[1], q1[2], q1[3])
             .velocity(1., 2., 3., 4., 5., 6.)
             .acceleration(7., 8., 9., 10., 11., 12.)
             .build();
         model
-            .new_node()
+            .add_node()
             .position(2., -3., -5., q1[0], q1[1], q1[2], q1[3])
             .displacement(1., 1., 6., q2[0], q2[1], q2[2], q2[3])
             .velocity(-1., -2., -3., -4., -5., -6.)

@@ -29,7 +29,7 @@ fn setup_test(max_iter: usize) -> (Solver, State) {
         .iter()
         .map(|&si| {
             model
-                .new_node()
+                .add_node()
                 .element_location(si)
                 .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
                 .build()

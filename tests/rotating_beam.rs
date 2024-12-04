@@ -1,8 +1,4 @@
-use std::{
-    fs::{self, File},
-    io::Write,
-    process,
-};
+use std::fs;
 
 use faer::{col, mat, Scale};
 
@@ -11,14 +7,19 @@ use ottr::{
     elements::beams::{BeamSection, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,
-    node::Direction,
     quadrature::Quadrature,
+    util::cross,
+    vtk::beams_as_vtk,
 };
 
-fn main() {
-    // Create output directory
-    let out_dir = "output";
+#[test]
+fn test_rotating_beam() {
+    let out_dir = "output/rotating-beam";
     fs::create_dir_all(out_dir).unwrap();
+
+    // Initial rotational velocity
+    let omega = col![0., 1.0, 0.];
+    let time_step = 0.01;
 
     //--------------------------------------------------------------------------
     // Create element
@@ -32,13 +33,24 @@ fn main() {
 
     // Model
     let mut model = Model::new();
-    let node_ids = s
+    let beam_node_ids = s
         .iter()
         .map(|&si| {
+            let p = col![10. * si + 2., 0., 0.];
+            let mut v = col![0., 0., 0.];
+            cross(omega.as_ref(), p.as_ref(), v.as_mut());
             model
                 .add_node()
                 .element_location(si)
-                .position(10. * si + 2., 0., 0., 1., 0., 0., 0.)
+                .position(p[0], p[1], p[2], 1., 0., 0., 0.)
+                .velocity(
+                    0.5 * v[0],
+                    0.5 * v[1],
+                    0.5 * v[2],
+                    0.5 * omega[0],
+                    0.5 * omega[1],
+                    0.5 * omega[2],
+                )
                 .build()
         })
         .collect_vec();
@@ -63,11 +75,8 @@ fn main() {
         [0.0000, 0.0000, 0.0000, -0.351, -0.370, 141.47],
     ] * Scale(1e3);
 
-    // let damping=Damping::None;
-    let damping = Damping::Mu(col![0.001, 0.001, 0.001, 0.001, 0.001, 0.001]);
-
     model.add_beam_element(
-        &node_ids,
+        &beam_node_ids,
         &gq,
         &[
             BeamSection {
@@ -81,29 +90,35 @@ fn main() {
                 c_star: c_star.clone(),
             },
         ],
-        damping.clone(),
+        Damping::None,
     );
+
+    //--------------------------------------------------------------------------
+    // Constraints
+    //--------------------------------------------------------------------------
+
+    let hub_node_id = model
+        .add_node()
+        .position(0., 0., 0., 1., 0., 0., 0.)
+        .build();
+
+    // Add constraint to beam node
+    let hub_constraint_id = model.add_prescribed_constraint(hub_node_id);
+
+    // Add constraint from hub node to first beam node
+    model.add_rigid_constraint(hub_node_id, beam_node_ids[0]);
 
     //--------------------------------------------------------------------------
     // Create solver
     //--------------------------------------------------------------------------
 
-    // Add constraint to root node
-    model.add_prescribed_constraint(node_ids[0]);
-
     // Set solver parameters
-    let time_step = 0.005;
     model.set_rho_inf(0.);
     model.set_time_step(time_step);
     model.set_max_iter(5);
 
     // Create solver
     let mut solver = model.create_solver();
-
-    let mut file = match damping {
-        Damping::None => File::create(format!("{out_dir}/damping-0.csv")).unwrap(),
-        Damping::Mu(_) => File::create(format!("{out_dir}/damping-mu.csv")).unwrap(),
-    };
 
     //--------------------------------------------------------------------------
     // Run simulation
@@ -112,35 +127,42 @@ fn main() {
     // Create state
     let mut state = model.create_state();
 
-    let tip_node_id = *node_ids.last().unwrap();
+    // let tip_node_id = *beam_node_ids.last().unwrap();
 
-    // Get DOF index for beam tip node Z direction
-    let tip_z_dof = solver.nfm.get_dof(tip_node_id, Direction::Z).unwrap();
-
-    for i in 0..10000 {
+    for i in 1..500 {
         // current time
         let t = (i as f64) * time_step;
 
-        // Apply sine force on z direction of last node
-        solver.fx[tip_z_dof] = 100. * (10.0 * t).sin();
+        if i == 1 {
+            beams_as_vtk(&solver.elements.beam)
+                .export_ascii(format!("{out_dir}/step_{:0>3}.vtk", 0))
+                .unwrap()
+        }
+
+        // Set hub displacement
+        solver.constraints.constraints[hub_constraint_id].set_displacement(
+            0.,
+            0.,
+            0.,
+            t * omega[0],
+            t * omega[1],
+            t * omega[2],
+        );
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
 
-        // Exit if failed to converge
-        if !res.converged {
-            println!("failed! iter={i}, {:?}", res);
-            process::exit(1);
-        }
+        assert_eq!(res.converged, true);
 
-        // Write data to file
-        file.write_fmt(format_args!(
-            "{},{}\n",
-            t,
-            state.u[(Direction::Z as usize, tip_node_id)]
-        ))
-        .unwrap();
+        // state.calculate_x();
+        // let x_tip = state.x.col(tip_node_id);
+        // println!(
+        //     "{}, {}, {}, {}, {}, {}, {}",
+        //     x_tip[0], x_tip[1], x_tip[2], x_tip[3], x_tip[4], x_tip[5], x_tip[6]
+        // );
+
+        beams_as_vtk(&solver.elements.beam)
+            .export_ascii(format!("{out_dir}/step_{i:0>3}.vtk"))
+            .unwrap()
     }
-
-    println!("success")
 }

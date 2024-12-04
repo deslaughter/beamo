@@ -44,17 +44,23 @@ pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
 
     // Calculate the angle (in radians) and the rotation axis
     let angle = 2.0 * w.acos();
-    let sin_half_angle = (1.0 - w * w).sqrt();
+    let angle = if angle > std::f64::consts::PI {
+        angle - 2.0 * std::f64::consts::PI
+    } else {
+        angle
+    };
+    let norm = (1.0 - w * w).sqrt();
 
-    // To avoid division by zero, check if sin_half_angle is very small
-    if sin_half_angle < 1e-10 {
-        // If sin_half_angle is close to zero, the rotation is very small; return a zero vector
+    // To avoid division by zero, check if norm is very small
+    if norm < 1e-10 {
+        // If norm is close to zero, the rotation is very small; return a zero vector
         v.fill_zero();
     } else {
         // Compute the rotation vector (axis * angle)
-        v[0] = x / sin_half_angle * angle;
-        v[1] = y / sin_half_angle * angle;
-        v[2] = z / sin_half_angle * angle;
+        let scale = angle / norm;
+        v[0] = x * scale;
+        v[1] = y * scale;
+        v[2] = z * scale;
     }
 }
 

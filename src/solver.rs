@@ -21,12 +21,12 @@ pub struct StepParameters {
     gamma_prime: f64,
     max_iter: usize,
     conditioner: f64,
-    convergence_atol: f64,
-    convergence_rtol: f64,
+    x_tol: f64,
+    phi_tol: f64,
 }
 
 impl StepParameters {
-    pub fn new(h: f64, rho_inf: f64, max_iter: usize) -> Self {
+    pub fn new(h: f64, rho_inf: f64, atol: f64, rtol: f64, max_iter: usize) -> Self {
         let alpha_m = (2. * rho_inf - 1.) / (rho_inf + 1.);
         let alpha_f = rho_inf / (rho_inf + 1.);
         let gamma = 0.5 + alpha_f - alpha_m;
@@ -41,8 +41,8 @@ impl StepParameters {
             gamma_prime: gamma / (h * beta),
             beta_prime: (1. - alpha_m) / (h * h * beta * (1. - alpha_f)),
             conditioner: beta * h * h,
-            convergence_atol: 1e-7,
-            convergence_rtol: 1e-5,
+            x_tol: atol,
+            phi_tol: rtol,
         }
     }
 }
@@ -128,8 +128,11 @@ impl Solver {
             converged: false,
         };
 
+        // Initialize lambda to zero
+        self.lambda.fill_zero();
+
         // Loop until converged or max iteration limit reached
-        while res.err > 1. {
+        while res.iter < self.p.max_iter {
             //------------------------------------------------------------------
             // Build System
             //------------------------------------------------------------------
@@ -142,7 +145,6 @@ impl Solver {
             self.t.fill_zero();
             self.t.diagonal_mut().column_vector_mut().fill(1.);
             self.r.fill_zero();
-            self.lambda.fill_zero();
 
             // Subtract direct nodal loads
             zipped!(&mut self.r, &self.fx).for_each(|unzipped!(mut r, fx)| *r -= *fx);
@@ -259,11 +261,17 @@ impl Solver {
 
             // Calculate convergence error
             res.err = zipped!(&self.x_delta, &state.u_delta)
-                .map(|unzipped!(xd, ud)| {
-                    *xd / ((*ud * self.p.convergence_rtol).abs() + self.p.convergence_atol)
-                })
+                .map(|unzipped!(xd, ud)| *xd / ((*ud * self.p.phi_tol).abs() + self.p.x_tol))
                 .norm_l2()
                 .div((self.n_system as f64).sqrt());
+
+            // Calculate convergence error
+            let x_err = self.x.subrows(0, self.n_system).norm_l2() / (self.n_system as f64);
+            let phi_err = if self.n_lambda > 0 {
+                self.x.subrows(self.n_system, self.n_lambda).norm_l2() / (self.n_lambda as f64)
+            } else {
+                0.
+            };
 
             // Update state prediction
             state.update_prediction(
@@ -278,20 +286,26 @@ impl Solver {
                 &mut self.lambda,
                 &self.x.subrows(self.n_system, self.n_lambda)
             )
-            .for_each(|unzipped!(mut lambda, dl)| *lambda -= *dl);
+            .for_each(|unzipped!(mut lambda, dl)| *lambda += *dl);
 
             // Iteration limit reached return not converged
-            if res.iter >= self.p.max_iter {
+            if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
+                // Converged, update algorithmic acceleration
+                state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+                res.converged = true;
                 return res;
             }
+            // if res.err < 1. {
+            //     // Converged, update algorithmic acceleration
+            //     state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+            //     res.converged = true;
+            //     return res;
+            // }
 
             // Increment iteration count
             res.iter += 1;
         }
 
-        // Converged, update algorithmic acceleration
-        state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
-        res.converged = true;
         res
     }
 

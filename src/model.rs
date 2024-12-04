@@ -15,6 +15,8 @@ pub struct Model {
     h: f64,
     rho_inf: f64,
     max_iter: usize,
+    solver_x_tol: f64,
+    solver_phi_tol: f64,
     enable_beam_damping: bool,
     pub nodes: Vec<Node>,
     pub beam_elements: Vec<BeamElement>,
@@ -30,6 +32,8 @@ impl Model {
             h: 0.01,
             rho_inf: 1.,
             max_iter: 6,
+            solver_x_tol: 1e-5,
+            solver_phi_tol: 1.,
             enable_beam_damping: false,
             nodes: vec![],
             beam_elements: vec![],
@@ -66,7 +70,13 @@ impl Model {
         let nfm = self.create_node_freedom_map();
         let constraints = Constraints::new(&self.constraints, &nfm);
         let elements = self.create_elements();
-        let step_parameters = StepParameters::new(self.h, self.rho_inf, self.max_iter);
+        let step_parameters = StepParameters::new(
+            self.h,
+            self.rho_inf,
+            self.solver_x_tol,
+            self.solver_phi_tol,
+            self.max_iter,
+        );
         Solver::new(step_parameters, nfm, elements, constraints)
     }
 
@@ -83,7 +93,7 @@ impl Model {
     }
 
     /// Creates and returns a node builder for adding a new node to the model
-    pub fn new_node(&mut self) -> NodeBuilder {
+    pub fn add_node(&mut self) -> NodeBuilder {
         self.nodes.push(Node {
             id: self.nodes.len(),
             s: 0.,
@@ -129,6 +139,20 @@ impl Model {
             node_id_base: 0,
             node_id_target: target_node_id,
             x0: Col::<f64>::zeros(3),
+            vec: Col::zeros(3),
+        });
+        self.constraints.last().unwrap().id
+    }
+
+    /// Add heavy top constraint
+    pub fn add_heavy_top_constraint(&mut self, target_node_id: usize) -> usize {
+        let target_node = &self.nodes[target_node_id];
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::HeavyTop,
+            node_id_base: 0,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::from_fn(3, |i| target_node.x[i]),
             vec: Col::zeros(3),
         });
         self.constraints.last().unwrap().id
@@ -192,6 +216,11 @@ impl Model {
 
     pub fn enable_beam_damping(&mut self) {
         self.enable_beam_damping = true;
+    }
+
+    pub fn set_solver_tolerance(&mut self, x_tol: f64, phi_tol: f64) {
+        self.solver_x_tol = x_tol;
+        self.solver_phi_tol = phi_tol;
     }
 }
 

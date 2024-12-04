@@ -46,7 +46,7 @@ pub struct ElemIndex {
 pub struct Beams {
     enable_damping: bool,
     elem_index: Vec<ElemIndex>,
-    node_ids: Vec<usize>,
+    pub node_ids: Vec<usize>,
     pub gravity: Col<f64>, // Gravity components `[3]`
     /// Initial position/rotation `[7][n_nodes]`
     pub node_x0: Mat<f64>,
@@ -905,7 +905,7 @@ mod tests {
 
         let node_ids = vec![
             model
-                .new_node()
+                .add_node()
                 .element_location(node_s[0])
                 .position(
                     0.,
@@ -918,7 +918,7 @@ mod tests {
                 )
                 .build(),
             model
-                .new_node()
+                .add_node()
                 .element_location(node_s[1])
                 .position(
                     0.863365823230057,
@@ -956,7 +956,7 @@ mod tests {
                 )
                 .build(),
             model
-                .new_node()
+                .add_node()
                 .element_location(node_s[2])
                 .position(
                     2.5,
@@ -980,7 +980,7 @@ mod tests {
                 .acceleration(0.05, 0., 0.0525, 0.05, -0.025, -0.025)
                 .build(),
             model
-                .new_node()
+                .add_node()
                 .element_location(node_s[3])
                 .position(
                     4.1366341767699435,
@@ -1018,7 +1018,7 @@ mod tests {
                 )
                 .build(),
             model
-                .new_node()
+                .add_node()
                 .element_location(node_s[4])
                 .position(
                     5.,
@@ -1959,7 +1959,7 @@ mod tests {
                 let mut r = Col::<f64>::zeros(4);
                 r.as_mut().quat_from_rotation_matrix(rot(si).as_ref());
                 model
-                    .new_node()
+                    .add_node()
                     .element_location(si)
                     .position(
                         fx(si),

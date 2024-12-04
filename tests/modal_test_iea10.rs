@@ -390,7 +390,7 @@ fn setup_test() -> Model {
             quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
             rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
             model
-                .new_node()
+                .add_node()
                 .element_location(s)
                 .position(rt[0], rt[1], rt[2], rq[0], rq[1], rq[2], rq[3])
                 .build()

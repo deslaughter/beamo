@@ -1,6 +1,6 @@
 use std::cmp;
 
-use faer::{col, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut};
+use faer::{col, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, Scale};
 use itertools::Itertools;
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
 pub enum ConstraintKind {
     Rigid,
     Prescribed,
+    HeavyTop,
 }
 
 pub struct ConstraintInput {
@@ -38,7 +39,7 @@ impl Constraints {
         let constraints = inputs
             .iter()
             .map(|inp| {
-                let c = Constraint::new(inp, nfm);
+                let c = Constraint::new(n_dofs, inp, nfm);
                 n_dofs += c.n_dofs;
                 c
             })
@@ -68,24 +69,25 @@ impl Constraints {
             match c.kind {
                 ConstraintKind::Prescribed => c.calculate_prescribed(u_target, r_target),
                 ConstraintKind::Rigid => c.calculate_rigid(u_base, r_base, u_target, r_target),
+                ConstraintKind::HeavyTop => c.calculate_heavy_top(u_target, r_target),
             }
         });
 
         // Assemble residual and gradient into global matrix and array
         self.constraints.iter_mut().for_each(|c| {
             // Subsection of residual for this constraint
-            let mut phi_c = phi.as_mut().subrows_mut(c.first_dof_index, c.n_dofs);
+            let mut phi_c = phi.as_mut().subrows_mut(c.first_dof_index, c.phi.nrows());
 
             // Assemble residual and gradient based on type
             let dofs_target = &nfm.node_dofs[c.node_id_target];
             let mut b_target = b.as_mut().submatrix_mut(
                 c.first_dof_index,
                 dofs_target.first_dof_index,
-                c.n_dofs,
-                dofs_target.n_dofs,
+                c.b_target.nrows(),
+                c.b_target.ncols(),
             );
             match c.kind {
-                ConstraintKind::Prescribed => {
+                ConstraintKind::Prescribed | ConstraintKind::HeavyTop => {
                     phi_c.copy_from(&c.phi);
                     b_target.copy_from(&c.b_target);
                 }
@@ -96,8 +98,8 @@ impl Constraints {
                     let mut b_base = b.as_mut().submatrix_mut(
                         c.first_dof_index,
                         dofs_base.first_dof_index,
-                        c.n_dofs,
-                        dofs_base.n_dofs,
+                        c.b_base.nrows(),
+                        c.b_base.ncols(),
                     );
                     b_base.copy_from(&c.b_base);
                 }
@@ -119,7 +121,7 @@ pub struct Constraint {
     u_prescribed: Col<f64>,
     rbinv: Col<f64>,
     rt_rbinv: Col<f64>,
-    rb_x0: Col<f64>,
+    r_x0: Col<f64>,
     /// Rotation matrix `[3,3]`
     c: Mat<f64>,
     /// Axial vector of rotation matrix
@@ -127,7 +129,7 @@ pub struct Constraint {
 }
 
 impl Constraint {
-    fn new(input: &ConstraintInput, nfm: &NodeFreedomMap) -> Self {
+    fn new(first_dof_index: usize, input: &ConstraintInput, nfm: &NodeFreedomMap) -> Self {
         let n_dofs_base = nfm.node_dofs[input.node_id_base].n_dofs;
         let n_dofs_target = nfm.node_dofs[input.node_id_target].n_dofs;
 
@@ -135,25 +137,39 @@ impl Constraint {
         let n_dofs = match input.kind {
             ConstraintKind::Prescribed => n_dofs_target,
             ConstraintKind::Rigid => cmp::min(n_dofs_base, n_dofs_target),
+            ConstraintKind::HeavyTop => 3,
         };
 
         Self {
             kind: input.kind,
-            first_dof_index: 0,
+            first_dof_index,
             n_dofs,
             node_id_base: input.node_id_base,
             node_id_target: input.node_id_target,
             x0: input.x0.clone(),
             u_prescribed: col![0., 0., 0., 1., 0., 0., 0.],
             phi: Col::<f64>::zeros(n_dofs),
-            b_base: Mat::<f64>::identity(n_dofs, n_dofs_base),
+            b_base: -1. * Mat::<f64>::identity(n_dofs, n_dofs_base),
             b_target: Mat::<f64>::identity(n_dofs, n_dofs_target),
-            rb_x0: Col::<f64>::zeros(3),
+            r_x0: Col::<f64>::zeros(3),
             rbinv: Col::<f64>::zeros(4),
             rt_rbinv: Col::<f64>::zeros(4),
             c: Mat::<f64>::zeros(3, 3),
             ax: Mat::zeros(3, 3),
         }
+    }
+
+    pub fn set_displacement(&mut self, x: f64, y: f64, z: f64, rx: f64, ry: f64, rz: f64) {
+        let mut q = col![0., 0., 0., 0.];
+        q.as_mut()
+            .quat_from_rotation_vector(col![rx, ry, rz].as_ref());
+        self.u_prescribed[0] = x;
+        self.u_prescribed[1] = y;
+        self.u_prescribed[2] = z;
+        self.u_prescribed[3] = q[0];
+        self.u_prescribed[4] = q[1];
+        self.u_prescribed[5] = q[2];
+        self.u_prescribed[6] = q[3];
     }
 
     fn calculate_prescribed(&mut self, u_target: ColRef<f64>, r_target: ColRef<f64>) {
@@ -164,6 +180,10 @@ impl Constraint {
         self.phi[0] = u_target[0] - u_base[0];
         self.phi[1] = u_target[1] - u_base[1];
         self.phi[2] = u_target[2] - u_base[2];
+
+        if self.n_dofs == 3 {
+            return;
+        }
 
         // Angular residual:  Phi(3:6) = axial(R2*inv(R1))
         quat_inverse(r_base, self.rbinv.as_mut());
@@ -190,13 +210,13 @@ impl Constraint {
         r_target: ColRef<f64>,
     ) {
         // Position residual: Phi(0:3) = u2 + X0 - u1 - R1*X0
-        quat_rotate_vector(r_base.as_ref(), self.x0.as_ref(), self.rb_x0.as_mut());
+        quat_rotate_vector(r_base.as_ref(), self.x0.as_ref(), self.r_x0.as_mut());
         zipped!(
             &mut self.phi.subrows_mut(0, 3),
             &u_base,
             &u_target,
             &self.x0,
-            &self.rb_x0
+            &self.r_x0
         )
         .for_each(|unzipped!(mut phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
 
@@ -213,7 +233,7 @@ impl Constraint {
         // Base constraint gradient
         // Set at initialization B(0:3,0:3) = -I
         // B(0:3,3:6) = tilde(R1*X0)
-        vec_tilde(self.rb_x0.as_ref(), self.b_base.submatrix_mut(0, 3, 3, 3));
+        vec_tilde(self.r_x0.as_ref(), self.b_base.submatrix_mut(0, 3, 3, 3));
         if self.n_dofs == 6 {
             // AX(c)
             matrix_ax(self.c.as_ref(), self.ax.as_mut());
@@ -224,11 +244,31 @@ impl Constraint {
 
         // Target constraint gradient
         // Set at initialization B(0:3,0:3) = I
-        // B(3:6,3:6) = transpose(AX(R2*inv(R1)))
         if self.n_dofs == 6 {
+            // B(3:6,3:6) = transpose(AX(R2*inv(R1)))
             self.b_target
                 .submatrix_mut(3, 3, 3, 3)
                 .copy_from(self.ax.transpose());
         }
+    }
+
+    fn calculate_heavy_top(&mut self, u: ColRef<f64>, r: ColRef<f64>) {
+        // Position residual: Phi(0:3) = R*X0 - u - X0
+        // let mut r_inv = Col::<f64>::zeros(4);
+        // quat_inverse(r, r_inv.as_mut());
+        quat_rotate_vector(r.as_ref(), self.x0.as_ref(), self.r_x0.as_mut());
+        zipped!(&mut self.phi, &u, &self.x0, &self.r_x0)
+            .for_each(|unzipped!(mut phi, u, x0, r_x0)| *phi = *r_x0 - *x0 - *u);
+
+        // Constraint Gradient
+        // Set at initialization B(0:3,0:3) = I
+        self.b_target
+            .submatrix_mut(0, 0, 3, 3)
+            .copy_from(-1. * Mat::<f64>::identity(3, 3));
+        // B(0:3,3:6) = -tilde(R*X0)
+        vec_tilde(
+            (&self.r_x0 * Scale(-1.)).as_ref(),
+            self.b_target.submatrix_mut(0, 3, 3, 3),
+        );
     }
 }
