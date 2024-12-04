@@ -123,12 +123,6 @@ fn test_heavy_top() {
     cross(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
     let x_ddot = omega_dot_cross_x + omega_cross_x_dot;
 
-    println!("x={:?}", x);
-    println!("omega={:?}", omega);
-    println!("x_dot={:?}", x_dot);
-    println!("omega_dot={:?}", omega_dot);
-    println!("x_ddot={:?}", x_ddot);
-
     // Add mass element
     let mass_node_id = model
         .add_node()
@@ -152,9 +146,6 @@ fn test_heavy_top() {
     mass_matrix.submatrix_mut(3, 3, 3, 3).copy_from(&j);
     model.add_mass_element(mass_node_id, mass_matrix);
 
-    // Add rigid constraint between ground and mass nodes
-    // model.add_heavy_top_constraint(mass_node_id);
-
     let ground_node_id = model.add_node().position_xyz(0., 0., 0.).build();
     model.add_rigid_constraint(mass_node_id, ground_node_id);
     model.add_prescribed_constraint(ground_node_id);
@@ -177,7 +168,7 @@ fn test_heavy_top() {
     let mut state = model.create_state();
 
     // Open output file
-    let mut file = File::create(format!("{out_dir}/heavy-top.csv")).unwrap();
+    let mut file = File::create(format!("{out_dir}/heavy_top.csv")).unwrap();
 
     // Rotation vector for an
     let mut rv = Col::<f64>::zeros(3);
@@ -196,12 +187,25 @@ fn test_heavy_top() {
         ))
         .unwrap();
 
+        if i == 400 {
+            assert_matrix_eq!(
+                state.u.col(0).as_2d(),
+                col![
+                    -0.4220299141898183,
+                    -0.09451353137427536,
+                    -0.04455341442645723,
+                    -0.17794086498990777,
+                    0.21672292516262048,
+                    -0.9597292673920982,
+                    -0.016969254156485276,
+                ]
+                .as_2d()
+            );
+        }
+
         // Step
         let res = solver.step(&mut state);
 
         assert_eq!(res.converged, true);
-
-        // println!("phi={:?}", solver.phi);
-        // println!("b={:?}", solver.b);
     }
 }

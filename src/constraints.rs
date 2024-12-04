@@ -1,6 +1,6 @@
 use std::cmp;
 
-use faer::{col, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, Scale};
+use faer::{col, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut};
 use itertools::Itertools;
 
 use crate::{
@@ -16,7 +16,6 @@ use crate::{
 pub enum ConstraintKind {
     Rigid,
     Prescribed,
-    HeavyTop,
 }
 
 pub struct ConstraintInput {
@@ -69,7 +68,6 @@ impl Constraints {
             match c.kind {
                 ConstraintKind::Prescribed => c.calculate_prescribed(u_target, r_target),
                 ConstraintKind::Rigid => c.calculate_rigid(u_base, r_base, u_target, r_target),
-                ConstraintKind::HeavyTop => c.calculate_heavy_top(u_target, r_target),
             }
         });
 
@@ -87,7 +85,7 @@ impl Constraints {
                 c.b_target.ncols(),
             );
             match c.kind {
-                ConstraintKind::Prescribed | ConstraintKind::HeavyTop => {
+                ConstraintKind::Prescribed => {
                     phi_c.copy_from(&c.phi);
                     b_target.copy_from(&c.b_target);
                 }
@@ -137,7 +135,6 @@ impl Constraint {
         let n_dofs = match input.kind {
             ConstraintKind::Prescribed => n_dofs_target,
             ConstraintKind::Rigid => cmp::min(n_dofs_base, n_dofs_target),
-            ConstraintKind::HeavyTop => 3,
         };
 
         Self {
@@ -250,25 +247,5 @@ impl Constraint {
                 .submatrix_mut(3, 3, 3, 3)
                 .copy_from(self.ax.transpose());
         }
-    }
-
-    fn calculate_heavy_top(&mut self, u: ColRef<f64>, r: ColRef<f64>) {
-        // Position residual: Phi(0:3) = R*X0 - u - X0
-        // let mut r_inv = Col::<f64>::zeros(4);
-        // quat_inverse(r, r_inv.as_mut());
-        quat_rotate_vector(r.as_ref(), self.x0.as_ref(), self.r_x0.as_mut());
-        zipped!(&mut self.phi, &u, &self.x0, &self.r_x0)
-            .for_each(|unzipped!(mut phi, u, x0, r_x0)| *phi = *r_x0 - *x0 - *u);
-
-        // Constraint Gradient
-        // Set at initialization B(0:3,0:3) = I
-        self.b_target
-            .submatrix_mut(0, 0, 3, 3)
-            .copy_from(-1. * Mat::<f64>::identity(3, 3));
-        // B(0:3,3:6) = -tilde(R*X0)
-        vec_tilde(
-            (&self.r_x0 * Scale(-1.)).as_ref(),
-            self.b_target.submatrix_mut(0, 3, 3, 3),
-        );
     }
 }

@@ -144,20 +144,6 @@ impl Model {
         self.constraints.last().unwrap().id
     }
 
-    /// Add heavy top constraint
-    pub fn add_heavy_top_constraint(&mut self, target_node_id: usize) -> usize {
-        let target_node = &self.nodes[target_node_id];
-        self.constraints.push(ConstraintInput {
-            id: self.constraints.len(),
-            kind: ConstraintKind::HeavyTop,
-            node_id_base: 0,
-            node_id_target: target_node_id,
-            x0: Col::<f64>::from_fn(3, |i| target_node.x[i]),
-            vec: Col::zeros(3),
-        });
-        self.constraints.last().unwrap().id
-    }
-
     pub fn add_beam_element(
         &mut self,
         node_ids: &[usize],
