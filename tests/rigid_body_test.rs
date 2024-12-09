@@ -10,7 +10,7 @@ use ottr::{
     interfaces::{MooringLine, RigidPlatform},
     model::Model,
     node::Direction,
-    util::{cross, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde, vec_tilde_alloc},
+    util::{cross, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde},
     vtk::lines_as_vtk,
 };
 

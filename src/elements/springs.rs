@@ -1,4 +1,6 @@
-use faer::{linalg::matmul::matmul, unzipped, zipped, Col, ColMut, Mat, MatMut, Parallelism};
+use faer::{
+    linalg::matmul::matmul, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism,
+};
 
 use itertools::{izip, Itertools};
 
@@ -8,6 +10,7 @@ use crate::{
     util::{vec_tilde, ColAsMatMut, ColAsMatRef},
 };
 
+/// Spring element definition
 pub struct SpringElement {
     pub id: usize,
     pub undeformed_length: Option<f64>,
@@ -40,6 +43,7 @@ pub struct Springs {
     pub a: Mat<f64>,
     /// force components `[3][n_nodes]`
     pub f: Mat<f64>,
+    r_tilde: Mat<f64>,
 }
 
 impl Springs {
@@ -58,6 +62,7 @@ impl Springs {
             None => x0.as_ref().col(i).norm_l2(),
         });
 
+        // Return initialized struct
         Self {
             n_elem,
             elem_node_ids: elements.iter().map(|e| e.node_ids.clone()).collect_vec(),
@@ -72,6 +77,7 @@ impl Springs {
             c2: Col::zeros(n_elem),
             f: Mat::zeros(3, n_elem),
             a: Mat::zeros(3 * 3, n_elem),
+            r_tilde: Mat::zeros(3, 3),
         }
     }
 
@@ -87,56 +93,38 @@ impl Springs {
             u2.copy_from(state.u.col(ids[1]).subrows(0, 3));
         });
 
-        //----------------------------------------------------------------------
-        // Calculate values
-        //----------------------------------------------------------------------
+        // Calculate components of current difference between node positions
+        calc_r(
+            self.r.as_mut(),
+            self.x0.as_ref(),
+            self.u1.as_ref(),
+            self.u2.as_ref(),
+        );
 
-        // Calculate components of difference between
-        zipped!(&mut self.r, &self.x0, &self.u1, &self.u2)
-            .for_each(|unzipped!(mut r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
-
-        // Calculate distance between nodes
-        izip!(self.l.iter_mut(), self.r.col_iter()).for_each(|(l, r)| *l = r.norm_l2());
-
-        let mut r_tilde = Mat::<f64>::zeros(3, 3);
+        // Calculate current distance between nodes
+        calc_l(self.l.as_mut(), self.r.as_ref());
 
         // Calculate coefficients
-        zipped!(&mut self.c1, &mut self.c2, &self.k, &self.l_ref, &self.l).for_each(
-            |unzipped!(mut c1, mut c2, k, l_ref, l)| {
-                *c1 = *k * (*l_ref / *l - 1.);
-                *c2 = *k * *l_ref / (*l).powi(3);
-            },
+        calc_c(
+            self.c1.as_mut(),
+            self.c2.as_mut(),
+            self.k.as_ref(),
+            self.l_ref.as_ref(),
+            self.l.as_ref(),
         );
 
         // Calculate force for each element
-        izip!(self.f.col_iter_mut(), self.c1.iter(), self.r.col_iter()).for_each(
-            |(mut f, &c1, r)| zipped!(&mut f, r).for_each(|unzipped!(mut f, r)| *f = c1 * *r),
-        );
+        calc_f(self.f.as_mut(), self.c1.as_ref(), self.r.as_ref());
 
-        // Calculate stiffness matrix for each element
-        izip!(
-            self.a.col_iter_mut(),
-            self.c1.iter(),
-            self.c2.iter(),
-            self.r.col_iter(),
-            self.l.iter(),
-        )
-        .for_each(|(a_col, &c1, &c2, r, l)| {
-            let mut a = a_col.as_mat_mut(3, 3);
-            vec_tilde(r, r_tilde.as_mut());
-            a.as_mut()
-                .diagonal_mut()
-                .column_vector_mut()
-                .fill(c1 - c2 * l.powi(2));
-            matmul(
-                a,
-                r_tilde.as_ref(),
-                r_tilde.as_ref(),
-                Some(1.),
-                -c2,
-                Parallelism::None,
-            );
-        });
+        // Calculate 3x3 stiffness matrix for each element
+        calc_a(
+            self.a.as_mut(),
+            self.c1.as_ref(),
+            self.c2.as_ref(),
+            self.r.as_ref(),
+            self.l.as_ref(),
+            self.r_tilde.as_mut(),
+        );
     }
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
@@ -152,6 +140,7 @@ impl Springs {
             return;
         }
 
+        // Calculate element force and stiffness from current state
         self.calculate(state);
 
         //----------------------------------------------------------------------
@@ -194,6 +183,80 @@ impl Springs {
             });
         });
     }
+}
+
+//------------------------------------------------------------------------------
+// Kernels
+//------------------------------------------------------------------------------
+
+/// Calculate xyz distance between element nodes
+#[inline]
+fn calc_r(mut r: MatMut<f64>, x0: MatRef<f64>, u1: MatRef<f64>, u2: MatRef<f64>) {
+    zipped!(&mut r, &x0, &u1, &u2).for_each(|unzipped!(mut r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
+}
+
+/// Calculate distance between element nodes, length of spring
+#[inline]
+fn calc_l(l: ColMut<f64>, r: MatRef<f64>) {
+    izip!(l.iter_mut(), r.col_iter()).for_each(|(l, r)| *l = r.norm_l2());
+}
+
+/// Calculate coefficients
+#[inline]
+fn calc_c(
+    mut c1: ColMut<f64>,
+    mut c2: ColMut<f64>,
+    k: ColRef<f64>,
+    l_ref: ColRef<f64>,
+    l: ColRef<f64>,
+) {
+    zipped!(&mut c1, &mut c2, &k, &l_ref, &l).for_each(|unzipped!(mut c1, mut c2, k, l_ref, l)| {
+        *c1 = *k * (*l_ref / *l - 1.);
+        *c2 = *k * *l_ref / (*l).powi(3);
+    });
+}
+
+/// Calculate element force vectors
+#[inline]
+fn calc_f(f: MatMut<f64>, c1: ColRef<f64>, r: MatRef<f64>) {
+    izip!(f.col_iter_mut(), c1.iter(), r.col_iter()).for_each(|(mut f, &c1, r)| {
+        zipped!(&mut f, r).for_each(|unzipped!(mut f, r)| *f = c1 * *r)
+    });
+}
+
+/// Calculate element stiffness matrix
+#[inline]
+fn calc_a(
+    a: MatMut<f64>,
+    c1: ColRef<f64>,
+    c2: ColRef<f64>,
+    r: MatRef<f64>,
+    l: ColRef<f64>,
+    mut r_tilde: MatMut<f64>,
+) {
+    izip!(
+        a.col_iter_mut(),
+        c1.iter(),
+        c2.iter(),
+        r.col_iter(),
+        l.iter(),
+    )
+    .for_each(|(a_col, &c1, &c2, r, l)| {
+        let mut a = a_col.as_mat_mut(3, 3);
+        vec_tilde(r, r_tilde.as_mut());
+        a.as_mut()
+            .diagonal_mut()
+            .column_vector_mut()
+            .fill(c1 - c2 * l.powi(2));
+        matmul(
+            a,
+            r_tilde.as_ref(),
+            r_tilde.as_ref(),
+            Some(1.),
+            -c2,
+            Parallelism::None,
+        );
+    });
 }
 
 //------------------------------------------------------------------------------
@@ -241,7 +304,7 @@ mod tests {
         assert_matrix_eq!(springs.f.col(0).as_2d(), col![-10., 0., 0.].as_2d());
         assert_matrix_eq!(
             springs.a.col(0).as_mat_ref(3, 3),
-            mat![[-10., -5., -5.], [0., 0., 0.], [0., 0., 0.]]
+            mat![[-10., 0., 0.], [0., -5., 0.], [0., 0., -5.]]
         );
     }
 }
