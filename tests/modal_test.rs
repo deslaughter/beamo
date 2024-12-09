@@ -115,10 +115,10 @@ fn test_modal_frequency() {
 
 fn modal_analysis(solver: &mut Solver, state: &State) -> (Col<f64>, Mat<f64>) {
     // Calculate system based on initial state
-    solver.elements.beam.calculate_system(&state);
+    solver.elements.beams.calculate_system(&state);
 
     // Get matrices
-    solver.elements.beam.assemble_system(
+    solver.elements.beams.assemble_system(
         &solver.nfm,
         solver.m.as_mut(),
         solver.ct.as_mut(),

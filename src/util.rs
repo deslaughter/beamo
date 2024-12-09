@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use faer::{col, mat, unzipped, zipped, Col, ColMut, ColRef, Entity, MatMut, MatRef};
+use faer::{col, mat, unzipped, zipped, Col, ColMut, ColRef, Entity, Mat, MatMut, MatRef};
 
 pub trait Quat {
     fn quat_from_rotation_vector(&mut self, v: ColRef<f64>);
@@ -333,6 +333,12 @@ pub fn vec_tilde(v: ColRef<f64>, mut m: MatMut<f64>) {
     m[(0, 2)] = v[1];
     m[(1, 2)] = -v[0];
     m[(2, 2)] = 0.;
+}
+
+pub fn vec_tilde_alloc(v: ColRef<f64>) -> Mat<f64> {
+    let mut m = Mat::<f64>::zeros(3, 3);
+    vec_tilde(v, m.as_mut());
+    m
 }
 
 pub trait ColAsMatMut<'a, T>

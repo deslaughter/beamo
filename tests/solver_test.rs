@@ -104,7 +104,7 @@ fn test_iter_0_qp_weight() {
     let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.weight.as_2d(),
+        solver.elements.beams.qp.weight.as_2d(),
         col![
             0.1294849661688697,
             0.27970539148927664,
@@ -124,7 +124,7 @@ fn test_iter_0_qp_jacobian() {
     let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.jacobian.as_2d(),
+        solver.elements.beams.qp.jacobian.as_2d(),
         col![4.999999999999998, 5., 5., 5., 5., 5., 5.].as_2d(),
         comp = float
     );
@@ -153,7 +153,7 @@ fn test_iter_0_shape_interp() {
     let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        solver.elements.beam.shape_interp,
+        solver.elements.beams.shape_interp,
         mat![
             [
                 0.9249568708071938,
@@ -188,7 +188,7 @@ fn test_iter_0_shape_deriv() {
     let (solver, _) = setup_test(1);
 
     assert_matrix_eq!(
-        solver.elements.beam.shape_deriv,
+        solver.elements.beams.shape_deriv,
         mat![
             [-1.4491079123427584, 1.8982158246855168, -0.4491079123427585],
             [
@@ -277,7 +277,7 @@ fn test_iter_1_u() {
 
     // u
     assert_matrix_eq!(
-        solver.elements.beam.qp.u.col(5).as_2d(),
+        solver.elements.beams.qp.u.col(5).as_2d(),
         col![
             0.,
             -0.000000034972742889838454,
@@ -299,7 +299,7 @@ fn test_iter_1_x0_prime() {
     assert_matrix_eq!(
         solver
             .elements
-            .beam
+            .beams
             .qp
             .x0_prime
             .col(5)
@@ -315,7 +315,7 @@ fn test_iter_1_u_prime() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.u_prime.col(5).as_2d(),
+        solver.elements.beams.qp.u_prime.col(5).as_2d(),
         col![
             0.,
             -0.000000019413321280097275,
@@ -335,8 +335,8 @@ fn test_iter_1_r_x0_prime() {
     let (solver, _) = setup_test(2);
 
     let mut r_x0_prime = Col::<f64>::zeros(3);
-    let r = solver.elements.beam.qp.u.col(5).subrows(3, 4);
-    let x0_prime = solver.elements.beam.qp.x0_prime.col(5).subrows(0, 3);
+    let r = solver.elements.beams.qp.u.col(5).subrows(3, 4);
+    let x0_prime = solver.elements.beams.qp.x0_prime.col(5).subrows(0, 3);
     quat_rotate_vector(r, x0_prime, r_x0_prime.as_mut());
 
     assert_matrix_eq!(
@@ -355,7 +355,7 @@ fn test_iter_1_r_x0_prime() {
 fn test_iter_1_r_deriv() {
     let (solver, _) = setup_test(2);
 
-    let r = solver.elements.beam.qp.u.col(0).subrows(3, 4).to_owned();
+    let r = solver.elements.beams.qp.u.col(0).subrows(3, 4).to_owned();
     let mut rd = Mat::<f64>::zeros(3, 4);
     quat_derivative(r.as_ref(), rd.as_mut());
     assert_matrix_eq!(
@@ -389,7 +389,7 @@ fn test_iter_1_strain() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.strain.col(4).as_2d(),
+        solver.elements.beams.qp.strain.col(4).as_2d(),
         col![
             0.0000000032464819721411686,
             0.00000000424025658973485,
@@ -404,7 +404,7 @@ fn test_iter_1_strain() {
     );
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.strain.col(5).as_2d(),
+        solver.elements.beams.qp.strain.col(5).as_2d(),
         col![
             0.000000006853385969840531,
             0.000000011302885823029263,
@@ -424,7 +424,7 @@ fn test_iter_1_qp_x() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.x.col(5).as_2d(),
+        solver.elements.beams.qp.x.col(5).as_2d(),
         col![
             10.707655927996973,
             -0.000000034972742889838375,
@@ -446,7 +446,7 @@ fn test_iter_1_rr0() {
     assert_matrix_eq!(
         solver
             .elements
-            .beam
+            .beams
             .qp
             .rr0
             .col(4)
@@ -457,7 +457,7 @@ fn test_iter_1_rr0() {
     assert_matrix_eq!(
         solver
             .elements
-            .beam
+            .beams
             .qp
             .rr0
             .col(4)
@@ -487,7 +487,7 @@ fn test_iter_1_rr0() {
     assert_matrix_eq!(
         solver
             .elements
-            .beam
+            .beams
             .qp
             .rr0
             .col(4)
@@ -501,7 +501,7 @@ fn test_iter_1_rr0() {
     assert_matrix_eq!(
         solver
             .elements
-            .beam
+            .beams
             .qp
             .rr0
             .col(4)
@@ -517,7 +517,7 @@ fn test_iter_1_rr0() {
 fn test_iter_1_qp_c_star() {
     let (solver, _) = setup_test(2);
     assert_matrix_eq!(
-        solver.elements.beam.qp.c_star.col(4).as_mat_ref(6, 6),
+        solver.elements.beams.qp.c_star.col(4).as_mat_ref(6, 6),
         mat![
             [1368170., 0., 0., 0., 0., 0.],
             [0., 88560., 0., 0., 0., 0.],
@@ -533,7 +533,7 @@ fn test_iter_1_qp_c_star() {
 fn test_iter_1_cuu() {
     let (solver, _) = setup_test(2);
     assert_matrix_eq!(
-        solver.elements.beam.qp.cuu.col(4).as_mat_ref(6, 6),
+        solver.elements.beams.qp.cuu.col(4).as_mat_ref(6, 6),
         mat![
             [
                 1368169.991368319,
@@ -588,7 +588,7 @@ fn test_iter_1_cuu() {
     );
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.cuu.col(5).as_mat_ref(6, 6),
+        solver.elements.beams.qp.cuu.col(5).as_mat_ref(6, 6),
         mat![
             [
                 1368169.9817783544,
@@ -648,7 +648,7 @@ fn test_iter_1_qp_fc() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.fe_c.col(4).as_2d(),
+        solver.elements.beams.qp.fe_c.col(4).as_2d(),
         col![
             0.005706498962533676,
             0.00038766265036750165,
@@ -662,7 +662,7 @@ fn test_iter_1_qp_fc() {
     );
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.fe_c.col(5).as_2d(),
+        solver.elements.beams.qp.fe_c.col(5).as_2d(),
         col![
             0.011066510391149387,
             0.0010264240944318046,
@@ -681,7 +681,7 @@ fn test_iter_1_fd() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.fe_d.col(5).as_2d(),
+        solver.elements.beams.qp.fe_d.col(5).as_2d(),
         col![
             0.,
             0.,
@@ -700,7 +700,7 @@ fn test_iter_1_node_fe() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.node_fe.col(1).as_2d(),
+        solver.elements.beams.node_fe.col(1).as_2d(),
         col![
             -0.0102686183575055,
             -0.0004199570868555979,
@@ -719,7 +719,7 @@ fn test_iter_1_qp_fi() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.qp.fi.col(5).as_2d(),
+        solver.elements.beams.qp.fi.col(5).as_2d(),
         col![
             0.,
             -0.0002388778230347526,
@@ -738,7 +738,7 @@ fn test_iter_1_node_fi() {
     let (solver, _) = setup_test(2);
 
     assert_matrix_eq!(
-        solver.elements.beam.node_fi.col(0).as_2d(),
+        solver.elements.beams.node_fi.col(0).as_2d(),
         col![
             0.,
             0.0002012934946484987,

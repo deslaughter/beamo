@@ -3,7 +3,8 @@ use itertools::{izip, Itertools};
 use vtkio::model::*;
 
 use crate::{
-    elements::beams::Beams,
+    elements::{beams::Beams, springs::Springs},
+    state::State,
     util::{quat_as_matrix, Quat},
 };
 
@@ -91,6 +92,79 @@ pub fn beams_as_vtk(beams: &Beams) -> Vtk {
                         }),
                     ])
                     .collect_vec(),
+                ..Default::default()
+            },
+        }),
+    }
+}
+
+pub fn lines_as_vtk(lines: &[[usize; 2]], state: &State) -> Vtk {
+    let n_lines = lines.len();
+    Vtk {
+        version: Version { major: 4, minor: 2 },
+        title: String::new(),
+        byte_order: ByteOrder::LittleEndian,
+        file_path: None,
+        data: DataSet::inline(UnstructuredGridPiece {
+            points: IOBuffer::F64(
+                lines
+                    .iter()
+                    .flat_map(|node_ids| {
+                        let x_1 = state.x.col(node_ids[0]);
+                        let x_2 = state.x.col(node_ids[1]);
+                        [x_1[0], x_1[1], x_1[2], x_2[0], x_2[1], x_2[2]]
+                    })
+                    .collect_vec(),
+            ),
+            cells: Cells {
+                cell_verts: VertexNumbers::XML {
+                    connectivity: (0..2 * n_lines).map(|i| i as u64).collect_vec(),
+                    offsets: (1..n_lines + 1).map(|i| 2 * i as u64).collect_vec(),
+                },
+                types: vec![CellType::Line; n_lines],
+            },
+            data: Attributes {
+                ..Default::default()
+            },
+        }),
+    }
+}
+
+pub fn springs_as_vtk(springs: &Springs, state: &State) -> Vtk {
+    Vtk {
+        version: Version { major: 4, minor: 2 },
+        title: String::new(),
+        byte_order: ByteOrder::LittleEndian,
+        file_path: None,
+        data: DataSet::inline(UnstructuredGridPiece {
+            points: IOBuffer::F64(
+                springs
+                    .elem_node_ids
+                    .iter()
+                    .flat_map(|node_ids| {
+                        let x0_1 = state.x0.col(node_ids[0]);
+                        let u_1 = state.u.col(node_ids[0]);
+                        let x0_2 = state.x0.col(node_ids[1]);
+                        let u_2 = state.u.col(node_ids[1]);
+                        [
+                            u_1[0] + x0_1[0],
+                            u_1[1] + x0_1[1],
+                            u_1[2] + x0_1[2],
+                            u_2[0] + x0_2[0],
+                            u_2[1] + x0_2[1],
+                            u_2[2] + x0_2[2],
+                        ]
+                    })
+                    .collect_vec(),
+            ),
+            cells: Cells {
+                cell_verts: VertexNumbers::XML {
+                    connectivity: (0..2 * springs.n_elem).map(|i| i as u64).collect_vec(),
+                    offsets: (1..springs.n_elem + 1).map(|i| 2 * i as u64).collect_vec(),
+                },
+                types: vec![CellType::Line; springs.n_elem],
+            },
+            data: Attributes {
                 ..Default::default()
             },
         }),

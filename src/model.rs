@@ -4,6 +4,7 @@ use itertools::Itertools;
 use crate::constraints::{ConstraintInput, ConstraintKind, Constraints};
 use crate::elements::beams::{BeamElement, BeamSection, Beams, Damping};
 use crate::elements::masses::{MassElement, Masses};
+use crate::elements::springs::{SpringElement, Springs};
 use crate::elements::Elements;
 use crate::node::{ActiveDOFs, Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
@@ -21,6 +22,7 @@ pub struct Model {
     pub nodes: Vec<Node>,
     pub beam_elements: Vec<BeamElement>,
     pub mass_elements: Vec<MassElement>,
+    pub spring_elements: Vec<SpringElement>,
     constraints: Vec<ConstraintInput>,
 }
 
@@ -38,6 +40,7 @@ impl Model {
             nodes: vec![],
             beam_elements: vec![],
             mass_elements: vec![],
+            spring_elements: vec![],
             constraints: vec![],
         }
     }
@@ -83,8 +86,9 @@ impl Model {
     /// Create elements
     pub fn create_elements(&self) -> Elements {
         Elements {
-            beam: self.create_beams(),
-            mass: self.create_masses(),
+            beams: self.create_beams(),
+            masses: self.create_masses(),
+            springs: self.create_springs(),
         }
     }
 
@@ -190,6 +194,27 @@ impl Model {
             &self.nodes,
             self.enable_beam_damping,
         )
+    }
+
+    pub fn create_springs(&self) -> Springs {
+        Springs::new(&self.spring_elements, &self.nodes)
+    }
+
+    pub fn add_spring_element(
+        &mut self,
+        node_1_id: usize,
+        node_2_id: usize,
+        stiffness: f64,
+        undeformed_length: Option<f64>,
+    ) -> usize {
+        let id = self.spring_elements.len();
+        self.spring_elements.push(SpringElement {
+            id,
+            node_ids: [node_1_id, node_2_id],
+            stiffness,
+            undeformed_length,
+        });
+        id
     }
 
     pub fn n_nodes(&self) -> usize {

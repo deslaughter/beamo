@@ -423,18 +423,24 @@ impl Beams {
                 zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
             });
-        });
 
-        // Residual vector
-        for (i, f) in self
-            .node_ids
-            .iter()
-            .map(|id| id * 6)
-            .zip(self.node_f.col_iter())
-        {
-            let mut residual = r.as_mut().subrows_mut(i, 6);
-            zipped!(&mut residual, &f).for_each(|unzipped!(mut r, f)| *r += *f);
-        }
+            // Get first node dof index of each element
+            let elem_first_dof_indices = self
+                .node_ids
+                .iter()
+                .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
+                .collect_vec();
+
+            // Residual vector
+            izip!(
+                elem_first_dof_indices.iter(),
+                self.node_f.subcols(ei.i_node_start, ei.n_nodes).col_iter()
+            )
+            .for_each(|(&i, f)| {
+                let mut residual = r.as_mut().subrows_mut(i, 6);
+                zipped!(&mut residual, &f).for_each(|unzipped!(mut r, f)| *r += *f);
+            });
+        });
     }
 
     fn interp_to_qps(&mut self) {

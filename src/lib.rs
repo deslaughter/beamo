@@ -1,5 +1,6 @@
 pub mod constraints;
 pub mod elements;
+pub mod interfaces;
 pub mod interp;
 pub mod model;
 pub mod node;

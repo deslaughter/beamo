@@ -215,9 +215,9 @@ impl Masses {
             self.fi.col_iter(),
             self.fg.col_iter()
         )
-        .for_each(|(&i, fi, fe)| {
-            zipped!(&mut r.as_mut().subrows_mut(i, 6), fi, fe)
-                .for_each(|unzipped!(mut r, fi, fe)| *r += *fi + *fe);
+        .for_each(|(&i, fi, fg)| {
+            zipped!(&mut r.as_mut().subrows_mut(i, 6), fi, fg)
+                .for_each(|unzipped!(mut r, fi, fg)| *r += *fi - *fg);
         });
     }
 }
