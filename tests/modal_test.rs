@@ -32,7 +32,8 @@ fn test_modal_frequency() {
     // Initialize system
     let mut model = setup_test();
 
-    let time_step = 0.001;
+    let t_end = 0.6;
+    let time_step = 0.0005;
     model.set_rho_inf(1.);
     model.set_max_iter(6);
     model.set_time_step(time_step);
@@ -83,7 +84,7 @@ fn test_modal_frequency() {
             node_v.copy_from(v.subrows(i_node * 6, 6));
         });
 
-    let n_steps = 600;
+    let n_steps = (t_end / time_step) as usize;
 
     let ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
     let mut tv = Mat::<f64>::zeros(model.n_nodes() * 3, n_steps);

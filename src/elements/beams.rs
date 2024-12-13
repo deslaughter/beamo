@@ -349,7 +349,7 @@ impl Beams {
 
         // Calculate quadrature point damping values
         if self.enable_damping {
-            self.qp.calc_damping();
+            self.qp.calc_bauchau_damping();
         }
 
         // Integrate forces

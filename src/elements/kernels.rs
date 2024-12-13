@@ -475,22 +475,27 @@ pub fn calc_strain(
 /// Calculate strain rate
 pub fn calc_strain_dot(
     strain_dot: MatMut<f64>,
+    strain: MatRef<f64>,
     v: MatRef<f64>,
     v_prime: MatRef<f64>,
     e1_tilde: MatRef<f64>,
 ) {
     let mut e1_tilde_omega = Col::<f64>::zeros(3);
+    let mut omega_tilde = Mat::<f64>::zeros(3, 3);
     izip!(
         strain_dot.col_iter_mut(),
+        strain.col_iter(),
         v.col_iter(),
         v_prime.col_iter(),
         e1_tilde.col_iter()
     )
-    .for_each(|(mut strain_dot, v, v_prime, e1_tilde_col)| {
+    .for_each(|(mut strain_dot, strain, v, v_prime, e1_tilde_col)| {
         let e1_tilde = e1_tilde_col.as_mat_ref(3, 3);
         let omega = v.subrows(3, 3);
         let u_dot_prime = v_prime.subrows(0, 3);
         let omega_prime = v_prime.subrows(3, 3);
+        let kappa = strain.subrows(3, 3);
+        vec_tilde(omega, omega_tilde.as_mut());
         matmul(
             e1_tilde_omega.as_mut(),
             e1_tilde,
@@ -507,7 +512,16 @@ pub fn calc_strain_dot(
         .for_each(|unzipped!(mut strain_dot, u_dot_prime, e1_tilde_omega)| {
             *strain_dot = *u_dot_prime + *e1_tilde_omega
         });
-        strain_dot.subrows_mut(3, 3).copy_from(omega_prime);
+        let mut kappa_dot = strain_dot.subrows_mut(3, 3);
+        kappa_dot.copy_from(omega_prime);
+        matmul(
+            kappa_dot,
+            omega_tilde.as_ref(),
+            kappa,
+            Some(1.),
+            1.,
+            Parallelism::None,
+        );
     });
 }
 

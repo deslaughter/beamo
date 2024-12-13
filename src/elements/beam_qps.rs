@@ -232,9 +232,10 @@ impl BeamQPs {
         );
     }
 
-    pub fn calc_damping(&mut self) {
+    pub fn calc_bauchau_damping(&mut self) {
         calc_strain_dot(
             self.strain_dot.as_mut(),
+            self.strain.as_ref(),
             self.v.as_ref(),
             self.v_prime.as_ref(),
             self.e1_tilde.as_ref(),
