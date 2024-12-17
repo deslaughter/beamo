@@ -2,7 +2,6 @@ use std::{
     f64::consts::PI,
     fs::{self, File},
     io::Write,
-    process,
 };
 
 use faer::{
@@ -19,63 +18,80 @@ use ottr::{
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
-    solver::Solver,
-    state::State,
+    util::ColAsMatMut,
 };
 
 #[test]
-fn test_modal_frequency() {
+fn test_damping() {
+    // Damping ratio for modes 1-4
+    let zeta = col![0.1];
+
+    // Select damping type
+    // let damping = Damping::None;
+    let damping = Damping::ModalElement(zeta.clone());
+    // let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
+
+    // Settings
+    let i_mode = 0; // Mode to simulate
+    let v_scale = 1.; // Velocity scaling factor
+    let t_end = 0.7; // Simulation length
+    let time_step = 0.001; // Time step
+    let rho_inf = 1.; // Numerical damping
+    let max_iter = 6; // Max convergence iterations
+    let n_steps = (t_end / time_step) as usize;
+    // let n_steps = 1;
+
     // Create output directory
-    let out_dir = "output";
+    let out_dir = "output/modal";
     fs::create_dir_all(out_dir).unwrap();
 
-    // Initialize system
-    let mut model = setup_test();
-
-    let t_end = 0.6;
-    let time_step = 0.0005;
-    model.set_rho_inf(1.);
-    model.set_max_iter(6);
+    // Initialize model
+    let mut model = setup_model(damping.clone());
+    model.set_rho_inf(rho_inf);
+    model.set_max_iter(max_iter);
     model.set_time_step(time_step);
-    let mut solver = model.create_solver();
-    let mut state = model.create_state();
 
     // Perform modal analysis
-    let (eig_val, eig_vec) = modal_analysis(&mut solver, &state);
-    let mut file = File::create(format!("{out_dir}/shapes.csv")).unwrap();
-    izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
-        file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
-            .unwrap();
-        for &v in c.iter() {
-            file.write_fmt(format_args!(",{v}")).unwrap();
-        }
-        file.write(b"\n").unwrap();
-    });
-
-    // Apply mode shape as displacement
-    let i_mode = 0;
-    let scale = 1.;
+    let (eig_val, eig_vec) = modal_analysis(&out_dir, &model);
     let omega_n = eig_val[i_mode].sqrt();
     let f_n = omega_n / (2. * PI);
 
-    // Apply 10% damping, pay attention to the order of the mu vector
-    let zeta_z = 0.1;
-    let zeta_y = 0.05;
-    let mu_x = 0.;
-    let mu_y = 2. * zeta_y / omega_n;
-    let mu_z = 2. * zeta_z / omega_n;
-    println!("fn={f_n}, zeta_z={zeta_z}, mu={mu_z}");
-    model
-        .beam_elements
-        .iter_mut()
-        .for_each(|e| e.damping = Damping::Mu(col![mu_x, mu_y, mu_z, mu_x, mu_z, mu_y]));
-    model.enable_beam_damping();
+    println!(
+        "mode={}, omega_n={omega_n}, fn={f_n}, zeta={}",
+        i_mode, zeta[i_mode]
+    );
+
+    // Additional initialization for mu damping
+    match damping {
+        Damping::Mu(_) => {
+            // Get index of maximum value
+            let i_max = eig_vec
+                .col(i_mode)
+                .iter()
+                .enumerate()
+                .max_by(|(_, &a), (_, &b)| a.abs().total_cmp(&b.abs()))
+                .map(|(index, _)| index)
+                .unwrap()
+                % 3;
+            let mu = match i_max {
+                0 => [2. * zeta[i_mode] / omega_n, 0., 0.],
+                1 => [0., 2. * zeta[i_mode] / omega_n, 0.],
+                2 => [0., 0., 2. * zeta[i_mode] / omega_n],
+                _ => [0., 0., 0.],
+            };
+            model.beam_elements.iter_mut().for_each(|e| {
+                e.damping = Damping::Mu(col![mu[0], mu[1], mu[2], mu[0], mu[2], mu[1]])
+            });
+        }
+        _ => (),
+    }
 
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
+    let mut state = model.create_state();
 
-    // Apply scaled mode shape to state as a displacement
-    let v = eig_vec.col(i_mode) * Scale(scale);
+    // Apply scaled mode shape to state as velocity
+    let v = eig_vec.col(i_mode) * Scale(v_scale);
     state
         .v
         .col_iter_mut()
@@ -84,28 +100,32 @@ fn test_modal_frequency() {
             node_v.copy_from(v.subrows(i_node * 6, 6));
         });
 
-    let n_steps = (t_end / time_step) as usize;
-
+    // Initialize output storage
     let ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
-    let mut tv = Mat::<f64>::zeros(model.n_nodes() * 3, n_steps);
+    let mut u = Mat::<f64>::zeros(model.n_nodes() * 3, n_steps);
 
-    for mut tv_col in tv.col_iter_mut() {
-        tv_col.copy_from(Col::<f64>::from_fn(3 * model.n_nodes(), |i| {
-            state.u[(i % 3, i / 3)]
-        }));
+    // Loop through times and run simulation
+    for (t, u_col) in izip!(ts.iter(), u.col_iter_mut()) {
+        let u = u_col.as_mat_mut(3, model.n_nodes());
+        zipped!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3))
+            .for_each(|unzipped!(mut u, us)| *u = *us);
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
 
         // Exit if failed to converge
         if !res.converged {
-            println!("failed, err={}", res.err);
-            process::exit(1);
+            println!("failed, t={}, err={}", t, res.err);
         }
+
+        assert_eq!(res.converged, true);
+
+        // println!("g={:?}", solver.ct);
     }
 
-    let mut file = File::create(format!("{out_dir}/mode.csv")).unwrap();
-    izip!(ts.iter(), tv.col_iter()).for_each(|(&t, tv)| {
+    // Output results
+    let mut file = File::create(format!("{out_dir}/displacement.csv")).unwrap();
+    izip!(ts.iter(), u.col_iter()).for_each(|(&t, tv)| {
         file.write_fmt(format_args!("{t}")).unwrap();
         for &v in tv.iter() {
             file.write_fmt(format_args!(",{v}")).unwrap();
@@ -114,7 +134,11 @@ fn test_modal_frequency() {
     });
 }
 
-fn modal_analysis(solver: &mut Solver, state: &State) -> (Col<f64>, Mat<f64>) {
+fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
+    // Create solver and state from model
+    let mut solver = model.create_solver();
+    let state = model.create_state();
+
     // Calculate system based on initial state
     solver.elements.beams.calculate_system(&state);
 
@@ -162,14 +186,23 @@ fn modal_analysis(solver: &mut Solver, state: &State) -> (Col<f64>, Mat<f64>) {
         zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
     });
 
+    // Write mode shapes to output file
+    let mut file = File::create(format!("{out_dir}/shapes.csv")).unwrap();
+    izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
+        file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
+            .unwrap();
+        for &v in c.iter() {
+            file.write_fmt(format_args!(",{v}")).unwrap();
+        }
+        file.write(b"\n").unwrap();
+    });
+
     (eig_val, eig_vec)
 }
 
-fn setup_test() -> Model {
+fn setup_model(damping: Damping) -> Model {
     let xi = gauss_legendre_lobotto_points(6);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
-
-    println!("{:?}", s);
 
     // Quadrature rule
     let gq = Quadrature::gauss(12);
@@ -229,14 +262,14 @@ fn setup_test() -> Model {
                 c_star: c_star.clone(),
             },
         ],
-        Damping::None,
+        damping,
     );
 
     //--------------------------------------------------------------------------
     // Add constraint element
     //--------------------------------------------------------------------------
 
-    // Prescribed constraint to first node
+    // Prescribed constraint to first node of beam
     model.add_prescribed_constraint(node_ids[0]);
 
     model

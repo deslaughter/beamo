@@ -103,6 +103,7 @@ fn main() {
     let mut file = match damping {
         Damping::None => File::create(format!("{out_dir}/damping-0.csv")).unwrap(),
         Damping::Mu(_) => File::create(format!("{out_dir}/damping-mu.csv")).unwrap(),
+        Damping::ModalElement(_) => File::create(format!("{out_dir}/damping-me.csv")).unwrap(),
     };
 
     //--------------------------------------------------------------------------

@@ -1,9 +1,8 @@
 use faer::{Col, ColRef, Mat};
 
 use super::kernels::{
-    calc_e1_tilde, calc_fd_c, calc_fd_d, calc_fe_c, calc_fe_d, calc_fg, calc_fi, calc_gi,
-    calc_inertial_matrix, calc_ki, calc_m_eta_rho, calc_mu_cuu, calc_ouu, calc_puu, calc_quu,
-    calc_rr0, calc_sd_pd_od_qd_gd_xd_yd, calc_strain, calc_strain_dot, calc_x,
+    calc_e1_tilde, calc_fe_c, calc_fe_d, calc_fg, calc_fi, calc_gi, calc_inertial_matrix, calc_ki,
+    calc_m_eta_rho, calc_ouu, calc_puu, calc_quu, calc_rr0, calc_strain, calc_strain_dot, calc_x,
 };
 
 /// Beam quadrature point data
@@ -44,8 +43,6 @@ pub struct BeamQPs {
     pub strain: Mat<f64>,
     /// Strain Rate `[6][n_qps]`
     pub strain_dot: Mat<f64>,
-    /// Damping mu `[6][n_qps]`
-    pub mu: Mat<f64>,
     /// Elastic force C `[6][n_qps]`
     pub fe_c: Mat<f64>,
     /// Elastic force D `[6][n_qps]`
@@ -118,7 +115,6 @@ impl BeamQPs {
             rho: Mat::zeros(3 * 3, n_qps),
             strain: Mat::zeros(6, n_qps),
             strain_dot: Mat::zeros(6, n_qps),
-            mu: Mat::zeros(6, n_qps),
             fe_c: Mat::zeros(6, n_qps),
             fe_d: Mat::zeros(6, n_qps),
             fd_c: Mat::zeros(6, n_qps),
@@ -151,12 +147,6 @@ impl BeamQPs {
         calc_rr0(self.rr0.as_mut(), self.x.as_ref());
         calc_inertial_matrix(self.muu.as_mut(), self.m_star.as_ref(), self.rr0.as_ref());
         calc_inertial_matrix(self.cuu.as_mut(), self.c_star.as_ref(), self.rr0.as_ref());
-        calc_mu_cuu(
-            self.mu.as_ref(),
-            self.mu_cuu.as_mut(),
-            self.cuu.as_ref(),
-            self.rr0.as_ref(),
-        );
         calc_m_eta_rho(
             self.m.as_mut(),
             self.eta.as_mut(),
@@ -169,6 +159,13 @@ impl BeamQPs {
             self.u.subrows(3, 4),
             self.u_prime.subrows(0, 3),
             self.u_prime.subrows(3, 4),
+        );
+        calc_strain_dot(
+            self.strain_dot.as_mut(),
+            self.strain.as_ref(),
+            self.v.as_ref(),
+            self.v_prime.as_ref(),
+            self.e1_tilde.as_ref(),
         );
         calc_e1_tilde(
             self.e1_tilde.as_mut(),
@@ -230,39 +227,5 @@ impl BeamQPs {
             self.vd.subrows(0, 3),
             self.vd.subrows(3, 3),
         );
-    }
-
-    pub fn calc_bauchau_damping(&mut self) {
-        calc_strain_dot(
-            self.strain_dot.as_mut(),
-            self.strain.as_ref(),
-            self.v.as_ref(),
-            self.v_prime.as_ref(),
-            self.e1_tilde.as_ref(),
-        );
-        calc_fd_c(
-            self.fd_c.as_mut(),
-            self.mu_cuu.as_ref(),
-            self.strain_dot.as_ref(),
-        );
-        calc_fd_d(
-            self.fd_d.as_mut(),
-            self.fd_c.as_ref(),
-            self.e1_tilde.as_ref(),
-        );
-        calc_sd_pd_od_qd_gd_xd_yd(
-            self.sd.as_mut(),
-            self.pd.as_mut(),
-            self.od.as_mut(),
-            self.qd.as_mut(),
-            self.gd.as_mut(),
-            self.xd.as_mut(),
-            self.yd.as_mut(),
-            self.mu_cuu.as_ref(),
-            self.v_prime.subrows(0, 3).as_ref(),
-            self.v.subrows(3, 3).as_ref(),
-            self.fd_c.as_ref(),
-            self.e1_tilde.as_ref(),
-        )
     }
 }

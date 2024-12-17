@@ -18,7 +18,6 @@ pub struct Model {
     max_iter: usize,
     solver_x_tol: f64,
     solver_phi_tol: f64,
-    enable_beam_damping: bool,
     pub nodes: Vec<Node>,
     pub beam_elements: Vec<BeamElement>,
     pub mass_elements: Vec<MassElement>,
@@ -36,7 +35,6 @@ impl Model {
             max_iter: 6,
             solver_x_tol: 1e-5,
             solver_phi_tol: 1.,
-            enable_beam_damping: false,
             nodes: vec![],
             beam_elements: vec![],
             mass_elements: vec![],
@@ -156,10 +154,6 @@ impl Model {
         damping: Damping,
     ) -> usize {
         let id = self.beam_elements.len();
-        match damping {
-            Damping::None => {}
-            _ => self.enable_beam_damping = true,
-        };
         self.beam_elements.push(BeamElement {
             id,
             node_ids: node_ids.to_vec(),
@@ -188,12 +182,7 @@ impl Model {
     }
 
     pub fn create_beams(&self) -> Beams {
-        Beams::new(
-            &self.beam_elements,
-            &self.gravity,
-            &self.nodes,
-            self.enable_beam_damping,
-        )
+        Beams::new(&self.beam_elements, &self.gravity, &self.nodes)
     }
 
     pub fn create_springs(&self) -> Springs {
@@ -219,14 +208,6 @@ impl Model {
 
     pub fn n_nodes(&self) -> usize {
         self.nodes.len()
-    }
-
-    pub fn disable_beam_damping(&mut self) {
-        self.enable_beam_damping = false;
-    }
-
-    pub fn enable_beam_damping(&mut self) {
-        self.enable_beam_damping = true;
     }
 
     pub fn set_solver_tolerance(&mut self, x_tol: f64, phi_tol: f64) {

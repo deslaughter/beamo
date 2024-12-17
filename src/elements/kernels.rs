@@ -383,52 +383,49 @@ pub fn calc_ki(
 }
 
 #[inline]
-pub fn calc_mu_cuu(mu: MatRef<f64>, mu_cuu: MatMut<f64>, cuu: MatRef<f64>, rr0: MatRef<f64>) {
-    let mut mu_mat = Mat::<f64>::zeros(6, 6);
+pub fn calc_mu_cuu(mu: ColRef<f64>, mu_cuu: MatMut<f64>, cuu: MatRef<f64>, rr0: MatRef<f64>) {
     let mut rr0_mat_rr0t = Mat::<f64>::zeros(6, 6);
     let mut tmp6 = Mat::<f64>::zeros(6, 6);
-    izip!(
-        mu_cuu.col_iter_mut(),
-        mu.col_iter(),
-        cuu.col_iter(),
-        rr0.col_iter()
-    )
-    .for_each(|(mu_cuu_col, mu, cuu_col, rr0_col)| {
-        let mut mu_cuu = mu_cuu_col.as_mat_mut(6, 6);
-        let cuu = cuu_col.as_mat_ref(6, 6);
-        let rr0 = rr0_col.as_mat_ref(6, 6);
 
-        // Create matrix from mu
-        mu_mat.diagonal_mut().column_vector_mut().copy_from(&mu);
+    // Create matrix from mu, same for all qps
+    let mut mu_mat = Mat::<f64>::zeros(6, 6);
+    mu_mat.diagonal_mut().column_vector_mut().copy_from(&mu);
 
-        // Rotate mu damping coefficients into inertial frame
-        matmul(
-            tmp6.as_mut(),
-            rr0,
-            mu_mat.as_ref(),
-            None,
-            1.,
-            Parallelism::None,
-        );
-        matmul(
-            rr0_mat_rr0t.as_mut(),
-            tmp6.as_ref(),
-            rr0.transpose(),
-            None,
-            1.,
-            Parallelism::None,
-        );
+    izip!(mu_cuu.col_iter_mut(), cuu.col_iter(), rr0.col_iter()).for_each(
+        |(mu_cuu_col, cuu_col, rr0_col)| {
+            let mut mu_cuu = mu_cuu_col.as_mat_mut(6, 6);
+            let cuu = cuu_col.as_mat_ref(6, 6);
+            let rr0 = rr0_col.as_mat_ref(6, 6);
 
-        // Multiply damping coefficients by stiffness matrix
-        matmul(
-            mu_cuu.as_mut(),
-            rr0_mat_rr0t.as_ref(),
-            cuu,
-            None,
-            1.0,
-            Parallelism::None,
-        );
-    });
+            // Rotate mu damping coefficients into inertial frame
+            matmul(
+                tmp6.as_mut(),
+                rr0,
+                mu_mat.as_ref(),
+                None,
+                1.,
+                Parallelism::None,
+            );
+            matmul(
+                rr0_mat_rr0t.as_mut(),
+                tmp6.as_ref(),
+                rr0.transpose(),
+                None,
+                1.,
+                Parallelism::None,
+            );
+
+            // Multiply damping coefficients by stiffness matrix
+            matmul(
+                mu_cuu.as_mut(),
+                rr0_mat_rr0t.as_ref(),
+                cuu,
+                None,
+                1.0,
+                Parallelism::None,
+            );
+        },
+    );
 }
 
 #[inline]

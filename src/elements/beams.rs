@@ -5,10 +5,14 @@ use crate::interp::{shape_deriv_matrix, shape_interp_matrix};
 use crate::node::{Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
 use crate::state::State;
-use crate::util::ColAsMatRef;
+use crate::util::{ColAsMatMut, ColAsMatRef};
 use faer::linalg::matmul::matmul;
+use faer::prelude::c64;
+use faer::solvers::{Eigendecomposition, SpSolver};
 use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
 use itertools::{izip, multiunzip, Itertools};
+
+use super::kernels::{calc_fd_c, calc_fd_d, calc_mu_cuu, calc_sd_pd_od_qd_gd_xd_yd};
 
 pub struct BeamElement {
     pub id: usize,
@@ -31,9 +35,10 @@ pub struct BeamSection {
 pub enum Damping {
     None,
     Mu(Col<f64>),
+    ModalElement(Col<f64>),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ElemIndex {
     elem_id: usize,
     n_nodes: usize,
@@ -41,10 +46,10 @@ pub struct ElemIndex {
     i_node_start: usize,
     i_qp_start: usize,
     i_mat_start: usize,
+    damping: Damping,
 }
 
 pub struct Beams {
-    enable_damping: bool,
     elem_index: Vec<ElemIndex>,
     pub node_ids: Vec<usize>,
     pub gravity: Col<f64>, // Gravity components `[3]`
@@ -84,12 +89,7 @@ pub struct Beams {
 }
 
 impl Beams {
-    pub fn new(
-        elements: &[BeamElement],
-        gravity: &[f64; 3],
-        nodes: &[Node],
-        enable_damping: bool,
-    ) -> Self {
+    pub fn new(elements: &[BeamElement], gravity: &[f64; 3], nodes: &[Node]) -> Self {
         // Total number of nodes to allocate (multiple of 8)
         let total_nodes = elements.iter().map(|e| (e.node_ids.len())).sum::<usize>();
         let alloc_nodes = total_nodes;
@@ -123,6 +123,7 @@ impl Beams {
                 n_qps,
                 i_qp_start: start_qp,
                 i_mat_start: start_mat,
+                damping: e.damping.clone(),
             });
             start_node += n_nodes;
             start_qp += n_qps;
@@ -151,7 +152,6 @@ impl Beams {
             .collect_vec();
 
         let mut beams = Self {
-            enable_damping,
             elem_index: index,
             node_ids: elements
                 .iter()
@@ -216,7 +216,7 @@ impl Beams {
         // Quadrature points
         //----------------------------------------------------------------------
 
-        for (i, ei) in beams.elem_index.iter().enumerate() {
+        for ei in beams.elem_index.iter() {
             // Get shape derivative matrix for this element
             let shape_interp = beams
                 .shape_interp
@@ -312,15 +312,6 @@ impl Beams {
                     }
                 }
             });
-
-            // Populate damping
-            let qp_mu = beams.qp.mu.subcols_mut(ei.i_qp_start, ei.n_qps);
-            match &elements[i].damping {
-                Damping::None => (),
-                Damping::Mu(mu) => {
-                    qp_mu.col_iter_mut().for_each(|mut c| c.copy_from(mu));
-                }
-            }
         }
 
         beams
@@ -347,16 +338,170 @@ impl Beams {
         // Calculate quadrature point values
         self.qp.calc(self.gravity.as_ref());
 
-        // Calculate quadrature point damping values
-        if self.enable_damping {
-            self.qp.calc_bauchau_damping();
-        }
+        // Loop through elements and handle quadrature-point damping
+        self.elem_index.iter().for_each(|ei| match &ei.damping {
+            Damping::Mu(mu) => {
+                calculate_mu_damping(
+                    mu.as_ref(),
+                    self.qp.cuu.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.v.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.v_prime.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.fd_d.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.sd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.pd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.od.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.qd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.gd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.xd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.yd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                );
+            }
+            _ => (),
+        });
 
         // Integrate forces
         self.integrate_forces();
 
         // Integrate matrices
         self.integrate_matrices();
+
+        // Loop through elements and handle element-based damping
+        self.elem_index.iter().for_each(|ei| {
+            match &ei.damping {
+                Damping::ModalElement(zeta) => {
+                    // Create matrices to store mass and stiffness
+                    let n_dofs = ei.n_nodes * 6;
+
+                    // Get starting degree of freedom for each node
+                    let dof_start_pairs = (0..ei.n_nodes)
+                        .cartesian_product(0..ei.n_nodes)
+                        .map(|(i, j)| (i * 6, j * 6))
+                        .collect_vec();
+
+                    // Mass matrix
+                    let mut m = Mat::<f64>::zeros(n_dofs, n_dofs);
+                    izip!(
+                        dof_start_pairs.iter(),
+                        self.node_muu
+                            .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                            .col_iter()
+                    )
+                    .for_each(|(&(i, j), muu)| {
+                        let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
+                        zipped!(&mut me, &muu.as_mat_ref(6, 6))
+                            .for_each(|unzipped!(mut me, muu)| *me += *muu);
+                    });
+
+                    // Stiffness matrix
+                    let mut k = Mat::<f64>::zeros(n_dofs, n_dofs);
+                    izip!(
+                        dof_start_pairs.iter(),
+                        self.node_kuu
+                            .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                            .col_iter()
+                    )
+                    .for_each(|(&(i, j), kuu)| {
+                        let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
+                        zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
+                            .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
+                    });
+
+                    // Solve for A matrix given M and K
+                    let n_dof_bc = n_dofs - 6;
+                    let lu = m.submatrix(6, 6, n_dof_bc, n_dof_bc).partial_piv_lu();
+                    let a = lu.solve(k.submatrix(6, 6, n_dof_bc, n_dof_bc));
+
+                    // Perform eigendecomposition on A matrix to get values and vectors
+                    let eig: Eigendecomposition<c64> = a.eigendecomposition();
+                    let eig_val_raw = eig.s().column_vector();
+                    let eig_vec_raw = eig.u();
+
+                    // Get the order of the eigenvalues
+                    let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
+                    eig_order
+                        .sort_by(|&i, &j| eig_val_raw.get(i).re.total_cmp(&eig_val_raw.get(j).re));
+
+                    // Get sorted eigenvalue vector
+                    let omega = Col::<f64>::from_fn(eig_val_raw.nrows(), |i| {
+                        eig_val_raw[eig_order[i]].re.sqrt()
+                    });
+
+                    // Get sorted eigenvector matrix
+                    let psi = Mat::<f64>::from_fn(n_dofs, eig_vec_raw.ncols(), |i, j| {
+                        if i < 6 {
+                            0.
+                        } else {
+                            eig_vec_raw[(i - 6, eig_order[j])].re
+                        }
+                    });
+
+                    // Calculate modal mass
+                    let m_modal = &psi.transpose() * &m * &psi;
+
+                    // Build mass normalized eigenvalue matrix Phi^T * M * Phi = I
+                    let mut phi = psi;
+                    phi.col_iter_mut()
+                        .zip(m_modal.diagonal().column_vector().iter())
+                        .for_each(|(mut phi_i, &m_i)| phi_i /= m_i.sqrt());
+
+                    // Calculate reduced z and phi matrices based on specified modes
+                    let phi_d = Mat::<f64>::from_fn(phi.nrows(), zeta.nrows(), |i, j| phi[(i, j)]);
+                    let z_d = Mat::<f64>::from_fn(zeta.nrows(), zeta.nrows(), |i, j| {
+                        if i == j {
+                            2. * omega[i] * zeta[i]
+                        } else {
+                            0.
+                        }
+                    });
+
+                    // Build the damping matrix
+                    let c_d = &m.transpose() * (&phi_d * &z_d * &phi_d.transpose()) * &m;
+
+                    // Add components of the damping matrix to node gyroscopic matrices
+                    izip!(
+                        dof_start_pairs.iter(),
+                        self.node_guu
+                            .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                            .col_iter_mut()
+                    )
+                    .for_each(|(&(i, j), guu)| {
+                        zipped!(&mut guu.as_mat_mut(6, 6), &c_d.submatrix(i, j, 6, 6))
+                            .for_each(|unzipped!(mut guu, c)| *guu += *c);
+                    });
+
+                    // Calculate the damping force on each node
+                    let mut v = Col::<f64>::zeros(n_dofs);
+                    v.as_mut()
+                        .as_mat_mut(6, ei.n_nodes)
+                        .copy_from(self.node_v.subcols(ei.i_node_start, ei.n_nodes));
+                    let f_d = &c_d * &v;
+
+                    // Add to node dissipative force
+                    zipped!(
+                        &mut self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
+                        &f_d.as_ref().as_mat_ref(6, ei.n_nodes)
+                    )
+                    .for_each(|unzipped!(mut node_fd, f_d)| *node_fd += *f_d);
+                }
+                _ => {}
+            }
+        });
+
+        // Combine force components
+        zipped!(
+            &mut self.node_f,
+            &self.node_fe,
+            &self.node_fd,
+            &self.node_fg,
+            &self.node_fi,
+            &self.node_fx
+        )
+        .for_each(|unzipped!(mut f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
     }
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
@@ -392,8 +537,8 @@ impl Beams {
                     .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
                     .col_iter()
             )
-            .for_each(|((i, j), muu)| {
-                let mut me = m.as_mut().submatrix_mut(*i, *j, 6, 6);
+            .for_each(|(&(i, j), muu)| {
+                let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
                 zipped!(&mut me, &muu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut me, muu)| *me += *muu);
             });
@@ -405,8 +550,8 @@ impl Beams {
                     .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
                     .col_iter(),
             )
-            .for_each(|((i, j), guu)| {
-                let mut ge = g.as_mut().submatrix_mut(*i, *j, 6, 6);
+            .for_each(|(&(i, j), guu)| {
+                let mut ge = g.as_mut().submatrix_mut(i, j, 6, 6);
                 zipped!(&mut ge, &guu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut ge, guu)| *ge += *guu);
             });
@@ -418,8 +563,8 @@ impl Beams {
                     .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
                     .col_iter()
             )
-            .for_each(|((i, j), kuu)| {
-                let mut ke = k.as_mut().submatrix_mut(*i, *j, 6, 6);
+            .for_each(|(&(i, j), kuu)| {
+                let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
                 zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
                     .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
             });
@@ -542,8 +687,9 @@ impl Beams {
 
     #[inline]
     fn integrate_forces(&mut self) {
-        // Zero matrices
+        // Zero node matrices
         self.node_fe.fill_zero();
+        self.node_fd.fill_zero();
         self.node_fi.fill_zero();
         self.node_fx.fill_zero();
         self.node_fg.fill_zero();
@@ -572,7 +718,7 @@ impl Beams {
 
             // Dissipative forces
             integrate_fe(
-                self.node_fe.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
                 self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
                 shape_interp,
@@ -608,16 +754,6 @@ impl Beams {
                 qp_j,
             );
         }
-
-        // Combine force components
-        zipped!(
-            &mut self.node_f,
-            &self.node_fe,
-            &self.node_fg,
-            &self.node_fi,
-            &self.node_fx
-        )
-        .for_each(|unzipped!(mut f, fe, fg, fi, fx)| *f = *fi + *fe - *fx - *fg);
     }
 
     #[inline]
@@ -701,6 +837,44 @@ fn integrate_fe(
         // Add values to node matrix
         zipped!(&mut fe, &acc).for_each(|unzipped!(mut fe, acc)| *fe += *acc);
     });
+}
+
+pub fn calculate_mu_damping(
+    mu: ColRef<f64>,
+    cuu: MatRef<f64>,
+    rr0: MatRef<f64>,
+    strain_dot: MatRef<f64>,
+    e1_tilde: MatRef<f64>,
+    v: MatRef<f64>,
+    v_prime: MatRef<f64>,
+    mut mu_cuu: MatMut<f64>,
+    mut fd_c: MatMut<f64>,
+    fd_d: MatMut<f64>,
+    sd: MatMut<f64>,
+    pd: MatMut<f64>,
+    od: MatMut<f64>,
+    qd: MatMut<f64>,
+    gd: MatMut<f64>,
+    xd: MatMut<f64>,
+    yd: MatMut<f64>,
+) {
+    calc_mu_cuu(mu.as_ref(), mu_cuu.as_mut(), cuu, rr0);
+    calc_fd_c(fd_c.as_mut(), mu_cuu.as_ref(), strain_dot);
+    calc_fd_d(fd_d, fd_c.as_ref(), e1_tilde);
+    calc_sd_pd_od_qd_gd_xd_yd(
+        sd,
+        pd,
+        od,
+        qd,
+        gd,
+        xd,
+        yd,
+        mu_cuu.as_ref(),
+        v_prime.subrows(0, 3),
+        v.subrows(3, 3),
+        fd_c.as_ref(),
+        e1_tilde,
+    )
 }
 
 #[inline]
