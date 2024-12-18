@@ -1,9 +1,7 @@
 use std::{
-    env,
     f64::consts::PI,
     fs::{self, File},
     io::Write,
-    ops::Index,
 };
 
 use faer::{
@@ -17,11 +15,11 @@ use faer::{
 use itertools::{izip, Itertools};
 use ottr::{
     elements::beams::{BeamSection, Damping},
-    external::parse_beamdyn_sections,
+    // external::parse_beamdyn_sections,
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
-    util::{ColAsMatMut, ColAsMatRef},
+    util::{quat_as_rotation_vector, ColAsMatRef},
 };
 
 const V_SCALE: f64 = 1.0;
@@ -32,8 +30,8 @@ fn main() {
 
     // Select damping type
     // let damping = Damping::None;
-    // let damping = Damping::ModalElement(zeta.clone());
-    let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
+    let damping = Damping::ModalElement(zeta.clone());
+    // let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
 
     // Settings
     let out_dir = "output/stable";
@@ -76,21 +74,30 @@ fn main() {
             let i_max_x = i_max.iter().position(|&i| i == 0).unwrap();
             let i_max_y = i_max.iter().position(|&i| i == 1).unwrap();
             let i_max_z = i_max.iter().position(|&i| i == 2).unwrap();
-            let mu = [
-                2. * zeta[i_max_x] / omega[i_max_x],
-                2. * zeta[i_max_y] / omega[i_max_y],
-                2. * zeta[i_max_z] / omega[i_max_z],
-            ];
-            model.beam_elements.iter_mut().for_each(|e| {
-                e.damping = Damping::Mu(col![mu[0], mu[1], mu[2], mu[0], mu[2], mu[1]])
-            });
+
+            let mu_x = 2. * zeta[i_max_x] / omega[i_max_x];
+            let mu_y = 2. * zeta[i_max_y] / omega[i_max_y];
+            let mu_z = 2. * zeta[i_max_z] / omega[i_max_z];
+
+            let mu = col![mu_x, mu_y, mu_z, mu_x, mu_z, mu_y];
+            println!("mu={:?}", mu);
+            println!(
+                "modes: x={}, y={}, z={}",
+                i_max_x + 1,
+                i_max_y + 1,
+                i_max_z + 1
+            );
+            model
+                .beam_elements
+                .iter_mut()
+                .for_each(|e| e.damping = Damping::Mu(mu.clone()));
         }
         _ => (),
     }
 
     // Loop through modes and run simulation
     izip!(omega.iter(), eig_vec.col_iter())
-        .take(6)
+        .take(8)
         .enumerate()
         .for_each(|(i, (&omega, shape))| {
             let t_end = 2. * PI / omega;
@@ -115,15 +122,27 @@ fn run_simulation(
     let v = shape * Scale(V_SCALE);
     state.v.copy_from(v.as_ref().as_mat_ref(6, state.n_nodes));
 
-    // Initialize output storage
-    let ts = Col::<f64>::from_fn(n_steps, |i| (i as f64) * time_step);
-    let mut u = Mat::<f64>::zeros(model.n_nodes() * 3, n_steps);
+    // Create output file
+    let mut file = File::create(format!("{out_dir}/displacement_{:02}.csv", mode)).unwrap();
+
+    // Cartesian rotation vector
+    let mut rv = Col::<f64>::zeros(3);
 
     // Loop through times and run simulation
-    for (t, u_col) in izip!(ts.iter(), u.col_iter_mut()) {
-        let u = u_col.as_mat_mut(3, model.n_nodes());
-        zipped!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3))
-            .for_each(|unzipped!(mut u, us)| *u = *us);
+    for i in 0..n_steps {
+        // Calculate time
+        let t = (i as f64) * time_step;
+
+        file.write_fmt(format_args!("{t}")).unwrap();
+        state.u.col_iter().for_each(|c| {
+            quat_as_rotation_vector(c.subrows(3, 4), rv.as_mut());
+            file.write_fmt(format_args!(
+                ",{},{},{},{},{},{}",
+                c[0], c[1], c[2], rv[0], rv[1], rv[2]
+            ))
+            .unwrap();
+        });
+        file.write(b"\n").unwrap();
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
@@ -135,16 +154,6 @@ fn run_simulation(
 
         assert_eq!(res.converged, true);
     }
-
-    // Output results
-    let mut file = File::create(format!("{out_dir}/displacement_{:02}.csv", mode)).unwrap();
-    izip!(ts.iter(), u.col_iter()).for_each(|(&t, tv)| {
-        file.write_fmt(format_args!("{t}")).unwrap();
-        for &v in tv.iter() {
-            file.write_fmt(format_args!(",{v}")).unwrap();
-        }
-        file.write(b"\n").unwrap();
-    });
 }
 
 fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
@@ -213,7 +222,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     (eig_val, eig_vec)
 }
 
-fn setup_model(bd_file: &str, damping: Damping) -> Model {
+fn setup_model(_bd_file: &str, damping: Damping) -> Model {
     let beam_length = 10.;
     let xi = gauss_legendre_lobotto_points(6);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
@@ -234,7 +243,6 @@ fn setup_model(bd_file: &str, damping: Damping) -> Model {
         })
         .collect_vec();
 
-    // Mass matrix 6x6
     let m_star = mat![
         [8.538, 0.000, 0.000, 0.0000, 0.00000, 0.0000],
         [0.000, 8.538, 0.000, 0.0000, 0.00000, 0.0000],
@@ -244,7 +252,6 @@ fn setup_model(bd_file: &str, damping: Damping) -> Model {
         [0.000, 0.000, 0.000, 0.0000, 0.00000, 1.0336],
     ] * Scale(1e-2);
 
-    // Stiffness matrix 6x6
     let c_star = mat![
         [1368.17, 0., 0., 0., 0., 0.],
         [0., 88.56, 0., 0., 0., 0.],
@@ -254,20 +261,20 @@ fn setup_model(bd_file: &str, damping: Damping) -> Model {
         [0., 0., 0., 0., 0., 141.47],
     ] * Scale(1e3);
 
-    let sections = parse_beamdyn_sections(&fs::read_to_string(bd_file).unwrap());
-    // let sections = vec![
-    //     BeamSection {
-    //         s: 0.,
-    //         m_star: m_star.clone(),
-    //         c_star: c_star.clone(),
-    //     },
-    //     BeamSection {
-    //         s: 1.,
-    //         m_star: m_star.clone(),
-    //         c_star: c_star.clone(),
-    //     },
-    // ];
-    let sections = vec![sections[0].clone(), sections[sections.len() - 1].clone()];
+    let sections = vec![
+        BeamSection {
+            s: 0.,
+            m_star: m_star.clone(),
+            c_star: c_star.clone(),
+        },
+        BeamSection {
+            s: 1.,
+            m_star: m_star.clone(),
+            c_star: c_star.clone(),
+        },
+    ];
+
+    // let sections = parse_beamdyn_sections(&fs::read_to_string(bd_file).unwrap());
 
     //--------------------------------------------------------------------------
     // Add beam element
