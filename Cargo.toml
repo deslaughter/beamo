@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "cantilever_sin_load"
 path = "bin/cantilever_sin_load.rs"
 
+[[bin]]
+name = "stable_mode_sweep"
+path = "bin/stable_mode_sweep.rs"
+
 [dependencies]
 approx = "0.5.1"
 faer = "0.19.4"

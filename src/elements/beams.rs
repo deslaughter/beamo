@@ -22,6 +22,7 @@ pub struct BeamElement {
     pub damping: Damping,
 }
 
+#[derive(Clone, Debug)]
 pub struct BeamSection {
     /// Distance along centerline from first point
     pub s: f64,
@@ -494,12 +495,12 @@ impl Beams {
 
         // Combine force components
         zipped!(
-            &mut self.node_f,
-            &self.node_fe,
-            &self.node_fd,
-            &self.node_fg,
-            &self.node_fi,
-            &self.node_fx
+            &mut self.node_f, // total
+            &self.node_fe,    // elastic
+            &self.node_fd,    // dissipative
+            &self.node_fg,    // gravity
+            &self.node_fi,    // internal
+            &self.node_fx     // external (distributed)
         )
         .for_each(|unzipped!(mut f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
     }
