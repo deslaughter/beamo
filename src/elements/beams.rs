@@ -12,7 +12,7 @@ use faer::solvers::{Eigendecomposition, SpSolver};
 use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
 use itertools::{izip, multiunzip, Itertools};
 
-use super::kernels::{calc_fd_c, calc_fd_d, calc_mu_cuu, calc_sd_pd_od_qd_gd_xd_yd};
+use super::kernels::{calc_fd_c, calc_fd_d, calc_inertial_matrix, calc_sd_pd_od_qd_gd_xd_yd};
 
 pub struct BeamElement {
     pub id: usize,
@@ -264,6 +264,7 @@ impl Beams {
                 },
             );
 
+            // Create vector of element sections
             let sections = &elements[ei.elem_id].sections;
             let section_s = sections.iter().map(|section| section.s).collect_vec();
             let section_m_star = sections
@@ -275,11 +276,12 @@ impl Beams {
                 .map(|s| Col::from_fn(6 * 6, |i| s.c_star[(i.rem(6), i / 6)]))
                 .collect_vec();
 
-            // Interpolate mass and stiffness matrices
+            // Get quadrature point locations on range of [0,1]
             let qp_s = Col::<f64>::from_fn(ei.n_qps, |i| {
                 (elements[ei.elem_id].quadrature.points[i] + 1.) / 2.
             });
 
+            // Linearly interpolate mass and stiffness matrices from sections to quadrature points
             qp_s.iter().enumerate().for_each(|(i, &qp_s)| {
                 let mut qp_m_star = beams
                     .qp
@@ -313,12 +315,38 @@ impl Beams {
                     }
                 }
             });
+
+            // Match based on damping type
+            match &ei.damping {
+                Damping::Mu(mu) => {
+                    // Calculate damping matrix (g_star = mu*c_star) for each qp in element
+                    let mut mu_mat = Mat::<f64>::zeros(6, 6);
+                    mu_mat.diagonal_mut().column_vector_mut().copy_from(&mu);
+                    let qp_g_star = beams.qp.g_star.subcols_mut(ei.i_qp_start, ei.n_qps);
+                    let qp_c_star = beams.qp.c_star.subcols(ei.i_qp_start, ei.n_qps);
+                    izip!(qp_g_star.col_iter_mut(), qp_c_star.col_iter()).for_each(
+                        |(g_star_col, c_star_col)| {
+                            let mut g_star = g_star_col.as_mat_mut(6, 6);
+                            let c_star = c_star_col.as_mat_ref(6, 6);
+                            matmul(
+                                g_star.as_mut(),
+                                &mu_mat,
+                                c_star,
+                                None,
+                                1.,
+                                Parallelism::None,
+                            );
+                        },
+                    );
+                }
+                _ => {}
+            }
         }
 
         beams
     }
 
-    /// Calculate element properties
+    /// Calculate element properties``
     pub fn calculate_system(&mut self, state: &State) {
         // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
         izip!(
@@ -341,10 +369,9 @@ impl Beams {
 
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
-            Damping::Mu(mu) => {
+            Damping::Mu(_) => {
                 calculate_mu_damping(
-                    mu.as_ref(),
-                    self.qp.cuu.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.g_star.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
@@ -841,8 +868,7 @@ fn integrate_fe(
 }
 
 pub fn calculate_mu_damping(
-    mu: ColRef<f64>,
-    cuu: MatRef<f64>,
+    g_star: MatRef<f64>,
     rr0: MatRef<f64>,
     strain_dot: MatRef<f64>,
     e1_tilde: MatRef<f64>,
@@ -859,7 +885,7 @@ pub fn calculate_mu_damping(
     xd: MatMut<f64>,
     yd: MatMut<f64>,
 ) {
-    calc_mu_cuu(mu.as_ref(), mu_cuu.as_mut(), cuu, rr0);
+    calc_inertial_matrix(mu_cuu.as_mut(), g_star, rr0);
     calc_fd_c(fd_c.as_mut(), mu_cuu.as_ref(), strain_dot);
     calc_fd_d(fd_d, fd_c.as_ref(), e1_tilde);
     calc_sd_pd_od_qd_gd_xd_yd(
