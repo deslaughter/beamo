@@ -26,19 +26,19 @@ const V_SCALE: f64 = 1.0;
 
 fn main() {
     // Damping ratio for modes 1-6
-    let zeta = col![0.05, 0.1, 0.15, 0.2, 0.25, 0.3];
+    let zeta = col![0.01, 0.02, 0.03, 0.04, 0.05, 0.06];
 
     // Select damping type
     // let damping = Damping::None;
-    let damping = Damping::ModalElement(zeta.clone());
     // let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
+    let damping = Damping::ModalElement(zeta.clone());
 
     // Settings
     let out_dir = "output/stable";
     let n_cycles = 3.5; // Number of oscillations to simulate
     let rho_inf = 1.; // Numerical damping
     let max_iter = 6; // Max convergence iterations
-    let time_step = 0.001; // Time step
+    let time_step = 0.0001; // Time step
 
     // Create output directory
     fs::create_dir_all(out_dir).unwrap();
@@ -97,7 +97,7 @@ fn main() {
 
     // Loop through modes and run simulation
     izip!(omega.iter(), eig_vec.col_iter())
-        .take(8)
+        .take(6)
         .enumerate()
         .for_each(|(i, (&omega, shape))| {
             let t_end = 2. * PI / omega;
@@ -256,9 +256,9 @@ fn setup_model(_bd_file: &str, damping: Damping) -> Model {
         [1368.17, 0., 0., 0., 0., 0.],
         [0., 88.56, 0., 0., 0., 0.],
         [0., 0., 38.78, 0., 0., 0.],
-        [0., 0., 0., 16.960, 0., 0.],
-        [0., 0., 0., 0., 59.120, 0.],
-        [0., 0., 0., 0., 0., 141.47],
+        [0., 0., 0., 16.960, 17.610, -0.351],
+        [0., 0., 0., 17.610, 59.120, -0.370],
+        [0., 0., 0., -0.351, -0.370, 141.47],
     ] * Scale(1e3);
 
     let sections = vec![
