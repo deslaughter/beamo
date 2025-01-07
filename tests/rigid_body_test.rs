@@ -87,6 +87,7 @@ fn test_heavy_top() {
     model.set_rho_inf(0.9);
     model.set_max_iter(6);
 
+    // Heavy top parameters
     let m = 15.;
     let mut j = Mat::<f64>::zeros(3, 3);
     j.diagonal_mut()
@@ -155,9 +156,8 @@ fn test_heavy_top() {
     model.add_rigid_constraint(mass_node_id, ground_node_id);
     model.add_prescribed_constraint(ground_node_id);
 
-    // gamma is defined with the z component as positive along negative z axis
-    // this took forever to figure out
-    model.set_gravity(gamma[0], gamma[1], -gamma[2]);
+    // Set gravity
+    model.set_gravity(gamma[0], gamma[1], gamma[2]);
 
     //--------------------------------------------------------------------------
     // run simulation
