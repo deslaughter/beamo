@@ -15,6 +15,8 @@ pub struct BeamQPs {
     pub m_star: Mat<f64>,
     /// Stiffness matrix in material frame `[6][6][n_qps]`
     pub c_star: Mat<f64>,
+    /// Damping matrix in material frame `[6][6][n_qps]`
+    pub g_star: Mat<f64>,
     /// Current position/orientation `[7][n_qps]`
     pub x: Mat<f64>,
     /// Initial position `[7][n_qps]`
@@ -101,6 +103,7 @@ impl BeamQPs {
             jacobian: Col::ones(n_qps),
             m_star: Mat::zeros(6 * 6, n_qps),
             c_star: Mat::zeros(6 * 6, n_qps),
+            g_star: Mat::zeros(6 * 6, n_qps),
             x: Mat::zeros(7, n_qps),
             x0: Mat::zeros(7, n_qps),
             x0_prime: Mat::zeros(7, n_qps),
