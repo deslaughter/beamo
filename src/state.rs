@@ -40,6 +40,7 @@ impl State {
             a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
         };
         state.calc_displacement(0.);
+        state.calculate_x();
         state
     }
 
