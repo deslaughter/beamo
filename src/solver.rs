@@ -132,7 +132,7 @@ impl Solver {
         self.lambda.fill_zero();
 
         // Loop until converged or max iteration limit reached
-        while res.iter < self.p.max_iter {
+        while res.iter <= self.p.max_iter {
             //------------------------------------------------------------------
             // Build System
             //------------------------------------------------------------------

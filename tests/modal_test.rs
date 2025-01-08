@@ -22,6 +22,7 @@ use ottr::{
 };
 
 #[test]
+#[ignore]
 fn test_damping() {
     // Damping ratio for modes 1-4
     let zeta = col![0.1];

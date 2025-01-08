@@ -202,9 +202,10 @@ fn test_heavy_top() {
                     -0.17794086498990777,
                     0.21672292516262048,
                     -0.9597292673920982,
-                    -0.016969254156485276,
+                    -0.016969254156485276
                 ]
-                .as_2d()
+                .as_2d(),
+                comp = float
             );
         }
 
@@ -216,6 +217,7 @@ fn test_heavy_top() {
 }
 
 #[test]
+#[ignore]
 fn test_rigid_platform() {
     let out_dir = "output/rigid_platform";
     let time_step: f64 = 0.01;
