@@ -7,9 +7,8 @@ use std::{
 use faer::{
     col,
     complex_native::c64,
-    mat,
-    solvers::{Eigendecomposition, SpSolver},
-    unzipped, zipped, Col, ColRef, Mat, Scale,
+    linalg::solvers::{Eigendecomposition, SpSolver},
+    mat, unzipped, zipped, Col, ColRef, Mat, Scale,
 };
 
 use itertools::{izip, Itertools};
@@ -205,7 +204,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
+        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
     });
 
     // Write mode shapes to output file

@@ -7,8 +7,8 @@ use crate::quadrature::Quadrature;
 use crate::state::State;
 use crate::util::{ColAsMatMut, ColAsMatRef};
 use faer::linalg::matmul::matmul;
-use faer::prelude::c64;
-use faer::solvers::{Eigendecomposition, SpSolver};
+use faer::linalg::solvers::Eigendecomposition;
+use faer::prelude::{c64, SpSolver};
 use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
 use itertools::{izip, multiunzip, Itertools};
 
@@ -422,7 +422,7 @@ impl Beams {
                     .for_each(|(&(i, j), muu)| {
                         let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
                         zipped!(&mut me, &muu.as_mat_ref(6, 6))
-                            .for_each(|unzipped!(mut me, muu)| *me += *muu);
+                            .for_each(|unzipped!(me, muu)| *me += *muu);
                     });
 
                     // Stiffness matrix
@@ -436,7 +436,7 @@ impl Beams {
                     .for_each(|(&(i, j), kuu)| {
                         let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
                         zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
-                            .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
+                            .for_each(|unzipped!(ke, kuu)| *ke += *kuu);
                     });
 
                     // Solve for A matrix given M and K
@@ -499,7 +499,7 @@ impl Beams {
                     )
                     .for_each(|(&(i, j), guu)| {
                         zipped!(&mut guu.as_mat_mut(6, 6), &c_d.submatrix(i, j, 6, 6))
-                            .for_each(|unzipped!(mut guu, c)| *guu += *c);
+                            .for_each(|unzipped!(guu, c)| *guu += *c);
                     });
 
                     // Calculate the damping force on each node
@@ -514,7 +514,7 @@ impl Beams {
                         &mut self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
                         &f_d.as_ref().as_mat_ref(6, ei.n_nodes)
                     )
-                    .for_each(|unzipped!(mut node_fd, f_d)| *node_fd += *f_d);
+                    .for_each(|unzipped!(node_fd, f_d)| *node_fd += *f_d);
                 }
                 _ => {}
             }
@@ -529,7 +529,7 @@ impl Beams {
             &self.node_fi,    // internal
             &self.node_fx     // external (distributed)
         )
-        .for_each(|unzipped!(mut f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
+        .for_each(|unzipped!(f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
     }
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
@@ -567,8 +567,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), muu)| {
                 let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut me, &muu.as_mat_ref(6, 6))
-                    .for_each(|unzipped!(mut me, muu)| *me += *muu);
+                zipped!(&mut me, &muu.as_mat_ref(6, 6)).for_each(|unzipped!(me, muu)| *me += *muu);
             });
 
             // Damping matrix
@@ -580,8 +579,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), guu)| {
                 let mut ge = g.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut ge, &guu.as_mat_ref(6, 6))
-                    .for_each(|unzipped!(mut ge, guu)| *ge += *guu);
+                zipped!(&mut ge, &guu.as_mat_ref(6, 6)).for_each(|unzipped!(ge, guu)| *ge += *guu);
             });
 
             // Stiffness matrix
@@ -593,8 +591,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), kuu)| {
                 let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
-                    .for_each(|unzipped!(mut ke, kuu)| *ke += *kuu);
+                zipped!(&mut ke, &kuu.as_mat_ref(6, 6)).for_each(|unzipped!(ke, kuu)| *ke += *kuu);
             });
 
             // Get first node dof index of each element
@@ -611,7 +608,7 @@ impl Beams {
             )
             .for_each(|(&i, f)| {
                 let mut residual = r.as_mut().subrows_mut(i, 6);
-                zipped!(&mut residual, &f).for_each(|unzipped!(mut r, f)| *r += *f);
+                zipped!(&mut residual, &f).for_each(|unzipped!(r, f)| *r += *f);
             });
         });
     }
@@ -700,16 +697,12 @@ impl Beams {
 
         // Divide each column of u_prime by Jacobian
         izip!(self.qp.u_prime.col_iter_mut(), self.qp.jacobian.iter()).for_each(
-            |(mut col, &jacobian)| {
-                zipped!(&mut col).for_each(|unzipped!(mut col)| *col /= jacobian)
-            },
+            |(mut col, &jacobian)| zipped!(&mut col).for_each(|unzipped!(col)| *col /= jacobian),
         );
 
         // Divide each column of v_prime by Jacobian
         izip!(self.qp.v_prime.col_iter_mut(), self.qp.jacobian.iter()).for_each(
-            |(mut col, &jacobian)| {
-                zipped!(&mut col).for_each(|unzipped!(mut col)| *col /= jacobian)
-            },
+            |(mut col, &jacobian)| zipped!(&mut col).for_each(|unzipped!(col)| *col /= jacobian),
         );
     }
 
@@ -857,13 +850,12 @@ fn integrate_fe(
             qp_fd.col_iter()
         )
         .for_each(|(&w, &j, &phi, &phi_prime, fc, fd)| {
-            zipped!(&mut acc, &fc, &fd).for_each(|unzipped!(mut acc, fc, fd)| {
-                *acc += w * (*fc * phi_prime + *fd * phi * j)
-            });
+            zipped!(&mut acc, &fc, &fd)
+                .for_each(|unzipped!(acc, fc, fd)| *acc += w * (*fc * phi_prime + *fd * phi * j));
         });
 
         // Add values to node matrix
-        zipped!(&mut fe, &acc).for_each(|unzipped!(mut fe, acc)| *fe += *acc);
+        zipped!(&mut fe, &acc).for_each(|unzipped!(fe, acc)| *fe += *acc);
     });
 }
 
@@ -917,12 +909,12 @@ fn integrate_f(
         acc.fill_zero();
         izip!(qp_w.iter(), qp_j.iter(), phi.iter(), qp_f.col_iter(),).for_each(
             |(&w, &j, &phi, qp_f)| {
-                zipped!(&mut acc, &qp_f).for_each(|unzipped!(mut acc, f)| *acc += *f * phi * j * w);
+                zipped!(&mut acc, &qp_f).for_each(|unzipped!(acc, f)| *acc += *f * phi * j * w);
             },
         );
 
         // Add values to node matrix
-        zipped!(&mut node_f, &acc).for_each(|unzipped!(mut f, acc)| *f += *acc);
+        zipped!(&mut node_f, &acc).for_each(|unzipped!(f, acc)| *f += *acc);
     });
 }
 
@@ -964,7 +956,7 @@ fn integrate_element_matrices(
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(mut c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_muu);
 
             // Copy accumulator to node
@@ -981,20 +973,18 @@ fn integrate_element_matrices(
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(mut c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_gi);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_xd);
 
             // c = w * phi_i * phi_prime_j
-            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j)).for_each(
-                |unzipped!(mut c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j,
-            );
+            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
+                .for_each(|unzipped!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_yd);
 
             // c = w * phi_prime_i * phi_j
-            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j)).for_each(
-                |unzipped!(mut c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j,
-            );
+            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
+                .for_each(|unzipped!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_gd);
 
             // c = w * phi_prime_i * phi_prime_j / j
@@ -1005,7 +995,7 @@ fn integrate_element_matrices(
                 &phi_prime.col(i),
                 &phi_prime.col(j)
             )
-            .for_each(|unzipped!(mut c, w, j, phi_prime_i, phi_prime_j)| {
+            .for_each(|unzipped!(c, w, j, phi_prime_i, phi_prime_j)| {
                 *c = *w * *phi_prime_i * *phi_prime_j / *j
             });
             integrate_mat(acc.as_mut(), c.as_ref(), qp_mu_cuu);
@@ -1024,22 +1014,20 @@ fn integrate_element_matrices(
 
             // c = w * j * phi_i * phi_j
             zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(mut c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_ki);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_qe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_qd);
 
             // c = w * phi_i * phi_prime_j
-            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j)).for_each(
-                |unzipped!(mut c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j,
-            );
+            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
+                .for_each(|unzipped!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_pe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_pd);
 
             // c = w * phi_prime_i * phi_j
-            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j)).for_each(
-                |unzipped!(mut c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j,
-            );
+            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
+                .for_each(|unzipped!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_oe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_od);
 
@@ -1051,7 +1039,7 @@ fn integrate_element_matrices(
                 &phi_prime.col(i),
                 &phi_prime.col(j)
             )
-            .for_each(|unzipped!(mut c, w, j, phi_prime_i, phi_prime_j)| {
+            .for_each(|unzipped!(c, w, j, phi_prime_i, phi_prime_j)| {
                 *c = *w * *phi_prime_i * *phi_prime_j / *j
             });
             integrate_mat(acc.as_mut(), c.as_ref(), qp_cuu);
@@ -1066,7 +1054,7 @@ fn integrate_element_matrices(
 fn integrate_mat(mut node_mat: ColMut<f64>, c: ColRef<f64>, qp_mat: MatRef<f64>) {
     izip!(qp_mat.col_iter(), c.iter()).for_each(|(qp_mat, &c)| {
         zipped!(&mut node_mat, &qp_mat)
-            .for_each(|unzipped!(mut node_mat, qp_mat)| *node_mat += *qp_mat * c)
+            .for_each(|unzipped!(node_mat, qp_mat)| *node_mat += *qp_mat * c)
     });
 }
 
@@ -1083,6 +1071,7 @@ mod tests {
         interp::gauss_legendre_lobotto_points, model::Model, quadrature::Quadrature,
         util::vec_tilde, util::Quat,
     };
+    use approx::assert_ulps_eq;
     use faer::{assert_matrix_eq, col, mat};
 
     fn create_beams() -> Beams {
@@ -1321,7 +1310,8 @@ mod tests {
                     -0.09504013471947484
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1342,7 +1332,8 @@ mod tests {
                     0.
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1362,7 +1353,8 @@ mod tests {
                     0.003084570715675624
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1382,7 +1374,8 @@ mod tests {
                     -0.014285714285714285
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1399,7 +1392,8 @@ mod tests {
                 [0.6, 0., -0.2, 2., 4., 6.],
                 [-0.4, 0.2, 0., 3., 6., 9.],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1416,7 +1410,8 @@ mod tests {
                 [5., 10., 15., 20., 25., 30.],
                 [6., 12., 18., 24., 30., 36.],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1434,7 +1429,8 @@ mod tests {
                 -0.082444330164641907,
                 -0.17566801608760002
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1452,7 +1448,8 @@ mod tests {
                 0.056965007432292485,
                 0.09338617439225547
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1466,11 +1463,12 @@ mod tests {
                 -0.000063102480397445355,
                 0.000065079641503882152,
                 0.9999991906236807,
-                0.0012723018445567188,
+                0.0012723018445566286,
                 0.,
                 0.
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1483,12 +1481,13 @@ mod tests {
                 0.00094148768683727929,
                 -0.00090555198142222483,
                 0.00094867482792029139,
-                -0.000011768592508690223,
+                -0.000011768592508100627,
                 0.0092498359395732574,
                 0.,
                 0.
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1506,7 +1505,8 @@ mod tests {
                 -0.08222076069525557,
                 -0.1757727679794095,
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1529,7 +1529,8 @@ mod tests {
                 3.223491986410379,
                 3.4713669823269537,
             ]],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1540,7 +1541,7 @@ mod tests {
             beams.qp.strain.subcols(0, 2).transpose(),
             mat![
                 [
-                    0.0009414876868372797,
+                    0.0009414876868371058,
                     -0.0004838292834870028,
                     0.0018188281296873665,
                     0.0184996868523541,
@@ -1556,7 +1557,8 @@ mod tests {
                     0.
                 ]
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1615,7 +1617,8 @@ mod tests {
                     0.9861297269843315
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1628,29 +1631,29 @@ mod tests {
                 [
                     2.000000000000001,
                     5.204170427930421e-17,
-                    -5.551115123125783e-17,
-                    -4.163336342344337e-17,
+                    -0.00000000000000005551115123125783,
+                    -0.00000000000000004163336342344337,
                     0.626052147258804,
                     -0.3395205571349214
                 ],
                 [
                     5.204170427930421e-17,
                     2.0000000000000018,
-                    1.3877787807814457e-17,
+                    0.000000000000000013877787807814457,
                     -0.6260521472588039,
-                    -3.469446951953614e-18,
+                    -0.000000000000000003469446951953614,
                     0.22974877626536766
                 ],
                 [
-                    -5.551115123125783e-17,
-                    1.3877787807814457e-17,
+                    -0.00000000000000005551115123125783,
+                    0.000000000000000013877787807814457,
                     2.0000000000000013,
                     0.33952055713492146,
                     -0.22974877626536772,
                     -1.3877787807814457e-17
                 ],
                 [
-                    4.163336342344337e-17,
+                    0.00000000000000004163336342344337,
                     -0.626052147258804,
                     0.3395205571349214,
                     1.3196125048858467,
@@ -1659,7 +1662,7 @@ mod tests {
                 ],
                 [
                     0.6260521472588039,
-                    3.469446951953614e-18,
+                    0.000000000000000003469446951953614,
                     -0.22974877626536766,
                     1.9501108129670985,
                     2.881855217930184,
@@ -1674,7 +1677,8 @@ mod tests {
                     9.79853227718398
                 ],
             ],
-            comp = float
+            comp = abs,
+            tol = 1e-12
         );
     }
 
@@ -1686,11 +1690,11 @@ mod tests {
             mat![
                 [
                     1.3196125048858467,
-                    1.9501108129670985,
-                    3.5958678677753957,
+                    1.9501108129670968,
+                    3.595867867775392,
                     5.1623043394880055,
                     4.190329885612304,
-                    7.576404967559343
+                    7.576404967559336
                 ],
                 [
                     1.9501108129670985,
@@ -1733,7 +1737,8 @@ mod tests {
                     43.499066597147355
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1760,7 +1765,8 @@ mod tests {
                     0.7288106297098473,
                 ]
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1787,7 +1793,8 @@ mod tests {
                     -0.12868857402180306
                 ]
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1814,7 +1821,8 @@ mod tests {
                     -0.22352273933363573,
                 ]
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1827,7 +1835,8 @@ mod tests {
                 [0., 0., 19.62, 3.330696665493577, -2.2538354951632567, 0.],
                 [0., 0., 19.62, 3.3957558632056069, -2.2939945293324624, 0.]
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1886,7 +1895,8 @@ mod tests {
                     -12.963070176574703
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1924,7 +1934,8 @@ mod tests {
                     -12.963070176574703
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -1962,7 +1973,8 @@ mod tests {
                     3.820161491912928,
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2021,7 +2033,8 @@ mod tests {
                     0.022439101629457635
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2080,7 +2093,8 @@ mod tests {
                     -0.022253736971069835
                 ],
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2264,7 +2278,8 @@ mod tests {
                 [0.6, 0., -0.2, 2., 4., 6.], // column 5
                 [-0.4, 0.2, 0., 3., 6., 9.], // column 6
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2281,7 +2296,8 @@ mod tests {
                 [5., 10., 15., 20., 25., 30.], // column 5
                 [6., 12., 18., 24., 30., 36.], // column 6
             ],
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2295,12 +2311,13 @@ mod tests {
                 -6.310248039744534e-5,
                 6.5079641503883e-5,
                 0.9999991906236807,
-                0.001272301844556629,
+                0.0012723018445566566,
                 0.0,
                 0.0
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2313,13 +2330,14 @@ mod tests {
                 0.0009414876868372848,
                 -0.0009055519814222241,
                 0.0009486748279202956,
-                -1.1768592508490864e-5,
-                0.009249835939573259,
+                -0.000011768592508141705,
+                0.009249835939573446,
                 0.0,
                 0.0
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2331,7 +2349,7 @@ mod tests {
             beams.qp.u.col(0).subrows(3, 4),
             beams.qp.x0.col(0).subrows(3, 4),
         );
-        assert_eq!(rr0.norm_l2(), 1.);
+        assert_ulps_eq!(rr0.norm_l2(), 1.);
         assert_matrix_eq!(
             rr0.as_2d(),
             col![
@@ -2341,7 +2359,8 @@ mod tests {
                 -0.17577276797940944
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2351,15 +2370,16 @@ mod tests {
         assert_matrix_eq!(
             beams.qp.strain.col(0).as_2d(),
             col![
-                0.0009414876868373279,
-                -0.00048382928348705834,
-                0.0018188281296873943,
-                0.0184996868523541,
+                0.0009414876868371058,
+                -0.0004838292834870028,
+                0.0018188281296873665,
+                0.018499686852354473,
                 0.0,
                 0.0
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2419,7 +2439,8 @@ mod tests {
                 ]
             ]
             .transpose(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2437,7 +2458,8 @@ mod tests {
                 0.5875743638338343
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2455,7 +2477,8 @@ mod tests {
                 -0.1751018655842545
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2473,7 +2496,8 @@ mod tests {
                 -0.02975324221499824
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2491,7 +2515,8 @@ mod tests {
                 -0.6838427114868927
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2501,15 +2526,16 @@ mod tests {
         assert_matrix_eq!(
             beams.node_fi.col(0).as_2d(),
             col![
-                0.0001160455640892761,
-                -0.0006507362696178125,
-                -0.0006134866787567512,
+                0.0001160455640893056,
+                -0.0006507362696177845,
+                -0.0006134866787566601,
                 0.0006142322011934131,
                 -0.002199479688149198,
                 -0.002486843354672648,
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2521,13 +2547,14 @@ mod tests {
             col![
                 0.0,
                 0.0,
-                5.387595382846484,
-                0.9155947038768231,
-                -0.6120658127519644,
+                5.387595382846479,
+                0.9155947038768218,
+                -0.6120658127519634,
                 0.0,
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 
@@ -2545,7 +2572,8 @@ mod tests {
                 -0.6863295548415653
             ]
             .as_2d(),
-            comp = float
+            comp = ulp,
+            tol = 256
         );
     }
 }

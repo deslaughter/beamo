@@ -7,9 +7,8 @@ use std::{
 use faer::{
     col,
     complex_native::c64,
-    mat,
-    solvers::{Eigendecomposition, SpSolver},
-    unzipped, zipped, Col, Mat, Scale,
+    linalg::solvers::{Eigendecomposition, SpSolver},
+    mat, unzipped, zipped, Col, Mat, Scale,
 };
 
 use itertools::{izip, Itertools};
@@ -109,7 +108,7 @@ fn test_damping() {
     for (t, u_col) in izip!(ts.iter(), u.col_iter_mut()) {
         let u = u_col.as_mat_mut(3, model.n_nodes());
         zipped!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3))
-            .for_each(|unzipped!(mut u, us)| *u = *us);
+            .for_each(|unzipped!(u, us)| *u = *us);
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
@@ -184,7 +183,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
+        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
     });
 
     // Write mode shapes to output file

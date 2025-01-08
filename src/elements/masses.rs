@@ -188,7 +188,7 @@ impl Masses {
                 &mut m.as_mut().submatrix_mut(i, i, 6, 6),
                 me_col.as_mat_ref(6, 6)
             )
-            .for_each(|unzipped!(mut m, me)| *m += *me);
+            .for_each(|unzipped!(m, me)| *m += *me);
         });
 
         // Gyroscopic matrix
@@ -197,7 +197,7 @@ impl Masses {
                 &mut g.as_mut().submatrix_mut(i, i, 6, 6),
                 ge_col.as_mat_ref(6, 6)
             )
-            .for_each(|unzipped!(mut g, ge)| *g += *ge);
+            .for_each(|unzipped!(g, ge)| *g += *ge);
         });
 
         // Stiffness matrix
@@ -206,7 +206,7 @@ impl Masses {
                 &mut k.as_mut().submatrix_mut(i, i, 6, 6),
                 ke_col.as_mat_ref(6, 6)
             )
-            .for_each(|unzipped!(mut k, ke)| *k += *ke);
+            .for_each(|unzipped!(k, ke)| *k += *ke);
         });
 
         // Residual vector
@@ -217,7 +217,7 @@ impl Masses {
         )
         .for_each(|(&i, fi, fg)| {
             zipped!(&mut r.as_mut().subrows_mut(i, 6), fi, fg)
-                .for_each(|unzipped!(mut r, fi, fg)| *r += *fi - *fg);
+                .for_each(|unzipped!(r, fi, fg)| *r += *fi - *fg);
         });
     }
 }

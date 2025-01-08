@@ -8,9 +8,8 @@ use faer::{
     col,
     complex_native::c64,
     linalg::matmul::matmul,
-    mat,
-    solvers::{Eigendecomposition, SpSolver},
-    unzipped, zipped, Col, Mat, MatRef, Parallelism, Scale,
+    linalg::solvers::{Eigendecomposition, SpSolver},
+    mat, unzipped, zipped, Col, Mat, MatRef, Parallelism, Scale,
 };
 
 use itertools::{izip, Itertools};
@@ -216,7 +215,7 @@ fn test_modal_frequency() {
 //             .iter()
 //             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
 //             .unwrap();
-//         zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
+//         zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
 //     });
 
 //     (eig_val, eig_vec)
@@ -271,7 +270,7 @@ fn modal_analysis(
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(mut c)| *c /= max);
+        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
     });
 
     (eig_val, eig_vec)

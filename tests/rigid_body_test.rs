@@ -4,7 +4,7 @@ use std::{
     io::Write,
 };
 
-use faer::{assert_matrix_eq, col, mat, solvers::SpSolver, Col, Mat, Scale};
+use faer::{assert_matrix_eq, col, linalg::solvers::SpSolver, mat, Col, Mat, Scale};
 use itertools::Itertools;
 use ottr::{
     interfaces::{MooringLine, RigidPlatform},

@@ -52,7 +52,7 @@ impl State {
         let q_delta_t = self.u_delta.subrows(0, 3);
 
         // Calculate change in position
-        zipped!(&mut q_t, &q_prev_t, &q_delta_t).for_each(|unzipped!(mut q, q_prev, q_delta)| {
+        zipped!(&mut q_t, &q_prev_t, &q_delta_t).for_each(|unzipped!(q, q_prev, q_delta)| {
             *q = *q_prev + *q_delta * h;
         });
 
@@ -67,7 +67,7 @@ impl State {
         izip!(r_prev.col_iter(), rv_delta.col_iter(), r.col_iter_mut()).for_each(
             |(q_prev, rv_delta, mut q)| {
                 zipped!(&mut h_rv_delta, &rv_delta)
-                    .for_each(|unzipped!(mut h_rv_delta, rv_delta)| *h_rv_delta = *rv_delta * h);
+                    .for_each(|unzipped!(h_rv_delta, rv_delta)| *h_rv_delta = *rv_delta * h);
                 q_delta
                     .as_mut()
                     .quat_from_rotation_vector(h_rv_delta.as_ref());
@@ -83,7 +83,7 @@ impl State {
         let q_t = self.u.subrows(0, 3);
 
         // Calculate current position
-        zipped!(&mut x_t, &x0_t, &q_t).for_each(|unzipped!(mut x, x0, q)| {
+        zipped!(&mut x_t, &x0_t, &q_t).for_each(|unzipped!(x, x0, q)| {
             *x = *x0 + *q;
         });
 
@@ -107,7 +107,7 @@ impl State {
     ) {
         self.u_prev.copy_from(&self.u);
         zipped!(&mut self.u_delta, &mut self.v, &mut self.vd, &mut self.a).for_each(
-            |unzipped!(mut q_delta, mut v, mut vd, mut a)| {
+            |unzipped!(q_delta, v, vd, a)| {
                 let (v_p, vd_p, a_p) = (*v, *vd, *a);
                 *vd = 0.;
                 *a = (alpha_f * vd_p - alpha_m * a_p) / (1. - alpha_m);
@@ -128,7 +128,7 @@ impl State {
         x_delta: MatRef<f64>,
     ) {
         zipped!(&mut self.u_delta, &mut self.v, &mut self.vd, &x_delta).for_each(
-            |unzipped!(mut q_delta, mut v, mut vd, x_delta)| {
+            |unzipped!(q_delta, v, vd, x_delta)| {
                 *q_delta += *x_delta / h;
                 *v += gamma_prime * *x_delta;
                 *vd += beta_prime * *x_delta;

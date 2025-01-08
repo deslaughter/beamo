@@ -165,7 +165,7 @@ impl Springs {
                 .zip([1., -1.])
                 .for_each(|(&i, sign)| {
                     zipped!(&mut r.as_mut().subrows_mut(i, 3), f)
-                        .for_each(|unzipped!(mut r, f)| *r += sign * *f);
+                        .for_each(|unzipped!(r, f)| *r += sign * *f);
                 });
 
             // Get start DOFs for each node
@@ -179,7 +179,7 @@ impl Springs {
             elem_dof_start_pairs.iter().for_each(|(&i, &j)| {
                 let sign = if i == j { 1. } else { -1. };
                 zipped!(&mut k.as_mut().submatrix_mut(i, j, 3, 3), a)
-                    .for_each(|unzipped!(mut k, a)| *k += sign * *a);
+                    .for_each(|unzipped!(k, a)| *k += sign * *a);
             });
         });
     }
@@ -192,7 +192,7 @@ impl Springs {
 /// Calculate xyz distance between element nodes
 #[inline]
 fn calc_r(mut r: MatMut<f64>, x0: MatRef<f64>, u1: MatRef<f64>, u2: MatRef<f64>) {
-    zipped!(&mut r, &x0, &u1, &u2).for_each(|unzipped!(mut r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
+    zipped!(&mut r, &x0, &u1, &u2).for_each(|unzipped!(r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
 }
 
 /// Calculate distance between element nodes, length of spring
@@ -210,7 +210,7 @@ fn calc_c(
     l_ref: ColRef<f64>,
     l: ColRef<f64>,
 ) {
-    zipped!(&mut c1, &mut c2, &k, &l_ref, &l).for_each(|unzipped!(mut c1, mut c2, k, l_ref, l)| {
+    zipped!(&mut c1, &mut c2, &k, &l_ref, &l).for_each(|unzipped!(c1, c2, k, l_ref, l)| {
         *c1 = *k * (*l_ref / *l - 1.);
         *c2 = *k * *l_ref / (*l).powi(3);
     });
@@ -219,9 +219,8 @@ fn calc_c(
 /// Calculate element force vectors
 #[inline]
 fn calc_f(f: MatMut<f64>, c1: ColRef<f64>, r: MatRef<f64>) {
-    izip!(f.col_iter_mut(), c1.iter(), r.col_iter()).for_each(|(mut f, &c1, r)| {
-        zipped!(&mut f, r).for_each(|unzipped!(mut f, r)| *f = c1 * *r)
-    });
+    izip!(f.col_iter_mut(), c1.iter(), r.col_iter())
+        .for_each(|(mut f, &c1, r)| zipped!(&mut f, r).for_each(|unzipped!(f, r)| *f = c1 * *r));
 }
 
 /// Calculate element stiffness matrix

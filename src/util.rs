@@ -21,7 +21,7 @@ pub fn axial_vector_of_matrix(m: MatRef<f64>, mut v: ColMut<f64>) {
 #[inline]
 /// AX(A) = tr(A)/2 * I - A/2, where I is the identity matrix
 pub fn matrix_ax(m: MatRef<f64>, mut ax: MatMut<f64>) {
-    zipped!(&mut ax, &m).for_each(|unzipped!(mut ax, m)| *ax = -*m / 2.);
+    zipped!(&mut ax, &m).for_each(|unzipped!(ax, m)| *ax = -*m / 2.);
     let trace_2 = m.diagonal().column_vector().sum() / 2.;
     ax[(0, 0)] += trace_2;
     ax[(1, 1)] += trace_2;

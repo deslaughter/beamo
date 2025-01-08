@@ -17,7 +17,7 @@ path = "bin/stable_mode_sweep.rs"
 
 [dependencies]
 approx = "0.5.1"
-faer = "0.19.4"
+faer = "0.20.2"
 gauss-quad = "0.2.1"
 itertools = "0.13.0"
-vtkio = "0.6.3"
+vtkio = "0.6"

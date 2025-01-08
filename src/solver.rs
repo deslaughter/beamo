@@ -1,6 +1,8 @@
 use std::ops::Div;
 
-use faer::{linalg::matmul::matmul, solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism};
+use faer::{
+    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism,
+};
 use itertools::izip;
 
 use crate::{
@@ -147,7 +149,7 @@ impl Solver {
             self.r.fill_zero();
 
             // Subtract direct nodal loads
-            zipped!(&mut self.r, &self.fx).for_each(|unzipped!(mut r, fx)| *r -= *fx);
+            zipped!(&mut self.r, &self.fx).for_each(|unzipped!(r, fx)| *r -= *fx);
 
             // Add elements to system
             self.elements.assemble_system(
@@ -172,7 +174,7 @@ impl Solver {
 
             // Assemble system matrix
             let mut st_11 = self.st.submatrix_mut(0, 0, self.n_system, self.n_system);
-            zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(mut st, m, ct)| {
+            zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
                 *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
             });
             matmul(
@@ -192,7 +194,7 @@ impl Solver {
             let mut st_12 = self
                 .st
                 .submatrix_mut(0, self.n_system, self.n_system, self.n_lambda);
-            zipped!(&mut st_12, &self.b.transpose()).for_each(|unzipped!(mut st, bt)| *st = *bt);
+            zipped!(&mut st_12, &self.b.transpose()).for_each(|unzipped!(st, bt)| *st = *bt);
             self.st
                 .submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_lambda)
                 .fill_zero();
@@ -219,13 +221,13 @@ impl Solver {
 
             // Condition residual
             zipped!(&mut self.rhs.subrows_mut(0, self.n_system))
-                .for_each(|unzipped!(mut v)| *v *= self.p.conditioner);
+                .for_each(|unzipped!(v)| *v *= self.p.conditioner);
 
             // Condition system
             zipped!(&mut st_c.subrows_mut(0, self.n_system))
-                .for_each(|unzipped!(mut v)| *v *= self.p.conditioner);
+                .for_each(|unzipped!(v)| *v *= self.p.conditioner);
             zipped!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
-                .for_each(|unzipped!(mut v)| *v /= self.p.conditioner);
+                .for_each(|unzipped!(v)| *v /= self.p.conditioner);
 
             // Solve system
             let lu = st_c.partial_piv_lu();
@@ -234,10 +236,10 @@ impl Solver {
 
             // De-condition solution vector
             zipped!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
-                .for_each(|unzipped!(mut v)| *v /= self.p.conditioner);
+                .for_each(|unzipped!(v)| *v /= self.p.conditioner);
 
             // Negate solution vector
-            zipped!(&mut self.x).for_each(|unzipped!(mut x)| *x *= -1.);
+            zipped!(&mut self.x).for_each(|unzipped!(x)| *x *= -1.);
 
             //------------------------------------------------------------------
             // Update State & lambda
@@ -286,7 +288,7 @@ impl Solver {
                 &mut self.lambda,
                 &self.x.subrows(self.n_system, self.n_lambda)
             )
-            .for_each(|unzipped!(mut lambda, dl)| *lambda += *dl);
+            .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
 
             // Iteration limit reached return not converged
             if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
@@ -322,7 +324,7 @@ impl Solver {
                 ActiveDOFs::All | ActiveDOFs::Rotation => {
                     // Multiply r_delta by h
                     zipped!(&mut rv, &r_delta)
-                        .for_each(|unzipped!(mut rv, r_delta)| *rv = self.p.h * *r_delta);
+                        .for_each(|unzipped!(rv, r_delta)| *rv = self.p.h * *r_delta);
 
                     // Get angle, return if angle is basically zero
                     let phi = rv.norm_l2();
@@ -347,7 +349,7 @@ impl Solver {
                     tan.fill_zero();
                     tan.diagonal_mut().column_vector_mut().fill(1.);
                     matmul(tan.as_mut(), &mt, &mt, Some(1.), a, Parallelism::None);
-                    zipped!(&mut tan, &mt).for_each(|unzipped!(mut t, mt)| *t += *mt * b);
+                    zipped!(&mut tan, &mt).for_each(|unzipped!(t, mt)| *t += *mt * b);
 
                     self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan);
                 }

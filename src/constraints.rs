@@ -215,7 +215,7 @@ impl Constraint {
             &self.x0,
             &self.r_x0
         )
-        .for_each(|unzipped!(mut phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
+        .for_each(|unzipped!(phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
 
         // Angular residual:  Phi(3:6) = axial(R2*inv(rb))
         if self.n_dofs == 6 {
@@ -236,7 +236,7 @@ impl Constraint {
             matrix_ax(self.c.as_ref(), self.ax.as_mut());
             // B(3:6,3:6) = -AX(R2*inv(R1))
             zipped!(&mut self.b_base.submatrix_mut(3, 3, 3, 3), &self.ax)
-                .for_each(|unzipped!(mut b, ax)| *b = -*ax);
+                .for_each(|unzipped!(b, ax)| *b = -*ax);
         }
 
         // Target constraint gradient

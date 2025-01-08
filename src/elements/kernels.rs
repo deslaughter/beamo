@@ -113,13 +113,13 @@ pub fn calc_fi(
             Parallelism::None,
         );
         zipped!(mat.as_mut(), omega_dot_tilde.as_ref()).for_each(
-            |unzipped!(mut mat, omega_dot_tilde)| {
+            |unzipped!(mat, omega_dot_tilde)| {
                 *mat += m * *omega_dot_tilde;
             },
         );
         let mut fi1 = fi.as_mut().subrows_mut(0, 3);
         matmul(fi1.as_mut(), mat.as_ref(), eta, None, 1., Parallelism::None);
-        zipped!(&mut fi1, &u_ddot).for_each(|unzipped!(mut fi1, u_ddot)| *fi1 += *u_ddot * m);
+        zipped!(&mut fi1, &u_ddot).for_each(|unzipped!(fi1, u_ddot)| *fi1 += *u_ddot * m);
 
         let mut fi2 = fi.as_mut().subrows_mut(3, 3);
         let rho = rho_col.as_mat_ref(3, 3);
@@ -165,7 +165,7 @@ pub fn calc_fg(fg: MatMut<f64>, gravity: ColRef<f64>, m: ColRef<f64>, eta: MatRe
     izip!(fg.col_iter_mut(), m.iter(), eta.col_iter(),).for_each(|(mut fg, &m, eta)| {
         vec_tilde(eta, eta_tilde.as_mut());
         zipped!(&mut fg.as_mut().subrows_mut(0, 3), &gravity)
-            .for_each(|unzipped!(mut fg, g)| *fg = *g * m);
+            .for_each(|unzipped!(fg, g)| *fg = *g * m);
         matmul(
             fg.as_mut().subrows_mut(3, 3),
             eta_tilde.as_ref(),
@@ -234,7 +234,7 @@ pub fn calc_gi(
             &m_omega_tilde_eta_tilde,
             &m_omega_tilde_eta_g_tilde.transpose()
         )
-        .for_each(|unzipped!(mut guu12, a, b)| *guu12 = *a + *b);
+        .for_each(|unzipped!(guu12, a, b)| *guu12 = *a + *b);
 
         let mut guu22 = guu.as_mut().submatrix_mut(3, 3, 3, 3);
         matmul(rho_omega.as_mut(), rho, omega, None, 1.0, Parallelism::None);
@@ -248,7 +248,7 @@ pub fn calc_gi(
             Parallelism::None,
         );
         zipped!(&mut guu22, &omega_tilde_rho, &rho_omega_tilde)
-            .for_each(|unzipped!(mut guu22, a, b)| *guu22 = *a - *b);
+            .for_each(|unzipped!(guu22, a, b)| *guu22 = *a - *b);
     });
 }
 
@@ -321,7 +321,7 @@ pub fn calc_ki(
                 &omega_dot_tilde,
                 &omega_tilde_sq
             )
-            .for_each(|unzipped!(mut c, a, b)| *c = *a + *b);
+            .for_each(|unzipped!(c, a, b)| *c = *a + *b);
             matmul(
                 kuu12.as_mut(),
                 omega_dot_tilde_plus_omega_tilde_sq.as_ref(),
@@ -361,7 +361,7 @@ pub fn calc_ki(
                 &rho_omega_tilde,
                 &rho_omega_g_tilde
             )
-            .for_each(|unzipped!(mut c, a, b)| *c = *a - *b);
+            .for_each(|unzipped!(c, a, b)| *c = *a - *b);
             matmul(
                 omega_tilde_rho_omega_tilde_minus_rho_omega_g_tilde.as_mut(),
                 omega_tilde.as_ref(),
@@ -377,7 +377,7 @@ pub fn calc_ki(
                 &rho_omega_dot_g_tilde,
                 &omega_tilde_rho_omega_tilde_minus_rho_omega_g_tilde
             )
-            .for_each(|unzipped!(mut k, a, b, c, d)| *k = *a + *b - *c + *d);
+            .for_each(|unzipped!(k, a, b, c, d)| *k = *a + *b - *c + *d);
         },
     );
 }
@@ -453,7 +453,7 @@ pub fn calc_strain(
             &u_prime,
             &r_x0_prime
         )
-        .for_each(|unzipped!(mut strain, x0_prime, u_prime, r_x0_prime)| {
+        .for_each(|unzipped!(strain, x0_prime, u_prime, r_x0_prime)| {
             *strain = *x0_prime + *u_prime - *r_x0_prime
         });
 
@@ -506,7 +506,7 @@ pub fn calc_strain_dot(
             &u_dot_prime,
             &e1_tilde_omega
         )
-        .for_each(|unzipped!(mut strain_dot, u_dot_prime, e1_tilde_omega)| {
+        .for_each(|unzipped!(strain_dot, u_dot_prime, e1_tilde_omega)| {
             *strain_dot = *u_dot_prime + *e1_tilde_omega
         });
         let mut kappa_dot = strain_dot.subrows_mut(3, 3);
@@ -532,7 +532,7 @@ pub fn calc_e1_tilde(e1_tilde: MatMut<f64>, x0_prime: MatRef<f64>, u_prime: MatR
     )
     .for_each(|(e1_tilde_col, x0_prime, u_prime)| {
         zipped!(&mut x0pup, x0_prime, u_prime)
-            .for_each(|unzipped!(mut x0pup, x0p, up)| *x0pup = *x0p + *up);
+            .for_each(|unzipped!(x0pup, x0p, up)| *x0pup = *x0p + *up);
         vec_tilde(x0pup.as_ref(), e1_tilde_col.as_mat_mut(3, 3));
     });
 }
