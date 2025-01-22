@@ -115,7 +115,15 @@ impl Model {
 
     /// Creates and returns state object
     pub fn create_state(&self) -> State {
-        State::new(&self.nodes)
+
+        // calculate number of quadrature points
+        let mut nqp = 0;
+
+        self.beam_elements.iter().for_each(
+            |elem|
+            nqp += elem.quadrature.points.len());
+
+        State::new(&self.nodes, nqp)
     }
 
     /// Add rigid constraint

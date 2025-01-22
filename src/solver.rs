@@ -115,6 +115,12 @@ impl Solver {
     }
 
     pub fn step(&mut self, state: &mut State) -> StepResults {
+
+        // Update strain_dot from previous step before
+        // predicting (which overrides velocities)
+        self.elements.beams.calculate_strain_dot(state);
+        println!("TODO : Verify this above calculation is consistent with end of previous step.");
+
         state.predict_next_state(
             self.p.h,
             self.p.beta,
@@ -294,6 +300,10 @@ impl Solver {
             if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
                 // Converged, update algorithmic acceleration
                 state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+
+                println!("Updates viscoelastic history variables here and the half step variable.");
+                self.elements.beams.update_viscoelastic_history(state, self.p.h);
+
                 res.converged = true;
                 return res;
             }
@@ -303,6 +313,9 @@ impl Solver {
             //     res.converged = true;
             //     return res;
             // }
+
+
+            // println!("Error: {}", x_err);
 
             // Increment iteration count
             res.iter += 1;

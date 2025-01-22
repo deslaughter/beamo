@@ -23,10 +23,16 @@ pub struct State {
     pub vd: Mat<f64>,
     /// Algorithmic acceleration `[6][n_nodes]`
     a: Mat<f64>,
+    /// Viscoelastic history states `[6][n_quadrature]`
+    pub visco_hist: Mat<f64>,
+    /// Viscoelastic history states contributions from
+    /// time n in the step to time n+1 `[6][n_quadrature]`
+    /// In the sectional coordinates
+    pub strain_dot_n: Mat<f64>,
 }
 
 impl State {
-    pub fn new(nodes: &[Node]) -> Self {
+    pub fn new(nodes: &[Node], nqp : usize) -> Self {
         let n_nodes = nodes.len();
         let mut state = Self {
             n_nodes,
@@ -38,6 +44,8 @@ impl State {
             v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
             a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
+            visco_hist: Mat::zeros(6, nqp),
+            strain_dot_n: Mat::zeros(6, nqp),
         };
         state.calc_displacement(0.);
         state.calculate_x();

@@ -1,5 +1,5 @@
 use faer::{
-    linalg::matmul::matmul, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism,
+    col::{AsColMut, AsColRef}, linalg::matmul::matmul, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale
 };
 use itertools::izip;
 
@@ -48,6 +48,23 @@ pub fn calc_inertial_matrix(mat: MatMut<f64>, mat_star: MatRef<f64>, rr0: MatRef
                 None,
                 1.,
                 Parallelism::None,
+            );
+        },
+    );
+}
+
+// rotate a column into the inertial frame
+pub fn rotate_col_to_sectional(col_star: MatMut<f64>, col: MatRef<f64>, rr0: MatRef<f64>) {
+    izip!(col_star.col_iter_mut(), col.col_iter(), rr0.col_iter()).for_each(
+        |(mut col_star_col, col_col, rr0_col)| {
+            let rr0 = rr0_col.as_mat_ref(6, 6);
+            matmul(
+                col_star_col.as_col_mut(),
+                rr0.transpose(),
+                col_col.as_col_ref(),
+                None,
+                1.,
+                Parallelism::None
             );
         },
     );
@@ -602,6 +619,96 @@ pub fn calc_fd_d(fd_d: MatMut<f64>, fd_c: MatRef<f64>, e1_tilde: MatRef<f64>) {
             );
         },
     );
+}
+
+
+/// Calculate viscoelastic forces into fd_c
+pub fn calc_fd_c_viscoelastic(
+    fd_c: MatMut<f64>,
+    h : f64,
+    kv_i: MatRef<f64>,
+    tau_i: ColRef<f64>,
+    rr0: MatRef<f64>,
+    strain_dot_n: MatRef<f64>,
+    strain_dot_n1: MatRef<f64>,
+    visco_hist: MatRef<f64>,
+) {
+    // Viscoelastic history decay
+    let tmp = -1. * h / tau_i[0];
+
+    izip!(
+        fd_c.col_iter_mut(),
+        rr0.col_iter(),
+        strain_dot_n.col_iter(),
+        strain_dot_n1.col_iter(),
+        visco_hist.col_iter(),
+    )
+    .for_each(|(fd_c,
+        rr0_col,
+        sd_n,
+        sd_n1,
+        visc_col)| {
+
+        let visco_curr = Scale(tmp.exp()) * visc_col
+            + Scale(h/2. * tmp.exp()) * sd_n
+            + Scale(h/2.) * sd_n1;
+
+        let mut fd_tmp = Col::<f64>::zeros(6);
+
+        // force in sectional coordinates at quadrature
+        matmul(
+            fd_tmp.as_mut(),
+            kv_i,
+            visco_curr,
+            None,
+            1.,
+            Parallelism::None,
+        );
+
+        let rr0 = rr0_col.as_mat_ref(6, 6);
+
+        // global force at quadrature point
+        matmul(
+            fd_c,
+            rr0,
+            fd_tmp.as_ref(),
+            None,
+            1.,
+            Parallelism::None,
+        );
+    });
+
+}
+
+
+/// Calculate viscoelastic forces into fd_c
+pub fn update_viscoelastic(
+    visco_hist: MatMut<f64>,
+    strain_dot_n: MatRef<f64>,
+    strain_dot_n1: MatRef<f64>,
+    h : f64,
+    tau_i: ColRef<f64>,
+) {
+    // Viscoelastic history decay
+    let tmp = -1. * h / tau_i[0];
+
+    izip!(
+        visco_hist.col_iter_mut(),
+        strain_dot_n.col_iter(),
+        strain_dot_n1.col_iter(),
+    )
+    .for_each(|(mut hist,
+        sd_n,
+        sd_n1)| {
+
+        // Decay previous history
+        hist *= Scale(tmp.exp());
+
+        // Add history from this time step
+        hist += Scale(h/2. * tmp.exp()) * sd_n + Scale(h/2.) * sd_n1;
+
+    });
+
 }
 
 #[inline]

@@ -10,9 +10,14 @@ use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::Eigendecomposition;
 use faer::prelude::{c64, SpSolver};
 use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
+use faer::mat::AsMatRef;
+use faer::col::AsColRef;
 use itertools::{izip, multiunzip, Itertools};
 
-use super::kernels::{calc_fd_c, calc_fd_d, calc_inertial_matrix, calc_sd_pd_od_qd_gd_xd_yd};
+
+use super::kernels::{calc_fd_c, calc_fd_d, calc_inertial_matrix,
+    calc_sd_pd_od_qd_gd_xd_yd, calc_fd_c_viscoelastic,
+    rotate_col_to_sectional,update_viscoelastic,};
 
 pub struct BeamElement {
     pub id: usize,
@@ -37,6 +42,7 @@ pub enum Damping {
     None,
     Mu(Col<f64>),
     ModalElement(Col<f64>),
+    Viscoelastic(Mat<f64>, Col<f64>),
 }
 
 #[derive(Clone, Debug)]
@@ -346,6 +352,68 @@ impl Beams {
         beams
     }
 
+
+    /// Calculate strain rate
+    pub fn calculate_strain_dot(&mut self, state: &mut State){
+        // Calculate the strain rate at the quadrature points
+        // and save the data into state.
+        // Calculated strains in the local/sectional frame.
+
+        // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
+        izip!(
+            self.node_ids.iter(),
+            self.node_u.col_iter_mut(),
+            self.node_v.col_iter_mut(),
+            self.node_vd.col_iter_mut()
+        )
+        .for_each(|(&id, mut u, mut v, mut vd)| {
+            u.copy_from(state.u.col(id));
+            v.copy_from(state.v.col(id));
+            vd.copy_from(state.vd.col(id));
+        });
+
+        // Interpolate node data to quadrature points
+        self.interp_to_qps();
+
+        // Calculate quadrature point values
+        self.qp.calc(self.gravity.as_ref());
+
+        // Rotate strain rate into the sectional coordinate system
+        self.elem_index.iter().for_each(|ei| {
+            rotate_col_to_sectional(
+                state.strain_dot_n.subcols_mut(ei.i_qp_start, ei.n_qps),
+                self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps)
+            );
+        });
+
+    }
+
+    /// Update the viscoelastic history variables
+    pub fn update_viscoelastic_history(&mut self, state: &mut State, h: f64){
+
+        // strain rate at start of time step
+        let strain_dot_n = state.strain_dot_n.clone();
+
+        // calculate strain rates at n+1 -> state.strain_dot_n
+        self.calculate_strain_dot(state);
+
+        // Update the viscoelastic history variables
+        self.elem_index.iter().for_each(|ei| match &ei.damping {
+            Damping::Viscoelastic(_, tau_i) => {
+                update_viscoelastic(
+                    state.visco_hist.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
+                    state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps), //time n+1
+                    h,
+                    tau_i.as_col_ref()
+                );
+            }
+            _ => (),
+        });
+
+    }
+
     /// Calculate element properties``
     pub fn calculate_system(&mut self, state: &State) {
         // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
@@ -367,6 +435,11 @@ impl Beams {
         // Calculate quadrature point values
         self.qp.calc(self.gravity.as_ref());
 
+        println!("TODO : Need to actually get the number of quadrature points here.");
+        let nqp = 30;
+
+        let mut strain_dot_local = Mat::zeros(6, nqp);
+
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
             Damping::Mu(_) => {
@@ -387,6 +460,27 @@ impl Beams {
                     self.qp.gd.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.xd.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.yd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                );
+            }
+            Damping::Viscoelastic(kv_i, tau_i) => {
+                println!("Calculate viscoelastic damping forces here.");
+                println!("Need to check consistency of formating for kv_i throughout v. gstar and others.");
+
+                rotate_col_to_sectional(
+                    strain_dot_local.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps)
+                );
+
+                calculate_viscoelastic_force(
+                    kv_i.as_mat_ref(),
+                    tau_i.as_col_ref(),
+                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
+                    state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
+                    strain_dot_local.subcols(ei.i_qp_start, ei.n_qps),
+                    state.visco_hist.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
                 );
             }
             _ => (),
@@ -894,6 +988,33 @@ pub fn calculate_mu_damping(
         fd_c.as_ref(),
         e1_tilde,
     )
+}
+
+
+pub fn calculate_viscoelastic_force(
+    kv_i: MatRef<f64>,
+    tau_i: ColRef<f64>,
+    rr0: MatRef<f64>,
+    strain_dot_n: MatRef<f64>,
+    strain_dot_n1: MatRef<f64>,
+    visco_hist: MatRef<f64>,
+    mut mu_cuu: MatMut<f64>,
+    mut fd_c: MatMut<f64>,
+) {
+
+    println!("TODO : Need to pass the time step all the way down to here!");
+    let h = 0.005;
+
+    // Quadrature viscoelastic forces saved into fd_c
+    calc_fd_c_viscoelastic(fd_c.as_mut(), h, kv_i, tau_i, rr0, strain_dot_n, strain_dot_n1, visco_hist);
+
+    // Gradient of global forces w.r.t. global strain rate at n+1
+    // saved into mu_cuu
+    calc_inertial_matrix(
+        mu_cuu.as_mut(),
+        (Scale(h/2.)*kv_i).as_mat_ref(),
+        rr0
+    );
 }
 
 #[inline]
