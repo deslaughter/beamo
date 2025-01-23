@@ -9,7 +9,7 @@ use ottr::{
     model::Model,
     quadrature::Quadrature,
     util::cross,
-    vtk::beams_as_vtk,
+    vtk::beams_nodes_as_vtk,
 };
 
 #[test]
@@ -134,7 +134,7 @@ fn test_rotating_beam() {
         let t = (i as f64) * time_step;
 
         if i == 1 {
-            beams_as_vtk(&solver.elements.beams)
+            beams_nodes_as_vtk(&solver.elements.beams)
                 .export_ascii(format!("{out_dir}/step_{:0>3}.vtk", 0))
                 .unwrap()
         }
@@ -161,7 +161,7 @@ fn test_rotating_beam() {
         //     x_tip[0], x_tip[1], x_tip[2], x_tip[3], x_tip[4], x_tip[5], x_tip[6]
         // );
 
-        beams_as_vtk(&solver.elements.beams)
+        beams_nodes_as_vtk(&solver.elements.beams)
             .export_ascii(format!("{out_dir}/step_{i:0>3}.vtk"))
             .unwrap()
     }
