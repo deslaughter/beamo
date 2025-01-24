@@ -478,9 +478,18 @@ impl Beams {
                     state.visco_hist.subcols(ei.i_qp_start, ei.n_qps),
                     h,
                     self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.v.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.v_prime.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.fd_d.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.sd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.pd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.od.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.qd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.gd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.xd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.yd.subcols_mut(ei.i_qp_start, ei.n_qps),
                 );
             }
             _ => (),
@@ -1000,13 +1009,25 @@ pub fn calculate_viscoelastic_force(
     visco_hist: MatRef<f64>,
     h : f64,
     e1_tilde: MatRef<f64>,
+    v: MatRef<f64>,
+    v_prime: MatRef<f64>,
     mut mu_cuu: MatMut<f64>,
     mut fd_c: MatMut<f64>,
     mut fd_d: MatMut<f64>,
+    sd: MatMut<f64>,
+    pd: MatMut<f64>,
+    od: MatMut<f64>,
+    qd: MatMut<f64>,
+    gd: MatMut<f64>,
+    xd: MatMut<f64>,
+    yd: MatMut<f64>,
 ) {
 
     // Quadrature viscoelastic forces saved into fd_c
-    calc_fd_c_viscoelastic(fd_c.as_mut(), h, kv_i, tau_i, rr0, strain_dot_n, strain_dot_n1, visco_hist);
+    calc_fd_c_viscoelastic(fd_c.as_mut(), h, kv_i, tau_i, rr0,
+                            strain_dot_n,
+                            strain_dot_n1,
+                            visco_hist);
 
     // Additional components similar to fd_d
     calc_fd_d(fd_d.as_mut(), fd_c.as_ref(), e1_tilde);
@@ -1017,6 +1038,22 @@ pub fn calculate_viscoelastic_force(
         mu_cuu.as_mut(),
         (Scale(h/2.)*kv_i).as_mat_ref(),
         rr0
+    );
+
+
+    calc_sd_pd_od_qd_gd_xd_yd(
+        sd,
+        pd,
+        od,
+        qd,
+        gd,
+        xd,
+        yd,
+        mu_cuu.as_ref(),
+        v_prime.subrows(0, 3),
+        v.subrows(3, 3),
+        fd_c.as_ref(),
+        e1_tilde,
     );
 
     println!("Likely need the last line from stiffness prop here as well.");
