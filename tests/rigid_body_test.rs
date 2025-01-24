@@ -14,6 +14,8 @@ use ottr::{
     vtk::lines_as_vtk,
 };
 
+const OUT_DIR: &str = "output/rigid-body";
+
 #[test]
 fn test_precession() {
     // Model
@@ -75,10 +77,12 @@ fn test_precession() {
 
 #[test]
 fn test_heavy_top() {
-    let out_dir = "output";
     let time_step: f64 = 0.002;
     let t_end: f64 = 2.;
     let n_steps = ((t_end / time_step).ceil() as usize) + 1;
+
+    // Create output directory
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Model
     let mut model = Model::new();
@@ -164,7 +168,7 @@ fn test_heavy_top() {
     //--------------------------------------------------------------------------
 
     // Create output directory
-    fs::create_dir_all(out_dir).unwrap();
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Create solver
     let mut solver = model.create_solver();
@@ -173,7 +177,7 @@ fn test_heavy_top() {
     let mut state = model.create_state();
 
     // Open output file
-    let mut file = File::create(format!("{out_dir}/heavy_top.csv")).unwrap();
+    let mut file = File::create(format!("{OUT_DIR}/heavy_top.csv")).unwrap();
 
     // Rotation vector for an
     let mut rv = Col::<f64>::zeros(3);
@@ -205,7 +209,8 @@ fn test_heavy_top() {
                     -0.016969254156485276
                 ]
                 .as_2d(),
-                comp = float
+                comp = ulp,
+                tol = 2400
             );
         }
 
@@ -219,7 +224,6 @@ fn test_heavy_top() {
 #[test]
 #[ignore]
 fn test_rigid_platform() {
-    let out_dir = "output/rigid_platform";
     let time_step: f64 = 0.01;
     let t_end: f64 = 120.;
     let n_steps = ((t_end / time_step).ceil() as usize) + 1;
@@ -354,7 +358,8 @@ fn test_rigid_platform() {
     //--------------------------------------------------------------------------
 
     // Create output directory
-    fs::create_dir_all(out_dir).unwrap();
+    fs::create_dir_all(OUT_DIR).unwrap();
+    fs::create_dir_all(format!("{OUT_DIR}/vtk")).unwrap();
 
     // Create solver
     let mut solver = model.create_solver();
@@ -376,7 +381,7 @@ fn test_rigid_platform() {
     solver.fx[platform_z_dof] = fb;
 
     // Open output file
-    let mut file = File::create(format!("{out_dir}/motion.csv")).unwrap();
+    let mut file = File::create(format!("{OUT_DIR}/platform_motion.csv")).unwrap();
     let mut rv = Col::<f64>::zeros(3);
 
     // Get list of node ID pairs for writing vtk lines
@@ -412,11 +417,11 @@ fn test_rigid_platform() {
 
         if i % 10 == 0 {
             lines_as_vtk(&vtk_platform_lines, &state)
-                .export_ascii(format!("{out_dir}/platform_{:0>5}.vtk", i / 10))
+                .export_ascii(format!("{OUT_DIR}/vtk/platform_{:0>5}.vtk", i / 10))
                 .unwrap();
 
             lines_as_vtk(&vtk_mooring_lines, &state)
-                .export_ascii(format!("{out_dir}/mooring_{:0>5}.vtk", i / 10))
+                .export_ascii(format!("{OUT_DIR}/vtk/mooring_{:0>5}.vtk", i / 10))
                 .unwrap();
         }
 

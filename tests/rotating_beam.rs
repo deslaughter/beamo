@@ -12,10 +12,11 @@ use ottr::{
     vtk::beams_nodes_as_vtk,
 };
 
+const OUT_DIR: &str = "output/rotating-beam";
+
 #[test]
 fn test_rotating_beam() {
-    let out_dir = "output/rotating-beam";
-    fs::create_dir_all(out_dir).unwrap();
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Initial rotational velocity
     let omega = col![0., 1.0, 0.];
@@ -135,7 +136,7 @@ fn test_rotating_beam() {
 
         if i == 1 {
             beams_nodes_as_vtk(&solver.elements.beams)
-                .export_ascii(format!("{out_dir}/step_{:0>3}.vtk", 0))
+                .export_ascii(format!("{OUT_DIR}/step_{:0>3}.vtk", 0))
                 .unwrap()
         }
 
@@ -162,7 +163,7 @@ fn test_rotating_beam() {
         // );
 
         beams_nodes_as_vtk(&solver.elements.beams)
-            .export_ascii(format!("{out_dir}/step_{i:0>3}.vtk"))
+            .export_ascii(format!("{OUT_DIR}/step_{i:0>3}.vtk"))
             .unwrap()
     }
 }
