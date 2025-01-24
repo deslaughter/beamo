@@ -23,8 +23,8 @@ pub struct StepParameters {
     gamma_prime: f64,
     max_iter: usize,
     conditioner: f64,
-    x_tol: f64,
-    phi_tol: f64,
+    abs_tol: f64,
+    rel_tol: f64,
 }
 
 impl StepParameters {
@@ -43,8 +43,8 @@ impl StepParameters {
             gamma_prime: gamma / (h * beta),
             beta_prime: (1. - alpha_m) / (h * h * beta * (1. - alpha_f)),
             conditioner: beta * h * h,
-            x_tol: atol,
-            phi_tol: rtol,
+            abs_tol: atol,
+            rel_tol: rtol,
         }
     }
 }
@@ -126,7 +126,7 @@ impl Solver {
         // Create step results
         let mut res = StepResults {
             err: 1000.,
-            iter: 1,
+            iter: 0,
             converged: false,
         };
 
@@ -134,7 +134,7 @@ impl Solver {
         self.lambda.fill_zero();
 
         // Loop until converged or max iteration limit reached
-        while res.iter <= self.p.max_iter {
+        while res.err > 1. {
             //------------------------------------------------------------------
             // Build System
             //------------------------------------------------------------------
@@ -261,19 +261,29 @@ impl Solver {
                     };
                 });
 
-            // Calculate convergence error
-            res.err = zipped!(&self.x_delta, &state.u_delta)
-                .map(|unzipped!(xd, ud)| *xd / ((*ud * self.p.phi_tol).abs() + self.p.x_tol))
-                .norm_l2()
-                .div((self.n_system as f64).sqrt());
+            //------------------------------------------------------------------
+            // Calculate convergence error (https://doi.org/10.1115/1.4033441)
+            //------------------------------------------------------------------
 
-            // Calculate convergence error
-            let x_err = self.x.subrows(0, self.n_system).norm_l2() / (self.n_system as f64);
-            let phi_err = if self.n_lambda > 0 {
-                self.x.subrows(self.n_system, self.n_lambda).norm_l2() / (self.n_lambda as f64)
-            } else {
-                0.
-            };
+            let sys_sum_err_squared = zipped!(&self.x_delta, &state.u_delta)
+                .map(|unzipped!(pi, xi)| {
+                    (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
+                })
+                .as_ref()
+                .sum();
+
+            let const_sum_err_squared =
+                zipped!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
+                    .map(|unzipped!(pi, xi)| {
+                        (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
+                    })
+                    .sum();
+
+            res.err = ((sys_sum_err_squared + const_sum_err_squared) / (self.n_dofs as f64)).sqrt();
+
+            //------------------------------------------------------------------
+            // Update state and lambda predictions
+            //------------------------------------------------------------------
 
             // Update state prediction
             state.update_prediction(
@@ -291,23 +301,17 @@ impl Solver {
             .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
 
             // Iteration limit reached return not converged
-            if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
-                // Converged, update algorithmic acceleration
-                state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
-                res.converged = true;
+            if res.iter >= self.p.max_iter {
                 return res;
             }
-            // if res.err < 1. {
-            //     // Converged, update algorithmic acceleration
-            //     state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
-            //     res.converged = true;
-            //     return res;
-            // }
 
             // Increment iteration count
             res.iter += 1;
         }
 
+        // Converged, update algorithmic acceleration
+        state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+        res.converged = true;
         res
     }
 

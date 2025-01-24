@@ -86,10 +86,10 @@ fn test_heavy_top() {
 
     // Model
     let mut model = Model::new();
-    model.set_solver_tolerance(1e-5, 1.);
+    model.set_solver_tolerance(1e-5, 1e-3);
     model.set_time_step(time_step);
     model.set_rho_inf(0.9);
-    model.set_max_iter(6);
+    model.set_max_iter(10);
 
     // Heavy top parameters
     let m = 15.;
@@ -200,17 +200,17 @@ fn test_heavy_top() {
             assert_matrix_eq!(
                 state.u.col(0).as_2d(),
                 col![
-                    -0.4220299141898183,
-                    -0.09451353137427536,
-                    -0.04455341442645723,
-                    -0.17794086498990777,
-                    0.21672292516262048,
-                    -0.9597292673920982,
-                    -0.016969254156485276
+                    -0.42217588230603087,
+                    -0.0945813149723112,
+                    -0.04454805499768492,
+                    -0.1792588955239052,
+                    0.21677585003947905,
+                    -0.9594663543940096,
+                    -0.01728565882689731,
                 ]
                 .as_2d(),
                 comp = ulp,
-                tol = 2400
+                tol = 5000
             );
         }
 

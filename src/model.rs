@@ -16,8 +16,8 @@ pub struct Model {
     h: f64,
     rho_inf: f64,
     max_iter: usize,
-    solver_x_tol: f64,
-    solver_phi_tol: f64,
+    solver_abs_tol: f64,
+    solver_rel_tol: f64,
     pub nodes: Vec<Node>,
     pub beam_elements: Vec<BeamElement>,
     pub mass_elements: Vec<MassElement>,
@@ -33,8 +33,8 @@ impl Model {
             h: 0.01,
             rho_inf: 1.,
             max_iter: 6,
-            solver_x_tol: 1e-5,
-            solver_phi_tol: 1.,
+            solver_abs_tol: 1e-5,
+            solver_rel_tol: 1e-3,
             nodes: vec![],
             beam_elements: vec![],
             mass_elements: vec![],
@@ -74,8 +74,8 @@ impl Model {
         let step_parameters = StepParameters::new(
             self.h,
             self.rho_inf,
-            self.solver_x_tol,
-            self.solver_phi_tol,
+            self.solver_abs_tol,
+            self.solver_rel_tol,
             self.max_iter,
         );
         Solver::new(step_parameters, nfm, elements, constraints)
@@ -211,8 +211,8 @@ impl Model {
     }
 
     pub fn set_solver_tolerance(&mut self, x_tol: f64, phi_tol: f64) {
-        self.solver_x_tol = x_tol;
-        self.solver_phi_tol = phi_tol;
+        self.solver_abs_tol = x_tol;
+        self.solver_rel_tol = phi_tol;
     }
 }
 
