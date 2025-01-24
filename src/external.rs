@@ -1,15 +1,103 @@
 use core::panic;
-use std::f64::consts::PI;
+use std::{f64::consts::PI, fs};
 
-use faer::{col, Mat};
-use itertools::Itertools;
+use faer::{col, prelude::SpSolver, Mat};
+use itertools::{izip, Itertools};
 
 use crate::{
-    elements::beams::BeamSection,
+    elements::beams::{BeamSection, Damping},
+    interp::{gauss_legendre_lobotto_points, shape_deriv_matrix, shape_interp_matrix},
+    model::Model,
+    quadrature::Quadrature,
     util::{quat_as_matrix, Quat},
 };
 
-pub fn parse_beamdyn_keypoints(file_data: &str) -> Vec<[f64; 4]> {
+pub fn add_beamdyn_blade(
+    model: &mut Model,
+    bd_primary_file_path: &str,
+    bd_blade_file_path: &str,
+    elem_order: usize,
+    damping: Damping,
+) -> (Vec<usize>, usize) {
+    // Read key points
+    let key_points = parse_beamdyn_primary_file(&fs::read_to_string(bd_primary_file_path).unwrap());
+
+    // Read sections
+    let sections = parse_beamdyn_blade_file(&fs::read_to_string(bd_blade_file_path).unwrap());
+
+    // Calculate key point position on range of [-1,1]
+    let n_kps = key_points.len();
+    let kp_range = key_points[n_kps - 1][0] - key_points[0][0];
+    let kp_xi = key_points
+        .iter()
+        .map(|kp| 2. * (kp[0] - key_points[0][0]) / kp_range - 1.)
+        .collect_vec();
+
+    // Get node positions on [-1,1] and [0,1]
+    let n_nodes = elem_order + 1;
+    let node_xi = gauss_legendre_lobotto_points(elem_order);
+    let node_s = node_xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
+
+    // Build interpolation matrix to go from key points to node
+    let mut shape_interp = Mat::<f64>::zeros(kp_xi.len(), node_xi.len());
+    shape_interp_matrix(&kp_xi, &node_xi, shape_interp.as_mut());
+
+    // Build A matrix for fitting key points to element nodes
+    let mut a_matrix = Mat::<f64>::zeros(n_nodes, n_nodes);
+    for i in 0..n_nodes {
+        for j in 0..n_nodes {
+            for k in 0..n_kps {
+                a_matrix[(i, j)] += shape_interp[(k, i)] * shape_interp[(k, j)];
+            }
+        }
+    }
+    a_matrix.row_mut(0).fill(0.);
+    a_matrix.row_mut(n_nodes - 1).fill(0.);
+    a_matrix[(0, 0)] = 1.;
+    a_matrix[(n_nodes - 1, n_nodes - 1)] = 1.;
+
+    // Build B matrix for fitting key points to element nodes
+    let kp_matrix = Mat::from_fn(n_kps, 4, |i, j| key_points[i][j]);
+    let mut b_matrix = shape_interp.transpose() * &kp_matrix;
+    b_matrix.row_mut(0).copy_from(&kp_matrix.row(0));
+    b_matrix
+        .row_mut(n_nodes - 1)
+        .copy_from(&kp_matrix.row(n_kps - 1));
+
+    // Solve for node locations using least squares
+    let lu = a_matrix.full_piv_lu();
+    let node_xyzt = lu.solve(&b_matrix);
+
+    // Calculate derivative at nodes
+    let mut shape_deriv = Mat::<f64>::zeros(node_xi.len(), node_xi.len());
+    shape_deriv_matrix(&node_xi, &node_xi, shape_deriv.as_mut());
+    let deriv = shape_deriv * &node_xyzt.subcols(0, 3);
+
+    // Loop through node locations and derivatives and add to model
+    let mut q = col![0., 0., 0., 0.];
+    let node_ids = izip!(node_s.iter(), node_xyzt.row_iter(), deriv.row_iter())
+        .map(|(&si, nd, deriv)| {
+            let twist = nd[3];
+            let tan = deriv.transpose() / deriv.norm_l2();
+            q.as_mut().quat_from_tangent_twist(tan.as_ref(), twist); // Calculate twist about tangent
+            model
+                .add_node()
+                .element_location(si)
+                .position(nd[0], nd[1], nd[2], q[0], q[1], q[2], q[3])
+                .build()
+        })
+        .collect_vec();
+
+    // Quadrature rule
+    let gq = Quadrature::trapezoidal(&sections.iter().map(|s| s.s).collect_vec());
+
+    // Add beam element
+    let beam_elem_id = model.add_beam_element(&node_ids, &gq, &sections, damping);
+
+    (node_ids, beam_elem_id)
+}
+
+pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
     let lines = file_data.lines().collect_vec();
 
     let member_total_line = lines.get(19).unwrap();
@@ -56,7 +144,7 @@ pub fn parse_beamdyn_keypoints(file_data: &str) -> Vec<[f64; 4]> {
         .collect_vec()
 }
 
-pub fn parse_beamdyn_sections(file_data: &str) -> Vec<BeamSection> {
+pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
     let mut m = Mat::<f64>::zeros(3, 3);
     let mut q_rot = col![0., 0., 0., 0.];
     q_rot
@@ -110,13 +198,13 @@ mod tests {
 
     #[test]
     fn test_parse_beamdyn_keypoints() {
-        let keypoints = parse_beamdyn_keypoints(BD_INPUT1);
+        let keypoints = parse_beamdyn_primary_file(BD_INPUT1);
         println!("{:?}", keypoints);
     }
 
     #[test]
-    fn test_parse_beamdyn_sections() {
-        let sections = parse_beamdyn_sections(BD_INPUT2);
+    fn test_parse_beamdyn_blade_file() {
+        let sections = parse_beamdyn_blade_file(BD_INPUT2);
         println!("{:?}", sections);
     }
 
