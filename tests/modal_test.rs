@@ -195,8 +195,8 @@ fn test_viscoelastic() {
     // Settings
     let i_mode = 0; // Mode to simulate
     let v_scale = 1.; // Velocity scaling factor
-    let t_end = 2.0; //3.1; // Simulation length
-    let time_step = 0.005; // Time step
+    let t_end = 3.1; //3.1; // Simulation length
+    let time_step = 0.001; // Time step
     let rho_inf = 1.; // Numerical damping
     let max_iter = 20; // Max convergence iterations
     let n_steps = (t_end / time_step) as usize;
