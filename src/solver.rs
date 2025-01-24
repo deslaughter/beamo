@@ -161,6 +161,7 @@ impl Solver {
             self.elements.assemble_system(
                 state,
                 &self.nfm,
+                self.p.h,
                 self.m.as_mut(),
                 self.ct.as_mut(),
                 self.kt.as_mut(),
@@ -301,7 +302,7 @@ impl Solver {
                 // Converged, update algorithmic acceleration
                 state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
 
-                println!("Updates viscoelastic history variables here and the half step variable.");
+                // Update Prony series states as appropriate.
                 self.elements.beams.update_viscoelastic_history(state, self.p.h);
 
                 res.converged = true;
@@ -315,7 +316,7 @@ impl Solver {
             // }
 
 
-            // println!("Error: {}", x_err);
+            println!("Error: {} (iter {}, tol {})", x_err, res.iter, self.p.x_tol);
 
             // Increment iteration count
             res.iter += 1;

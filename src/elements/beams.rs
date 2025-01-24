@@ -415,7 +415,7 @@ impl Beams {
     }
 
     /// Calculate element properties``
-    pub fn calculate_system(&mut self, state: &State) {
+    pub fn calculate_system(&mut self, state: &State, h: f64) {
         // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
         izip!(
             self.node_ids.iter(),
@@ -435,10 +435,8 @@ impl Beams {
         // Calculate quadrature point values
         self.qp.calc(self.gravity.as_ref());
 
-        println!("TODO : Need to actually get the number of quadrature points here.");
-        let nqp = 30;
-
-        let mut strain_dot_local = Mat::zeros(6, nqp);
+        let mut strain_dot_local = Mat::zeros(6,
+            state.visco_hist.shape().1);
 
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
@@ -463,8 +461,7 @@ impl Beams {
                 );
             }
             Damping::Viscoelastic(kv_i, tau_i) => {
-                println!("Calculate viscoelastic damping forces here.");
-                println!("Need to check consistency of formating for kv_i throughout v. gstar and others.");
+                println!("Debug viscoelastic damping forces here.");
 
                 rotate_col_to_sectional(
                     strain_dot_local.subcols_mut(ei.i_qp_start, ei.n_qps),
@@ -479,8 +476,11 @@ impl Beams {
                     state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
                     strain_dot_local.subcols(ei.i_qp_start, ei.n_qps),
                     state.visco_hist.subcols(ei.i_qp_start, ei.n_qps),
+                    h,
+                    self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.fd_d.subcols_mut(ei.i_qp_start, ei.n_qps),
                 );
             }
             _ => (),
@@ -998,15 +998,18 @@ pub fn calculate_viscoelastic_force(
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
     visco_hist: MatRef<f64>,
+    h : f64,
+    e1_tilde: MatRef<f64>,
     mut mu_cuu: MatMut<f64>,
     mut fd_c: MatMut<f64>,
+    mut fd_d: MatMut<f64>,
 ) {
-
-    println!("TODO : Need to pass the time step all the way down to here!");
-    let h = 0.005;
 
     // Quadrature viscoelastic forces saved into fd_c
     calc_fd_c_viscoelastic(fd_c.as_mut(), h, kv_i, tau_i, rr0, strain_dot_n, strain_dot_n1, visco_hist);
+
+    // Additional components similar to fd_d
+    calc_fd_d(fd_d.as_mut(), fd_c.as_ref(), e1_tilde);
 
     // Gradient of global forces w.r.t. global strain rate at n+1
     // saved into mu_cuu
@@ -1015,6 +1018,8 @@ pub fn calculate_viscoelastic_force(
         (Scale(h/2.)*kv_i).as_mat_ref(),
         rr0
     );
+
+    println!("Likely need the last line from stiffness prop here as well.");
 }
 
 #[inline]
@@ -1195,7 +1200,7 @@ mod tests {
     use approx::assert_ulps_eq;
     use faer::{assert_matrix_eq, col, mat};
 
-    fn create_beams() -> Beams {
+    fn create_beams(h: f64) -> Beams {
         // Mass matrix 6x6
         let m_star = mat![
             [2., 0., 0., 0., 0.6, -0.4],
@@ -1401,14 +1406,17 @@ mod tests {
 
         let mut beams = model.create_beams();
         let state = model.create_state();
-        beams.calculate_system(&state);
+        beams.calculate_system(&state, h);
 
         beams
     }
 
     #[test]
     fn test_node_x0() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.node_x0.subcols(0, 2).transpose(),
             mat![
@@ -1438,7 +1446,10 @@ mod tests {
 
     #[test]
     fn test_node_u() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.node_u.subcols(0, 2).transpose(),
             mat![
@@ -1460,7 +1471,10 @@ mod tests {
 
     #[test]
     fn test_node_v() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.node_v.subcols(0, 2).transpose(),
             mat![
@@ -1481,7 +1495,10 @@ mod tests {
 
     #[test]
     fn test_node_vd() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.node_vd.subcols(0, 2).transpose(),
             mat![
@@ -1502,7 +1519,10 @@ mod tests {
 
     #[test]
     fn test_qp_m_star() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.m_star.col(0).as_mat_ref(6, 6),
             mat![
@@ -1520,7 +1540,10 @@ mod tests {
 
     #[test]
     fn test_qp_c_star() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.c_star.col(0).as_mat_ref(6, 6),
             mat![
@@ -1538,7 +1561,10 @@ mod tests {
 
     #[test]
     fn test_qp_x0() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.x0.col(0).as_2d().transpose(),
             mat![[
@@ -1557,7 +1583,10 @@ mod tests {
 
     #[test]
     fn test_qp_x0_prime() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.x0_prime.col(0).as_2d().transpose(),
             mat![[
@@ -1576,7 +1605,10 @@ mod tests {
 
     #[test]
     fn test_qp_u() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.u.col(0).as_2d().transpose(),
             mat![[
@@ -1595,7 +1627,10 @@ mod tests {
 
     #[test]
     fn test_qp_u_prime() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.u_prime.col(0).as_2d().transpose(),
             mat![[
@@ -1614,7 +1649,10 @@ mod tests {
 
     #[test]
     fn test_qp_x() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.x.col(0).as_2d().transpose(),
             mat![[
@@ -1633,7 +1671,10 @@ mod tests {
 
     #[test]
     fn test_qp_jacobian() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams
                 .qp
@@ -1657,7 +1698,10 @@ mod tests {
 
     #[test]
     fn test_qp_strain() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.strain.subcols(0, 2).transpose(),
             mat![
@@ -1685,7 +1729,10 @@ mod tests {
 
     #[test]
     fn test_qp_rr0() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.rr0.col(0).as_mat_ref(6, 6),
             mat![
@@ -1745,7 +1792,10 @@ mod tests {
 
     #[test]
     fn test_qp_muu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.muu.col(0).as_mat_ref(6, 6),
             mat![
@@ -1805,7 +1855,10 @@ mod tests {
 
     #[test]
     fn test_qp_cuu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.cuu.col(0).as_mat_ref(6, 6),
             mat![
@@ -1865,7 +1918,10 @@ mod tests {
 
     #[test]
     fn test_qp_fc() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.fe_c.subcols(0, 2).transpose(),
             mat![
@@ -1893,7 +1949,10 @@ mod tests {
 
     #[test]
     fn test_qp_fi() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.fi.subcols(0, 2).transpose(),
             mat![
@@ -1921,7 +1980,10 @@ mod tests {
 
     #[test]
     fn test_qp_fd() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.fe_d.subcols(0, 2).transpose(),
             mat![
@@ -1949,7 +2011,10 @@ mod tests {
 
     #[test]
     fn test_qp_fg() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.fg.subcols(0, 2).transpose(),
             mat![
@@ -1963,7 +2028,10 @@ mod tests {
 
     #[test]
     fn test_qp_ouu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.oe.col(0).as_mat_ref(6, 6),
             mat![
@@ -2023,7 +2091,10 @@ mod tests {
 
     #[test]
     fn test_qp_puu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.pe.col(0).as_mat_ref(6, 6),
             mat![
@@ -2062,7 +2133,10 @@ mod tests {
 
     #[test]
     fn test_qp_quu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.qe.col(0).as_mat_ref(6, 6),
             mat![
@@ -2101,7 +2175,10 @@ mod tests {
 
     #[test]
     fn test_qp_guu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.gi.col(0).as_mat_ref(6, 6),
             mat![
@@ -2161,7 +2238,10 @@ mod tests {
 
     #[test]
     fn test_qp_kuu() {
-        let beams = create_beams();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = create_beams(h);
         assert_matrix_eq!(
             beams.qp.ki.col(0).as_mat_ref(6, 6),
             mat![
@@ -2219,7 +2299,7 @@ mod tests {
         );
     }
 
-    fn setup_test() -> Beams {
+    fn setup_test(h: f64) -> Beams {
         let fz = |t: f64| -> f64 { t - 2. * t * t };
         let fy = |t: f64| -> f64 { -2. * t + 3. * t * t };
         let fx = |t: f64| -> f64 { 5. * t };
@@ -2381,14 +2461,17 @@ mod tests {
 
         let state = model.create_state();
 
-        beams.calculate_system(&state);
+        beams.calculate_system(&state, h);
 
         beams
     }
 
     #[test]
     fn test_qp_m_star2() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.m_star.col(0).as_mat_ref(6, 6),
             mat![
@@ -2406,7 +2489,10 @@ mod tests {
 
     #[test]
     fn test_qp_c_star2() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.c_star.col(0).as_mat_ref(6, 6),
             mat![
@@ -2424,7 +2510,10 @@ mod tests {
 
     #[test]
     fn test_qp_u2() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.u.col(0).as_2d(),
             col![
@@ -2444,7 +2533,10 @@ mod tests {
 
     #[test]
     fn test_qp_u_prime2() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.u_prime.col(0).as_2d(),
             col![
@@ -2464,7 +2556,10 @@ mod tests {
 
     #[test]
     fn test_qp_rr03() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         let mut rr0 = Col::<f64>::zeros(4);
         rr0.as_mut().quat_compose(
             beams.qp.u.col(0).subrows(3, 4),
@@ -2487,7 +2582,10 @@ mod tests {
 
     #[test]
     fn test_qp_strain3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.strain.col(0).as_2d(),
             col![
@@ -2506,7 +2604,10 @@ mod tests {
 
     #[test]
     fn test_qp_cuu3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.cuu.col(0).as_mat_ref(6, 6),
             mat![
@@ -2567,7 +2668,10 @@ mod tests {
 
     #[test]
     fn test_qp_fc3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.fe_c.col(0).as_2d(),
             col![
@@ -2586,7 +2690,10 @@ mod tests {
 
     #[test]
     fn test_qp_fd3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.fe_d.col(0).as_2d(),
             col![
@@ -2605,7 +2712,10 @@ mod tests {
 
     #[test]
     fn test_qp_fi3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.qp.fi.col(0).as_2d(),
             col![
@@ -2624,7 +2734,10 @@ mod tests {
 
     #[test]
     fn test_node_fe3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.node_fe.col(0).as_2d(),
             col![
@@ -2643,7 +2756,10 @@ mod tests {
 
     #[test]
     fn test_node_fi3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.node_fi.col(0).as_2d(),
             col![
@@ -2662,7 +2778,10 @@ mod tests {
 
     #[test]
     fn test_node_fg3() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.node_fg.col(0).as_2d(),
             col![
@@ -2681,7 +2800,10 @@ mod tests {
 
     #[test]
     fn test_node_f() {
-        let beams = setup_test();
+        //Only matters for viscoelastic material, but needs to be passed to create_beams
+        let h = 0.001;
+
+        let beams = setup_test(h);
         assert_matrix_eq!(
             beams.node_f.col(0).as_2d(),
             col![
