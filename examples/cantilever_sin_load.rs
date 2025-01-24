@@ -17,7 +17,7 @@ use ottr::{
 
 fn main() {
     // Create output directory
-    let out_dir = "output";
+    let out_dir = "output/cantilever_sin_load";
     fs::create_dir_all(out_dir).unwrap();
 
     //--------------------------------------------------------------------------
@@ -100,11 +100,13 @@ fn main() {
     // Create solver
     let mut solver = model.create_solver();
 
-    let mut file = match damping {
-        Damping::None => File::create(format!("{out_dir}/damping-0.csv")).unwrap(),
-        Damping::Mu(_) => File::create(format!("{out_dir}/damping-mu.csv")).unwrap(),
-        Damping::ModalElement(_) => File::create(format!("{out_dir}/damping-me.csv")).unwrap(),
+    // Open output file based on damping type
+    let file_path = match damping {
+        Damping::None => format!("{out_dir}/damping-0.csv"),
+        Damping::Mu(_) => format!("{out_dir}/damping-mu.csv"),
+        Damping::ModalElement(_) => format!("{out_dir}/damping-me.csv"),
     };
+    let mut file = File::create(file_path).unwrap();
 
     //--------------------------------------------------------------------------
     // Run simulation

@@ -23,6 +23,8 @@ use ottr::{
 
 const V_SCALE: f64 = 1.0;
 
+const OUT_DIR: &str = "output/beam_mode_sweep";
+
 fn main() {
     // Damping ratio for modes 1-6
     let zeta = col![0.01, 0.02, 0.03, 0.04, 0.05, 0.06];
@@ -33,26 +35,24 @@ fn main() {
     let damping = Damping::ModalElement(zeta.clone());
 
     // Settings
-    let out_dir = "output/stable";
     let n_cycles = 3.5; // Number of oscillations to simulate
     let rho_inf = 1.; // Numerical damping
     let max_iter = 6; // Max convergence iterations
     let time_step = 0.0001; // Time step
 
     // Create output directory
-    fs::create_dir_all(out_dir).unwrap();
-
-    // let bd_files = vec!["circularSection.dat"];
-    let bd_file = "circularSection.dat";
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Initialize model
-    let mut model = setup_model(&format!("{out_dir}/{bd_file}"), damping.clone());
+    let mut model = setup_model(damping.clone());
     model.set_rho_inf(rho_inf);
     model.set_max_iter(max_iter);
     model.set_time_step(time_step);
 
     // Perform modal analysis
-    let (eig_val, eig_vec) = modal_analysis(&out_dir, &model);
+    let (eig_val, eig_vec) = modal_analysis(&model);
+
+    // Calculate omega from eigenvalues
     let omega = Col::<f64>::from_fn(eig_val.nrows(), |i| eig_val[i].sqrt());
 
     // Additional initialization for mu damping
@@ -101,18 +101,11 @@ fn main() {
         .for_each(|(i, (&omega, shape))| {
             let t_end = 2. * PI / omega;
             let n_steps = (n_cycles * t_end / time_step) as usize;
-            run_simulation(i + 1, time_step, n_steps, shape, out_dir, &model);
+            run_simulation(i + 1, time_step, n_steps, shape, &model);
         });
 }
 
-fn run_simulation(
-    mode: usize,
-    time_step: f64,
-    n_steps: usize,
-    shape: ColRef<f64>,
-    out_dir: &str,
-    model: &Model,
-) {
+fn run_simulation(mode: usize, time_step: f64, n_steps: usize, shape: ColRef<f64>, model: &Model) {
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
     let mut state = model.create_state();
@@ -122,7 +115,7 @@ fn run_simulation(
     state.v.copy_from(v.as_ref().as_mat_ref(6, state.n_nodes));
 
     // Create output file
-    let mut file = File::create(format!("{out_dir}/displacement_{:02}.csv", mode)).unwrap();
+    let mut file = File::create(format!("{OUT_DIR}/sweep_{:02}.csv", mode)).unwrap();
 
     // Cartesian rotation vector
     let mut rv = Col::<f64>::zeros(3);
@@ -155,7 +148,7 @@ fn run_simulation(
     }
 }
 
-fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
+fn modal_analysis(model: &Model) -> (Col<f64>, Mat<f64>) {
     // Create solver and state from model
     let mut solver = model.create_solver();
     let state = model.create_state();
@@ -208,7 +201,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     });
 
     // Write mode shapes to output file
-    let mut file = File::create(format!("{out_dir}/shapes.csv")).unwrap();
+    let mut file = File::create(format!("{OUT_DIR}/sweep_modes.csv")).unwrap();
     izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
         file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
             .unwrap();
@@ -221,7 +214,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     (eig_val, eig_vec)
 }
 
-fn setup_model(_bd_file: &str, damping: Damping) -> Model {
+fn setup_model(damping: Damping) -> Model {
     let beam_length = 10.;
     let xi = gauss_legendre_lobotto_points(6);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
@@ -272,8 +265,6 @@ fn setup_model(_bd_file: &str, damping: Damping) -> Model {
             c_star: c_star.clone(),
         },
     ];
-
-    // let sections = parse_beamdyn_sections(&fs::read_to_string(bd_file).unwrap());
 
     //--------------------------------------------------------------------------
     // Add beam element
