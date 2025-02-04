@@ -528,14 +528,19 @@ pub fn calc_strain_dot(
         });
         let mut kappa_dot = strain_dot.subrows_mut(3, 3);
         kappa_dot.copy_from(omega_prime);
-        matmul(
-            kappa_dot,
-            omega_tilde.as_ref(),
-            kappa,
-            Some(1.),
-            1.,
-            Parallelism::None,
-        );
+        // Re-derived. e_dot is not time derivative of e.
+        // Rather it is RRO * e_star_dot.
+        // That means this extra term is not needed and Bauchau appears correct.
+        // Also Bauchau pg144 notes that this would be 0 because
+        // omega and kappa are perpendicular.
+        // matmul(
+        //     kappa_dot,
+        //     omega_tilde.as_ref(),
+        //     kappa,
+        //     Some(1.),
+        //     1.,
+        //     Parallelism::None,
+        // );
     });
 }
 
@@ -937,6 +942,7 @@ pub fn calc_sd_pd_od_qd_gd_xd_yd(
                 Parallelism::None,
             );
 
+
             // Od - stiffness matrix
             vec_tilde(u_dot_prime, alpha.as_mut());
             matmul(
@@ -944,7 +950,7 @@ pub fn calc_sd_pd_od_qd_gd_xd_yd(
                 omega_tilde.as_ref(),
                 e1_tilde,
                 Some(1.),
-                1.,
+                -1.,
                 Parallelism::None,
             );
             let mut od: MatMut<'_, f64> = od_col.as_mat_mut(6, 6);
@@ -976,11 +982,28 @@ pub fn calc_sd_pd_od_qd_gd_xd_yd(
             matmul(qd22, e1_tilde, od12, None, -1., Parallelism::None);
 
             // Gd - gyroscopic matrix
+            // Note: Cannot use b11.transpose() or b12.transpose
+            // because d11 =/= d11.transpose() and d21 =/= d12
+            // if mu is a vector with different entries.
             let mut gd = gd_col.as_mat_mut(6, 6);
             let mut gd12 = gd.as_mut().submatrix_mut(0, 3, 3, 3);
-            gd12.copy_from(b11.transpose());
+            matmul(
+                gd12.as_mut(),
+                d11,
+                e1_tilde.as_ref(),
+                None,
+                1.,
+                Parallelism::None,
+            );
             let mut gd22 = gd.as_mut().submatrix_mut(3, 3, 3, 3);
-            gd22.copy_from(b12.transpose());
+            matmul(
+                gd22.as_mut(),
+                d21,
+                e1_tilde.as_ref(),
+                None,
+                1.,
+                Parallelism::None,
+            );
 
             // Xd - gyroscopic matrix
             let xd = xd_col.as_mat_mut(6, 6);

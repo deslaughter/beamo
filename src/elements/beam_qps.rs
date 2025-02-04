@@ -163,17 +163,17 @@ impl BeamQPs {
             self.u_prime.subrows(0, 3),
             self.u_prime.subrows(3, 4),
         );
+        calc_e1_tilde(
+            self.e1_tilde.as_mut(),
+            self.x0_prime.subrows(0, 3),
+            self.u_prime.subrows(0, 3),
+        );
         calc_strain_dot(
             self.strain_dot.as_mut(),
             self.strain.as_ref(),
             self.v.as_ref(),
             self.v_prime.as_ref(),
             self.e1_tilde.as_ref(),
-        );
-        calc_e1_tilde(
-            self.e1_tilde.as_mut(),
-            self.x0_prime.subrows(0, 3),
-            self.u_prime.subrows(0, 3),
         );
         calc_fe_c(self.fe_c.as_mut(), self.cuu.as_ref(), self.strain.as_ref());
         calc_fe_d(
