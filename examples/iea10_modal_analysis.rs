@@ -36,10 +36,11 @@ fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
     });
 }
 
-#[test]
-fn test_modal_frequency() {
-    let out_dir = "output/modal_test_iea10";
-    fs::create_dir_all(out_dir).unwrap();
+const OUT_DIR: &str = "output/iea10_modal_analysis";
+
+fn main() {
+    // Create output directory
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Initialize system
     let model = setup_test();
@@ -50,7 +51,7 @@ fn test_modal_frequency() {
 
     // Perform modal analysis
     let (eig_val, eig_vec) = modal_analysis(&nfm, &mut beams, &state, state.u.ncols() * 6);
-    let mut file = File::create(format!("{out_dir}/shapes.csv")).unwrap();
+    let mut file = File::create(format!("{OUT_DIR}/shapes.csv")).unwrap();
     izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
         file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
             .unwrap();
@@ -100,12 +101,12 @@ fn test_modal_frequency() {
     beams.calculate_system(&state, h);
     beams.assemble_system(&nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
 
-    dump_matrix(&format!("{out_dir}/m.csv"), m.as_ref());
-    dump_matrix(&format!("{out_dir}/c.csv"), c.as_ref());
-    dump_matrix(&format!("{out_dir}/k.csv"), k.as_ref());
-    dump_matrix(&format!("{out_dir}/u.csv"), u.transpose());
-    dump_matrix(&format!("{out_dir}/v.csv"), v.transpose());
-    dump_matrix(&format!("{out_dir}/vd.csv"), vd.transpose());
+    dump_matrix(&format!("{OUT_DIR}/m.csv"), m.as_ref());
+    dump_matrix(&format!("{OUT_DIR}/c.csv"), c.as_ref());
+    dump_matrix(&format!("{OUT_DIR}/k.csv"), k.as_ref());
+    dump_matrix(&format!("{OUT_DIR}/u.csv"), u.transpose());
+    dump_matrix(&format!("{OUT_DIR}/v.csv"), v.transpose());
+    dump_matrix(&format!("{OUT_DIR}/vd.csv"), vd.transpose());
 
     let mut force = Col::<f64>::zeros(nfm.total_dofs);
 

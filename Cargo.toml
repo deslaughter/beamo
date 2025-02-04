@@ -7,13 +7,14 @@ edition = "2021"
 name = "ottr"
 path = "src/lib.rs"
 
-[[bin]]
+[[example]]
 name = "cantilever_sin_load"
-path = "bin/cantilever_sin_load.rs"
 
-[[bin]]
-name = "stable_mode_sweep"
-path = "bin/stable_mode_sweep.rs"
+[[example]]
+name = "beam_mode_sweep"
+
+[[example]]
+name = "bar_urc_model_compare"
 
 [dependencies]
 approx = "0.5.1"

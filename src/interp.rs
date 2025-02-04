@@ -1,5 +1,5 @@
-use faer::MatMut;
-use itertools::izip;
+use faer::{col, prelude::SpSolverLstsq, Col, Mat, MatMut};
+use itertools::{izip, Itertools};
 
 // Returns the dot product of two vectors
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -276,6 +276,95 @@ mod test_gll {
             1.,
         ];
         assert_eq!(gauss_legendre_lobotto_points(6), p);
+    }
+}
+
+//------------------------------------------------------------------------------
+// Polynomial fitting
+//------------------------------------------------------------------------------
+
+pub fn polyfit(x: &[f64], y: &[f64], degree: usize) -> Vec<f64> {
+    let a = Mat::from_fn(x.len(), degree + 1, |i, j| x[i].powi(j as i32));
+    let qr = a.qr();
+    let c = qr.solve_lstsq(col::from_slice(y));
+    c.as_slice().to_vec()
+}
+
+/// Fit curve that passes through origin
+pub fn polyfit_origin(x: &[f64], y: &[f64], degree: usize) -> Vec<f64> {
+    let a = Mat::from_fn(x.len(), degree, |i, j| x[i].powi(1 + j as i32));
+    let qr = a.qr();
+    let mut c = Col::zeros(degree + 1);
+    c.subrows_mut(1, degree)
+        .copy_from(qr.solve_lstsq(col::from_slice(y)));
+    c.as_slice().to_vec()
+}
+
+/// Calculate first derivative of coefficients
+pub fn polyder(c: &[f64]) -> Vec<f64> {
+    c.iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, v)| v * (i as f64))
+        .collect_vec()
+}
+
+pub fn polyval(c: &[f64], x: f64) -> f64 {
+    let mut y = 0.;
+    for (i, &v) in c.iter().enumerate() {
+        y += v * x.powi(i as i32);
+    }
+    y
+}
+
+#[cfg(test)]
+mod test_poly {
+
+    use approx::assert_ulps_eq;
+    use itertools::Itertools;
+
+    use super::*;
+
+    #[test]
+    fn test_polyfit() {
+        let x = vec![0., 1., 2., 3., 4.];
+        let y = vec![0.5, 2.3, -1., 0.7, 1.2];
+        let c = polyfit(&x, &y, 2);
+        assert_eq!(c.len(), 3);
+        assert_ulps_eq!(c[0], 1.1228571428571412);
+        assert_ulps_eq!(c[1], -0.7057142857142826);
+        assert_ulps_eq!(c[2], 0.17142857142857063);
+    }
+
+    #[test]
+    fn test_polyfit_origin() {
+        let x = vec![0., 1., 2., 3., 4.];
+        let y = x.iter().map(|x| 2. * x + 3. * x * x).collect_vec();
+        let c = polyfit_origin(&x, &y, 2);
+        assert_eq!(c.len(), 3);
+        assert_ulps_eq!(c[0], 0.);
+        assert_ulps_eq!(c[1], 2.);
+        assert_ulps_eq!(c[2], 3.);
+        assert_ulps_eq!(polyval(&c, 0.), 0., max_ulps = 8);
+        assert_ulps_eq!(polyval(&c, 0.5), 1.75, max_ulps = 8);
+        assert_ulps_eq!(polyval(&c, 1.), 5., max_ulps = 8);
+    }
+
+    #[test]
+    fn test_polyval() {
+        let c = vec![1.1228571428571412, -0.7057142857142826, 0.17142857142857063];
+        assert_ulps_eq!(polyval(&c, 0.), 1.1228571428571412, max_ulps = 8);
+        assert_ulps_eq!(polyval(&c, 0.5), 0.8128571428571431, max_ulps = 8);
+    }
+
+    #[test]
+    fn test_polyder() {
+        let c = vec![1., 3., 2.];
+        let dc = polyder(&c);
+        assert_ulps_eq!(dc[0], 3.);
+        assert_ulps_eq!(dc[1], 4.);
+        assert_ulps_eq!(polyval(&dc, 0.), 3., max_ulps = 8);
+        assert_ulps_eq!(polyval(&dc, 0.5), 5., max_ulps = 8);
     }
 }
 
