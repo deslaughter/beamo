@@ -138,13 +138,12 @@ fn test_damping() {
 #[test]
 #[ignore]
 fn test_viscoelastic() {
+    // Viscoelastic test uses mode shapes calculated based on an
+    // undamped model with a different stiffness matrix that
+    // should recreate equivalent mode shapes.
 
     // Target damping value
     let zeta = col![0.01, 0.0];
-
-    // Viscoelastic is run seperately with prescribed mode shapes
-    // Because using stiffness is frequency dependent, so not
-    // trivial to calculate these in general.
 
     // 6x6 mass matrix
     let m_star = mat![
@@ -156,7 +155,7 @@ fn test_viscoelastic() {
         [ 1.0438698516690437e-15,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00, -6.7154254365978626e-17,  3.6256489177087214e-01],
     ];
 
-    // 6x6 stiffness for reference solution
+    // 6x6 stiffness for reference solution (mode shape calculation)
     let c_star = mat![
         [ 2.1839988181592059e+09,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  5.9062488886340653e+01, -2.2882083986558970e-07],
         [ 0.0000000000000000e+00,  5.6376577109183133e+08,  6.3080848218442034e+03, -8.1579043049956724e+01,  0.0000000000000000e+00,  0.0000000000000000e+00],
@@ -177,7 +176,7 @@ fn test_viscoelastic() {
     ];
 
     // Select viscoelastic stiffness at time scale tau_i
-    // This should be a list of matrices for later expansion to multiple term Prony series
+    // TODO : expand to a list of matrices for later expansion to multiple term Prony series
     let c_star_tau_i = mat![
         [ 1.4644469574323347e+08, -1.0188771691870348e-13, -5.1994012431391355e-14,  1.8154602253786624e-14, -3.9603447520475354e+00, -1.7940072085357155e-08],
         [-6.2263602975713452e-14,  3.7802450317781217e+07, -4.2297896605674765e+02,  5.4701577808431656e+00, -3.6104088455590133e-15, -1.2982574802947295e-13],
@@ -196,7 +195,7 @@ fn test_viscoelastic() {
     let i_mode = 0; // Mode to simulate
     let v_scale = 1.; // Velocity scaling factor
     let t_end = 3.1; //3.1; // Simulation length
-    let time_step = 0.001; // Time step
+    let time_step = 0.001; // 0.001, Time step
     let rho_inf = 1.; // Numerical damping
     let max_iter = 20; // Max convergence iterations
     let n_steps = (t_end / time_step) as usize;
@@ -213,7 +212,7 @@ fn test_viscoelastic() {
     undamped_model.set_time_step(time_step);
 
 
-    // Perform modal analysis
+    // Perform modal analysis (on undamped model)
     let (eig_val, eig_vec) = modal_analysis(&out_dir, &undamped_model);
     let omega_n = eig_val[i_mode].sqrt();
     let f_n = omega_n / (2. * PI);
@@ -230,34 +229,6 @@ fn test_viscoelastic() {
     model.set_rho_inf(rho_inf);
     model.set_max_iter(max_iter);
     model.set_time_step(time_step);
-
-    // Additional initialization for mu damping
-    /*
-    // Test only intended for viscoelastic material case
-    match damping {
-        Damping::Mu(_) => {
-            // Get index of maximum value
-            let i_max = eig_vec
-                .col(i_mode)
-                .iter()
-                .enumerate()
-                .max_by(|(_, &a), (_, &b)| a.abs().total_cmp(&b.abs()))
-                .map(|(index, _)| index)
-                .unwrap()
-                % 3;
-            let mu = match i_max {
-                0 => [2. * zeta[i_mode] / omega_n, 0., 0.],
-                1 => [0., 2. * zeta[i_mode] / omega_n, 0.],
-                2 => [0., 0., 2. * zeta[i_mode] / omega_n],
-                _ => [0., 0., 0.],
-            };
-            model.beam_elements.iter_mut().for_each(|e| {
-                e.damping = Damping::Mu(col![mu[0], mu[1], mu[2], mu[0], mu[2], mu[1]])
-            });
-        }
-        _ => (),
-    }
-    */
 
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
@@ -293,13 +264,7 @@ fn test_viscoelastic() {
 
         assert_eq!(res.converged, true);
 
-        // println!("g={:?}", solver.ct);
     }
-
-    println!(
-        "mode={}, omega_n={omega_n}, fn={f_n}, zeta={}",
-        i_mode, zeta[i_mode]
-    );
 
     // Output results
     let mut file = File::create(format!("{out_dir}/displacement.csv")).unwrap();
@@ -311,6 +276,314 @@ fn test_viscoelastic() {
         file.write(b"\n").unwrap();
     });
 }
+
+
+#[test]
+#[ignore]
+fn test_viscoelastic_grad() {
+
+    // Named viscoelastic, but can also be used for Mu damping gradient checks.
+    // Has separate undamped model to get mode shapes prior to
+    // Looking at damped model.
+
+    // Finite difference size
+    let delta = 1e-9;
+
+    // Target damping value
+    let zeta = col![0.01, 0.0];
+
+    // ----------- Reference Values for mass, stiffness, prony series --------
+    // // 6x6 mass matrix
+    // let m_star = mat![
+    //     [ 8.1639955821658532e+01,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  2.2078120857317492e-06,  1.0438698516690437e-15],
+    //     [ 0.0000000000000000e+00,  8.1639955821658532e+01,  0.0000000000000000e+00, -2.2078120857317492e-06,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 0.0000000000000000e+00,  0.0000000000000000e+00,  8.1639955821658532e+01, -1.0438698516690437e-15,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 0.0000000000000000e+00, -2.2078120857317492e-06, -1.0438698516690437e-15,  4.7079011476879862e-01,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 2.2078120857317492e-06,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  1.0822522299792561e-01, -6.7154254365978626e-17],
+    //     [ 1.0438698516690437e-15,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00, -6.7154254365978626e-17,  3.6256489177087214e-01],
+    // ];
+
+    // // 6x6 stiffness for reference solution
+    // let c_star = mat![
+    //     [ 2.1839988181592059e+09,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  5.9062488886340653e+01, -2.2882083986558970e-07],
+    //     [ 0.0000000000000000e+00,  5.6376577109183133e+08,  6.3080848218442034e+03, -8.1579043049956724e+01,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 0.0000000000000000e+00,  6.3080848185613104e+03,  1.9673154323503646e+08, -3.4183556229693512e+00,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 0.0000000000000000e+00, -8.1579042993851402e+01, -3.4183556439358025e+00,  2.8197682819547984e+06,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 5.9062489064719855e+01,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  2.8954872824363140e+06,  1.8311899368561253e+01],
+    //     [-2.1273647125393454e-07,  0.0000000000000000e+00,  0.0000000000000000e+00,  0.0000000000000000e+00,  1.8311899365084852e+01,  9.6994472729496751e+06],
+    // ];
+
+    // // Constant 6x6 stiffness for viscoelastic material
+    // let c_star_inf = mat![
+    //     [ 2.1695435690146260e+09, -1.1609894041035092e-13, -2.2297438864313538e-13,  1.8937786174491672e-14, -5.8671571734817554e+01, -2.6242497175010508e-07],
+    //     [-3.4285616462604358e-12,  5.6003437040933549e+08, -6.2663334508912903e+03,  8.1039095179536545e+01, -1.7219803593426008e-13, -1.0414524361099484e-12],
+    //     [ 0.0000000000000000e+00, -6.2663334541576742e+03,  1.9542943471348783e+08, -3.3957305473889132e+00,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 1.7150682265730904e-13,  8.0886971955846079e+01, -3.3565790547830106e+00,  2.8008043929746081e+06,  8.6096413194164738e-15,  5.1142944433815467e-14],
+    //     [-5.8671571560838629e+01, -5.7804934801834121e-15, -1.0946687029310310e-14,  9.4459025717049081e-16,  2.8757434217255106e+06,  7.6303359617750402e+01],
+    //     [-2.6151779835359987e-07, -2.6996811636488128e-14, -6.4730343074106203e-15,  4.8883261356043323e-15,  7.6303359614075504e+01,  9.6347766098612845e+06],
+    // ];
+
+
+    // // Select viscoelastic stiffness at time scale tau_i
+    // // This should be a list of matrices for later expansion to multiple term Prony series
+    // let c_star_tau_i = mat![
+    //     [ 1.4644469574323347e+08, -1.0188771691870348e-13, -5.1994012431391355e-14,  1.8154602253786624e-14, -3.9603447520475354e+00, -1.7940072085357155e-08],
+    //     [-6.2263602975713452e-14,  3.7802450317781217e+07, -4.2297896605674765e+02,  5.4701577808431656e+00, -3.6104088455590133e-15, -1.2982574802947295e-13],
+    //     [ 0.0000000000000000e+00, -4.2297896627679188e+02,  1.3191532317898544e+07, -2.2921260211961439e-01,  0.0000000000000000e+00,  0.0000000000000000e+00],
+    //     [ 3.4880988682707595e-15,  5.4598894285510555e+00, -2.2656986732261966e-01,  1.8905494824872792e+05,  1.9828648143279700e-16,  6.3633316992209696e-15],
+    //     [-3.9603447396536526e+00, -5.0172485853446039e-15, -2.5742691000235807e-15,  8.9383261389056998e-16,  1.9411335012804990e+05,  5.1504945293381743e+00],
+    //     [-1.7617514621622548e-08, -7.3581919932964069e-15, -7.8196914513452354e-15,  1.2676553728314626e-15,  5.1504945290922839e+00,  6.5034966309802630e+05],
+    // ];
+
+
+    // Reducing for debugging.
+    // let c_star_tau_i = mat![
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 3.4880988682707595e-15,  5.4598894285510555e+00, -2.2656986732261966e-01,  1.8905494824872792e+05,  1.9828648143279700e-16,  6.3633316992209696e-15],
+    //     [-3.9603447396536526e+00, -5.0172485853446039e-15, -2.5742691000235807e-15,  8.9383261389056998e-16,  1.9411335012804990e+05,  5.1504945293381743e+00],
+    //     [-1.7617514621622548e-08, -7.3581919932964069e-15, -7.8196914513452354e-15,  1.2676553728314626e-15,  5.1504945290922839e+00,  6.5034966309802630e+05],
+    // ];
+
+
+    // Reducing for debugging.
+    // let c_star_tau_i = mat![
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0,  1.8905494824872792e+05,  1.9828648143279700e-16,  6.3633316992209696e-15],
+    //     [0.0, 0.0, 0.0,  8.9383261389056998e-16,  1.9411335012804990e+05,  5.1504945293381743e+00],
+    //     [0.0, 0.0, 0.0,  1.2676553728314626e-15,  5.1504945290922839e+00,  6.5034966309802630e+05],
+    // ];
+
+
+    // Reducing for debugging.
+    // let c_star_tau_i = mat![
+    //     [ 1.4644469574323347e+08, -1.0188771691870348e-13, -5.1994012431391355e-14,  0.0, 0.0, 0.0],
+    //     [-6.2263602975713452e-14,  3.7802450317781217e+07, -4.2297896605674765e+02,  0.0, 0.0, 0.0],
+    //     [ 0.0000000000000000e+00, -4.2297896627679188e+02,  1.3191532317898544e+07,  0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // ];
+
+    /*
+    // Reducing for debugging.
+    let c_star_tau_i = mat![
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
+    */
+
+    // ------- Making Everything Diagonal -------------------
+
+    let m_star = mat![
+        [ 8.1639955821658532e+01,  0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 8.1639955821658532e+01,  0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  8.1639955821658532e+01, 0.0,  0.0,  0.0],
+        [ 0.0, 0.0, 0.0,  4.7079011476879862e-01,  0.0,  0.0],
+        [ 0.0, 0.0,  0.0,  0.0,  1.0822522299792561e-01, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0,  3.6256489177087214e-01],
+    ];
+
+    // 6x6 stiffness for reference solution
+    let c_star = mat![
+        [ 2.1839988181592059e+09,  0.0,  0.0, 0.0, 0.0, 0.0],
+        [ 0.0,  5.6376577109183133e+08,  0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  1.9673154323503646e+08,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0,  2.8197682819547984e+06,  0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0,  2.8954872824363140e+06,  0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0,  9.6994472729496751e+06],
+    ];
+
+    // Constant 6x6 stiffness for viscoelastic material
+    let c_star_inf = mat![
+        [ 2.1695435690146260e+09, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0,  5.6003437040933549e+08, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0,  1.9542943471348783e+08, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0,  2.8008043929746081e+06,  0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0,  2.8757434217255106e+06,  0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0,  9.6347766098612845e+06],
+    ];
+
+
+    // let c_star_tau_i = mat![
+    //     [ 1.4644469574323347e+08, 0.0, 0.0,  0.0, 0.0, 0.0],
+    //     [ 0.0,  3.7802450317781217e+07, 0.0,  0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0,  1.3191532317898544e+07,  0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // ];
+
+    // let tau_i = col![0.05];
+
+    let undamped_damping=Damping::None;
+
+    // Choose one of these damping models to check gradients of
+    // let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
+    // let damping = Damping::Mu(col![0.016, 0.016, 0.016, 0.016, 0.016, 0.016]); // 3.9003076417101866e-5
+    let damping = Damping::Mu(col![0.5, 0.2, 0.1, 0.3, 0.7, 0.6]); // 3.7663479228680903e-5
+    // let damping = Damping::Mu(col![0.0, 0.0, 0.0, 0.16, 0.16, 0.16]); // 6.138906379474862e-5
+    // let damping = Damping::Mu(col![0.5, 0.5, 0.5, 0.0, 0.0, 0.0]); // 3.7756168437499526e-5
+    // let damping = Damping::Mu(col![0.5, 0.0, 0.0, 0.0, 0.0, 0.0]); // 0.0003942734860216614 -> now 7.3e-6
+    // let damping = Damping::Mu(col![0.0, 0.5, 0.0, 0.0, 0.0, 0.0]); // 4.0333723924300566e-5
+    // let damping = Damping::Mu(col![0.0, 0.0, 0.5, 0.0, 0.0, 0.0]); // 3.718334599605073e-7
+    // let damping=Damping::None;
+
+    // Settings
+    let i_mode = 0; // Mode to simulate
+    let v_scale = 1.; // Velocity scaling factor
+    // let t_end = 3.1; //3.1; // Simulation length - no simulation
+    let time_step = 0.001; // 0.001, Time step
+    let rho_inf = 1.; // Numerical damping
+    let max_iter = 20; // Max convergence iterations
+    // let n_steps = (t_end / time_step) as usize; - no simulation
+    // let n_steps = 1; - no simulation
+
+    // Create output directory
+    let out_dir = "output/modal";
+    fs::create_dir_all(out_dir).unwrap();
+
+    // Initialize model without damping for modal analysis
+    let mut undamped_model = setup_model_custom(undamped_damping.clone(), m_star.clone(), c_star.clone());
+    undamped_model.set_rho_inf(rho_inf);
+    undamped_model.set_max_iter(max_iter);
+    undamped_model.set_time_step(time_step);
+
+
+    // Perform modal analysis
+    let (eig_val, eig_vec) = modal_analysis(&out_dir, &undamped_model);
+    let omega_n = eig_val[i_mode].sqrt();
+    let f_n = omega_n / (2. * PI);
+
+    println!(
+        "mode={}, omega_n={omega_n}, fn={f_n}, zeta={}",
+        i_mode, zeta[i_mode]
+    );
+
+    // New model with viscoelastic damping (or damped Mu model to check)
+    let mut model = setup_model_custom(damping.clone(), m_star.clone(), c_star_inf.clone());
+    model.set_rho_inf(rho_inf);
+    model.set_max_iter(max_iter);
+    model.set_time_step(time_step);
+
+    // Create new solver where beam elements have damping
+    let mut solver = model.create_solver();
+    let mut state = model.create_state();
+
+    // Apply scaled mode shape to state as velocity
+    let v = eig_vec.col(i_mode) * Scale(v_scale);
+    state
+        .v
+        .col_iter_mut()
+        .enumerate()
+        .for_each(|(i_node, mut node_v)| {
+            node_v.copy_from(v.subrows(i_node * 6, 6));
+        });
+
+    //------------------------------------------------------------------
+    // Numerical Gradient Calculation
+    //------------------------------------------------------------------
+    // Loop through perturbations
+
+    let ndof = solver.n_system + solver.n_lambda;
+
+    // Analytical derivative of residual at reference state.
+    let mut dres_mat = Mat::<f64>::zeros(ndof, ndof);
+
+    // Memory to ignore when calling with perturbations
+    let mut dres_mat_ignore = Mat::<f64>::zeros(ndof, ndof);
+
+    // Numerical approximation of 'dres_mat'
+    let mut dres_mat_num = Mat::<f64>::zeros(ndof, ndof);
+
+    // Initial Calculation for analytical gradient
+    let mut state = model.create_state();
+    let mut res_vec = Col::<f64>::zeros(ndof);
+    let xd = Col::<f64>::zeros(ndof);
+
+
+    state
+        .v
+        .col_iter_mut()
+        .enumerate()
+        .for_each(|(i_node, mut node_v)| {
+            node_v.copy_from(v.subrows(i_node * 6, 6));
+        });
+
+    // Do a residual + gradient eval
+    solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
+
+
+    for i in 0..ndof {
+
+        // Positive side of finite difference
+        let mut state = model.create_state();
+        let mut res_vec = Col::<f64>::zeros(ndof);
+        let mut xd = Col::<f64>::zeros(ndof);
+
+        state
+        .v
+        .col_iter_mut()
+        .enumerate()
+        .for_each(|(i_node, mut node_v)| {
+            node_v.copy_from(v.subrows(i_node * 6, 6));
+        });
+
+        xd[i] = delta;
+
+        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+
+        let tmp = dres_mat_num.col(i) + res_vec*Scale(0.5/delta);
+        dres_mat_num.col_mut(i).copy_from(tmp.clone());
+
+        // Negative side of finite difference
+        let mut state = model.create_state();
+        let mut res_vec = Col::<f64>::zeros(ndof);
+        let mut xd = Col::<f64>::zeros(ndof);
+
+        state
+        .v
+        .col_iter_mut()
+        .enumerate()
+        .for_each(|(i_node, mut node_v)| {
+            node_v.copy_from(v.subrows(i_node * 6, 6));
+        });
+
+        xd[i] = -delta;
+
+        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+
+        let tmp = dres_mat_num.col(i) - res_vec*Scale(0.5/delta);
+        dres_mat_num.col_mut(i).copy_from(tmp);
+
+    }
+
+    // Optional output of portions of derivative matrix
+    // println!("Analytical:");
+    // println!("{:?}", dres_mat);
+    // println!("Numerical:");
+    // println!("{:?}", dres_mat_num);
+
+    // println!("Analytical:");
+    // println!("{:?}", dres_mat.submatrix(0,0,6,6));
+    // println!("Numerical:");
+    // println!("{:?}", dres_mat_num.submatrix(0,0,6,6));
+
+    let grad_diff = dres_mat.clone() - dres_mat_num.clone();
+
+    println!("Grad diff norm: {:?}", grad_diff.norm_l2());
+    println!("Grad (analytical) norm: {:?}", dres_mat.norm_l2());
+    println!("Norm ratio (diff/analytical): {:?}", grad_diff.norm_l2() / dres_mat.norm_l2());
+
+}
+
 
 fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     // Create solver and state from model
@@ -454,8 +727,6 @@ fn setup_model_custom(damping: Damping, m_star: Mat<f64>, c_star: Mat<f64>) -> M
         ],
         damping,
     );
-
-    println!("Cstar at creation of elements: {:?}", c_star);
 
     //--------------------------------------------------------------------------
     // Add constraint element

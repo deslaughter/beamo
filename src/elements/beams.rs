@@ -461,7 +461,6 @@ impl Beams {
                 );
             }
             Damping::Viscoelastic(kv_i, tau_i) => {
-                println!("Debug viscoelastic damping forces here.");
 
                 rotate_col_to_sectional(
                     strain_dot_local.subcols_mut(ei.i_qp_start, ei.n_qps),
@@ -1056,7 +1055,6 @@ pub fn calculate_viscoelastic_force(
         e1_tilde,
     );
 
-    println!("Likely need the last line from stiffness prop here as well.");
 }
 
 #[inline]

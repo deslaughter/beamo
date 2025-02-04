@@ -508,7 +508,7 @@ pub fn calc_strain_dot(
         let omega = v.subrows(3, 3);
         let u_dot_prime = v_prime.subrows(0, 3);
         let omega_prime = v_prime.subrows(3, 3);
-        let kappa = strain.subrows(3, 3);
+        let _kappa = strain.subrows(3, 3); // not needed anymore
         vec_tilde(omega, omega_tilde.as_mut());
         matmul(
             e1_tilde_omega.as_mut(),
