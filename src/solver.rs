@@ -320,6 +320,7 @@ impl Solver {
 
         // Converged, update algorithmic acceleration
         state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+        self.elements.beams.update_viscoelastic_history(state, self.p.h);
         res.converged = true;
         res
     }
