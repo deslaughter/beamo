@@ -287,7 +287,7 @@ fn test_viscoelastic_grad() {
     // Looking at damped model.
 
     // Finite difference size
-    let delta = 1e-9;
+    let delta = 1e-9; //1e-9 to 1e-6 are reasonable here
 
     // Target damping value
     let zeta = col![0.01, 0.0];
@@ -412,23 +412,23 @@ fn test_viscoelastic_grad() {
     ];
 
 
-    // let c_star_tau_i = mat![
-    //     [ 1.4644469574323347e+08, 0.0, 0.0,  0.0, 0.0, 0.0],
-    //     [ 0.0,  3.7802450317781217e+07, 0.0,  0.0, 0.0, 0.0],
-    //     [ 0.0, 0.0,  1.3191532317898544e+07,  0.0, 0.0, 0.0],
-    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    //     [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    // ];
+    let c_star_tau_i = mat![
+        [ 1.4644469574323347e+08, 0.0, 0.0,  0.0, 0.0, 0.0],
+        [ 0.0,  3.7802450317781217e+07, 0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  1.3191532317898544e+07,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    ];
 
-    // let tau_i = col![0.05];
+    let tau_i = col![0.05];
 
     let undamped_damping=Damping::None;
 
     // Choose one of these damping models to check gradients of
-    // let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
+    let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
     // let damping = Damping::Mu(col![0.016, 0.016, 0.016, 0.016, 0.016, 0.016]); // 3.9003076417101866e-5
-    let damping = Damping::Mu(col![0.5, 0.2, 0.1, 0.3, 0.7, 0.6]); // 3.7663479228680903e-5
+    // let damping = Damping::Mu(col![0.5, 0.2, 0.1, 0.3, 0.7, 0.6]); // 3.7663479228680903e-5
     // let damping = Damping::Mu(col![0.0, 0.0, 0.0, 0.16, 0.16, 0.16]); // 6.138906379474862e-5
     // let damping = Damping::Mu(col![0.5, 0.5, 0.5, 0.0, 0.0, 0.0]); // 3.7756168437499526e-5
     // let damping = Damping::Mu(col![0.5, 0.0, 0.0, 0.0, 0.0, 0.0]); // 0.0003942734860216614 -> now 7.3e-6

@@ -1031,11 +1031,21 @@ pub fn calculate_viscoelastic_force(
     // Additional components similar to fd_d
     calc_fd_d(fd_d.as_mut(), fd_c.as_ref(), e1_tilde);
 
+    // copy kv_i needs to be reshaped to match formatting
+    let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
+
+    flat_kvi.col_iter_mut().for_each(
+        |col_kvi| {
+            let mut mat_kvi = col_kvi.as_mat_mut(6,6);
+            mat_kvi.copy_from((Scale(h/2.)*kv_i).as_mat_ref());
+        }
+    );
+
     // Gradient of global forces w.r.t. global strain rate at n+1
     // saved into mu_cuu
     calc_inertial_matrix(
         mu_cuu.as_mut(),
-        (Scale(h/2.)*kv_i).as_mat_ref(),
+        flat_kvi.as_mat_ref(),
         rr0
     );
 
