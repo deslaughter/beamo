@@ -153,8 +153,11 @@ fn modal_analysis(model: &Model) -> (Col<f64>, Mat<f64>) {
     let mut solver = model.create_solver();
     let state = model.create_state();
 
+    //Only matters for viscoelastic material, but needs to be passed to create_beams
+    let h = 0.001;
+
     // Calculate system based on initial state
-    solver.elements.beams.calculate_system(&state);
+    solver.elements.beams.calculate_system(&state, h);
 
     // Get matrices
     solver.elements.beams.assemble_system(

@@ -1,7 +1,7 @@
 use std::ops::Div;
 
 use faer::{
-    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism,
+    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism, MatMut, ColRef, ColMut
 };
 use itertools::izip;
 
@@ -115,6 +115,12 @@ impl Solver {
     }
 
     pub fn step(&mut self, state: &mut State) -> StepResults {
+
+        // Update strain_dot from previous step before
+        // predicting (which overrides velocities)
+        self.elements.beams.calculate_strain_dot(state);
+        println!("TODO : Verify this above calculation is consistent with end of previous step.");
+
         state.predict_next_state(
             self.p.h,
             self.p.beta,
@@ -155,6 +161,7 @@ impl Solver {
             self.elements.assemble_system(
                 state,
                 &self.nfm,
+                self.p.h,
                 self.m.as_mut(),
                 self.ct.as_mut(),
                 self.kt.as_mut(),
@@ -305,13 +312,291 @@ impl Solver {
                 return res;
             }
 
+            println!("Error: {} (iter {})", res.err, res.iter);
+
             // Increment iteration count
             res.iter += 1;
         }
 
         // Converged, update algorithmic acceleration
         state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+        self.elements.beams.update_viscoelastic_history(state, self.p.h);
         res.converged = true;
+        res
+    }
+
+    // Function to calculate the residual and gradient for a solver step
+    // Does not actually do an update
+    // state does get modified
+    pub fn step_res_grad(&mut self,
+                        state: &mut State,
+                        xd: ColRef<f64>,
+                        mut res_vec: ColMut<f64>,
+                        mut dres_mat: MatMut<f64>,) -> StepResults {
+
+
+        //------------------------------------------------------------------
+        // Setup Solution Point like step
+        //------------------------------------------------------------------
+
+        // May need to calculate the displacements before proceeding with strain calculation.
+        println!("TODO: Not sure if this is needed here. If needed, add to solver.step as well.");
+        state.calc_displacement(self.p.h);
+
+        // Update strain_dot from previous step before
+        // predicting (which overrides velocities)
+        self.elements.beams.calculate_strain_dot(state);
+        println!("TODO : Verify this above calculation is consistent with end of previous step.");
+
+
+        state.predict_next_state(
+            self.p.h,
+            self.p.beta,
+            self.p.gamma,
+            self.p.alpha_m,
+            self.p.alpha_f,
+        );
+
+
+        //------------------------------------------------------------------
+        // Perturb Solution Point (Same as update in self.step)
+        //------------------------------------------------------------------
+
+        self.x.copy_from(&xd);
+
+        // Convert solution vector to match state node layout
+        self.nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .for_each(|(node_id, dofs)| {
+                let mut node_xd = self.x_delta.col_mut(node_id);
+                let xd = self.x.subrows(dofs.first_dof_index, dofs.n_dofs);
+                match dofs.active {
+                    ActiveDOFs::None => unreachable!(),
+                    ActiveDOFs::Translation => node_xd.subrows_mut(0, 3).copy_from(xd),
+                    ActiveDOFs::Rotation => node_xd.subrows_mut(3, 3).copy_from(xd),
+                    ActiveDOFs::All => node_xd.copy_from(xd),
+                };
+            });
+
+        state.update_prediction(
+            self.p.h,
+            self.p.beta_prime,
+            self.p.gamma_prime,
+            self.x_delta.as_ref(),
+        );
+
+        // Initialize lambda to zero
+        self.lambda.fill_zero();
+
+        // Update lambda
+        zipped!(
+            &mut self.lambda,
+            &self.x.subrows(self.n_system, self.n_lambda)
+        )
+        .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
+
+        //------------------------------------------------------------------
+        // Residual Evaluation + Gradient (Same as one loop in self.step)
+        //------------------------------------------------------------------
+
+        // Create step results
+        let res = StepResults {
+            err: 1000.,
+            iter: 1,
+            converged: false,
+        };
+
+        // Loop until converged or max iteration limit reached
+        //while res.iter <= 1 {
+        //------------------------------------------------------------------
+        // Build System
+        //------------------------------------------------------------------
+
+        // Reset matrices
+        self.m.fill_zero();
+        self.kt.fill_zero();
+        self.ct.fill_zero();
+        self.b.fill_zero();
+        self.t.fill_zero();
+        self.t.diagonal_mut().column_vector_mut().fill(1.);
+        self.r.fill_zero();
+
+        // Subtract direct nodal loads - not needed for gradient checking
+        // zipped!(&mut self.r, &self.fx).for_each(|unzipped!(r, fx)| *r -= *fx);
+
+        // Add elements to system
+        self.elements.assemble_system(
+            state,
+            &self.nfm,
+            self.p.h,
+            self.m.as_mut(),
+            self.ct.as_mut(),
+            self.kt.as_mut(),
+            self.r.as_mut(),
+        );
+
+        // Calculate constraints
+        self.constraints.assemble_constraints(
+            &self.nfm,
+            state,
+            self.phi.as_mut(),
+            self.b.as_mut(),
+        );
+
+        // Calculate tangent matrix
+        self.populate_tangent_matrix(state);
+
+        // Assemble system matrix
+        let mut st_11 = self.st.submatrix_mut(0, 0, self.n_system, self.n_system);
+        zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
+            *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
+        });
+        matmul(
+            st_11,
+            self.kt.as_ref(),
+            self.t.as_ref(),
+            Some(1.),
+            1.,
+            faer::Parallelism::None,
+        );
+
+        // Assemble constraints
+        let st_21 = self
+            .st
+            .submatrix_mut(self.n_system, 0, self.n_lambda, self.n_system);
+        matmul(st_21, &self.b, &self.t, None, 1., faer::Parallelism::None);
+        let mut st_12 = self
+            .st
+            .submatrix_mut(0, self.n_system, self.n_system, self.n_lambda);
+        zipped!(&mut st_12, &self.b.transpose()).for_each(|unzipped!(st, bt)| *st = *bt);
+        self.st
+            .submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_lambda)
+            .fill_zero();
+
+        matmul(
+            self.r.subrows_mut(0, self.n_system),
+            self.b.transpose(),
+            self.lambda.as_ref(),
+            Some(1.),
+            1.,
+            faer::Parallelism::None,
+        );
+
+        //------------------------------------------------------------------
+        // Solve System (just save data from before solve)
+        //------------------------------------------------------------------
+
+        // Make copies of St and R for solving system
+        let st_c = self.st.clone();
+        self.rhs.subrows_mut(0, self.n_system).copy_from(&self.r);
+        self.rhs
+            .subrows_mut(self.n_system, self.n_lambda)
+            .copy_from(&self.phi);
+
+        res_vec.copy_from(self.rhs.clone());
+        dres_mat.copy_from(st_c.clone());
+
+        /*
+        // Condition residual
+        zipped!(&mut self.rhs.subrows_mut(0, self.n_system))
+            .for_each(|unzipped!(v)| *v *= self.p.conditioner);
+
+        // Condition system
+        zipped!(&mut st_c.subrows_mut(0, self.n_system))
+            .for_each(|unzipped!(v)| *v *= self.p.conditioner);
+        zipped!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
+            .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+
+        // Solve system
+        let lu = st_c.partial_piv_lu();
+        let x = lu.solve(&self.rhs);
+        self.x.copy_from(&x);
+
+        // De-condition solution vector
+        zipped!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
+            .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+
+        // Negate solution vector
+        zipped!(&mut self.x).for_each(|unzipped!(x)| *x *= -1.);
+
+        //------------------------------------------------------------------
+        // Update State & lambda
+        //------------------------------------------------------------------
+
+        // Convert solution vector to match state node layout
+        self.nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .for_each(|(node_id, dofs)| {
+                let mut node_xd = self.x_delta.col_mut(node_id);
+                let xd = self.x.subrows(dofs.first_dof_index, dofs.n_dofs);
+                match dofs.active {
+                    ActiveDOFs::None => unreachable!(),
+                    ActiveDOFs::Translation => node_xd.subrows_mut(0, 3).copy_from(xd),
+                    ActiveDOFs::Rotation => node_xd.subrows_mut(3, 3).copy_from(xd),
+                    ActiveDOFs::All => node_xd.copy_from(xd),
+                };
+            });
+
+        // Calculate convergence error
+        res.err = zipped!(&self.x_delta, &state.u_delta)
+            .map(|unzipped!(xd, ud)| *xd / ((*ud * self.p.phi_tol).abs() + self.p.x_tol))
+            .norm_l2()
+            .div((self.n_system as f64).sqrt());
+
+        // Calculate convergence error
+        let x_err = self.x.subrows(0, self.n_system).norm_l2() / (self.n_system as f64);
+        let phi_err = if self.n_lambda > 0 {
+            self.x.subrows(self.n_system, self.n_lambda).norm_l2() / (self.n_lambda as f64)
+        } else {
+            0.
+        };
+
+        // Update state prediction
+        state.update_prediction(
+            self.p.h,
+            self.p.beta_prime,
+            self.p.gamma_prime,
+            self.x_delta.as_ref(),
+        );
+
+        // Update lambda
+        zipped!(
+            &mut self.lambda,
+            &self.x.subrows(self.n_system, self.n_lambda)
+        )
+        .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
+
+        // Iteration limit reached return not converged
+        if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
+            // Converged, update algorithmic acceleration
+            state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+
+            // Update Prony series states as appropriate.
+            self.elements.beams.update_viscoelastic_history(state, self.p.h);
+
+            res.converged = true;
+            return res;
+        }
+        // if res.err < 1. {
+        //     // Converged, update algorithmic acceleration
+        //     state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
+        //     res.converged = true;
+        //     return res;
+        // }
+
+
+        println!("Error: {} (iter {}, tol {})", x_err, res.iter, self.p.x_tol);
+
+        // Increment iteration count
+        res.iter += 1;
+
+        */
+        //}
+
         res
     }
 

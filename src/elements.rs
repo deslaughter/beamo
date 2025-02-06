@@ -21,13 +21,14 @@ impl Elements {
         &mut self,
         state: &State,
         nfm: &NodeFreedomMap,
+        h: f64,
         mut m: MatMut<f64>, // Mass
         mut g: MatMut<f64>, // Damping
         mut k: MatMut<f64>, // Stiffness
         mut r: ColMut<f64>, // Residual
     ) {
         // Add beams to system
-        self.beams.calculate_system(state);
+        self.beams.calculate_system(state, h);
         self.beams
             .assemble_system(nfm, m.as_mut(), g.as_mut(), k.as_mut(), r.as_mut());
 

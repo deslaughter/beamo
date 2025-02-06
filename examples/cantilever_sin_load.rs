@@ -105,6 +105,7 @@ fn main() {
         Damping::None => format!("{out_dir}/damping-0.csv"),
         Damping::Mu(_) => format!("{out_dir}/damping-mu.csv"),
         Damping::ModalElement(_) => format!("{out_dir}/damping-me.csv"),
+        Damping::Viscoelastic(_,_) => format!("{out_dir}/damping-viscoelastic.csv"),
     };
     let mut file = File::create(file_path).unwrap();
 
