@@ -287,7 +287,7 @@ fn test_viscoelastic_grad() {
     // Looking at damped model.
 
     // Finite difference size
-    let delta = 1e-9; //1e-9 to 1e-6 are reasonable here
+    let delta = 1e-7; //1e-9 to 1e-6 are reasonable here
 
     // Target damping value
     let zeta = col![0.01, 0.0];
@@ -402,15 +402,45 @@ fn test_viscoelastic_grad() {
     ];
 
     // Constant 6x6 stiffness for viscoelastic material
+    // 2e-3 w/o damping at dt=0.1
+    // let c_star_inf = mat![
+    //     [ 2.1695435690146260e+09, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0,  5.6003437040933549e+08, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0,  1.9542943471348783e+08, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0,  2.8008043929746081e+06,  0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0,  2.8757434217255106e+06,  0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0,  9.6347766098612845e+06],
+    // ];
+
+    // 9e-3 w/o damping at dt=0.1
     let c_star_inf = mat![
-        [ 2.1695435690146260e+09, 0.0, 0.0, 0.0, 0.0, 0.0],
-        [0.0,  5.6003437040933549e+08, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0,  1.9542943471348783e+08, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0,  2.8008043929746081e+06,  0.0, 0.0],
         [0.0, 0.0, 0.0, 0.0,  2.8757434217255106e+06,  0.0],
         [0.0, 0.0, 0.0, 0.0, 0.0,  9.6347766098612845e+06],
     ];
 
+    // // 2e-3 at dt=0.1
+    // let c_star_inf = mat![
+    //     [ 2.1695435690146260e+09, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0,  5.6003437040933549e+08, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0,  1.9542943471348783e+08, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // ];
+
+
+    // let c_star_inf = mat![
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    // ];
 
     let c_star_tau_i = mat![
         [ 1.4644469574323347e+08, 0.0, 0.0,  0.0, 0.0, 0.0],
@@ -421,12 +451,31 @@ fn test_viscoelastic_grad() {
         [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     ];
 
+    // Try reducing mass matrix, but not in initial solution
+    // - does not appear to be source of error
+    // let m_star2 = mat![
+    //     [ 8.1639955821658532e+01,  0.0, 0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 8.1639955821658532e+01,  0.0, 0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0,  8.1639955821658532e+01, 0.0,  0.0,  0.0],
+    //     [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+    //     [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+    // ];
+    let m_star2 = mat![
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+        [ 0.0, 0.0,  0.0,  0.0, 0.0, 0.0],
+    ];
+
     let tau_i = col![0.05];
 
     let undamped_damping=Damping::None;
 
     // Choose one of these damping models to check gradients of
-    let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
+    // let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone()); // dt=0.001, 1.9779161730687295e-5; dt=0.1, 0.002109732996174937
     // let damping = Damping::Mu(col![0.016, 0.016, 0.016, 0.016, 0.016, 0.016]); // 3.9003076417101866e-5
     // let damping = Damping::Mu(col![0.5, 0.2, 0.1, 0.3, 0.7, 0.6]); // 3.7663479228680903e-5
     // let damping = Damping::Mu(col![0.0, 0.0, 0.0, 0.16, 0.16, 0.16]); // 6.138906379474862e-5
@@ -434,13 +483,13 @@ fn test_viscoelastic_grad() {
     // let damping = Damping::Mu(col![0.5, 0.0, 0.0, 0.0, 0.0, 0.0]); // 0.0003942734860216614 -> now 7.3e-6
     // let damping = Damping::Mu(col![0.0, 0.5, 0.0, 0.0, 0.0, 0.0]); // 4.0333723924300566e-5
     // let damping = Damping::Mu(col![0.0, 0.0, 0.5, 0.0, 0.0, 0.0]); // 3.718334599605073e-7
-    // let damping=Damping::None;
+    let damping=Damping::None; //dt=0.001,2.0333826413440627e-5; dt=0.1, 0.002179218390628081
 
     // Settings
     let i_mode = 0; // Mode to simulate
     let v_scale = 1.; // Velocity scaling factor
     // let t_end = 3.1; //3.1; // Simulation length - no simulation
-    let time_step = 0.001; // 0.001, Time step
+    let time_step = 0.1; // 0.001, Time step
     let rho_inf = 1.; // Numerical damping
     let max_iter = 20; // Max convergence iterations
     // let n_steps = (t_end / time_step) as usize; - no simulation
@@ -468,7 +517,7 @@ fn test_viscoelastic_grad() {
     );
 
     // New model with viscoelastic damping (or damped Mu model to check)
-    let mut model = setup_model_custom(damping.clone(), m_star.clone(), c_star_inf.clone());
+    let mut model = setup_model_custom(damping.clone(), m_star2.clone(), c_star_inf.clone());
     model.set_rho_inf(rho_inf);
     model.set_max_iter(max_iter);
     model.set_time_step(time_step);
@@ -572,9 +621,9 @@ fn test_viscoelastic_grad() {
     // println!("{:?}", dres_mat_num);
 
     // println!("Analytical:");
-    // println!("{:?}", dres_mat.submatrix(0,0,6,6));
+    // println!("{:?}", dres_mat.submatrix(6,6,6,6));
     // println!("Numerical:");
-    // println!("{:?}", dres_mat_num.submatrix(0,0,6,6));
+    // println!("{:?}", dres_mat_num.submatrix(6,6,6,6));
 
     let grad_diff = dres_mat.clone() - dres_mat_num.clone();
 

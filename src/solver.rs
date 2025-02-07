@@ -640,7 +640,7 @@ impl Solver {
                     matmul(tan.as_mut(), &mt, &mt, Some(1.), a, Parallelism::None);
                     zipped!(&mut tan, &mt).for_each(|unzipped!(t, mt)| *t += *mt * b);
 
-                    self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan);
+                    self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan.transpose());
                 }
                 _ => {}
             };
