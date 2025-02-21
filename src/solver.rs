@@ -119,7 +119,6 @@ impl Solver {
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)
         self.elements.beams.calculate_strain_dot(state);
-        println!("TODO : Verify this above calculation is consistent with end of previous step.");
 
         state.predict_next_state(
             self.p.h,
@@ -346,8 +345,6 @@ impl Solver {
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)
         self.elements.beams.calculate_strain_dot(state);
-        println!("TODO : Verify this above calculation is consistent with end of previous step.");
-
 
         state.predict_next_state(
             self.p.h,
