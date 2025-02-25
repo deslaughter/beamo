@@ -123,7 +123,14 @@ impl Model {
             |elem|
             nqp += elem.quadrature.points.len());
 
-        State::new(&self.nodes, nqp)
+        let mut n_prony = 1;
+
+        match &self.beam_elements[0].damping {
+            Damping::Viscoelastic(_, tau_i) => n_prony = tau_i.nrows(),
+            _ => (), // already set to n_prony = 1
+        }
+
+        State::new(&self.nodes, nqp, n_prony)
     }
 
     /// Add rigid constraint

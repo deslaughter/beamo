@@ -9,6 +9,7 @@ use faer::{
     complex_native::c64,
     linalg::solvers::{Eigendecomposition, SpSolver},
     mat, unzipped, zipped, Col, Mat, Scale,
+    MatMut,
 };
 
 use itertools::{izip, Itertools};
@@ -186,10 +187,21 @@ fn test_viscoelastic() {
         [-1.7617514621622548e-08, -7.3581919932964069e-15, -7.8196914513452354e-15,  1.2676553728314626e-15,  5.1504945290922839e+00,  6.5034966309802630e+05],
     ];
 
-    let tau_i = col![0.05];
+    let tau_i = col![0.05, 0.10];
+    let n_tau = 2;
+
+    // Make c_star_tau_i into a column and insert as columns
+    let mut c_star_all = Mat::<f64>::zeros(36, n_tau);
+    let c_star_col = c_star_all.col_mut(0);
+    let mut c_single_mat = c_star_col.as_mat_mut(6, 6);
+    c_single_mat.copy_from(c_star_tau_i.clone());
+
+    let c_star_col = c_star_all.col_mut(1);
+    let mut c_single_mat = c_star_col.as_mat_mut(6, 6);
+    c_single_mat.copy_from(c_star_tau_i.clone());
 
     let undamped_damping=Damping::None;
-    let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
+    let damping = Damping::Viscoelastic(c_star_all, tau_i.clone());
 
     // Settings
     let i_mode = 0; // Mode to simulate

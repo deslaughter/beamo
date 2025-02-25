@@ -632,14 +632,14 @@ pub fn calc_fd_c_viscoelastic(
     fd_c: MatMut<f64>,
     h : f64,
     kv_i: MatRef<f64>,
-    tau_i: ColRef<f64>,
+    tau_i: f64,
     rr0: MatRef<f64>,
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
     visco_hist: MatRef<f64>,
 ) {
     // Viscoelastic history decay
-    let tmp = -1. * h / tau_i[0];
+    let tmp = -1. * h / tau_i;
 
     izip!(
         fd_c.col_iter_mut(),
@@ -692,10 +692,10 @@ pub fn update_viscoelastic(
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
     h : f64,
-    tau_i: ColRef<f64>,
+    tau_i: f64,
 ) {
     // Viscoelastic history decay
-    let tmp = -1. * h / tau_i[0];
+    let tmp = -1. * h / tau_i;
 
     izip!(
         visco_hist.col_iter_mut(),
