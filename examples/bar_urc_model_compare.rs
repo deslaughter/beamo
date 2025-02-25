@@ -169,8 +169,11 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     let mut solver = model.create_solver();
     let mut state = model.create_state();
 
+    // should not matter in modal analysis, argument needed for viscoelastic
+    let h = 0.0;
+
     // Calculate system based on initial state
-    solver.elements.beams.calculate_system(&state);
+    solver.elements.beams.calculate_system(&state, h);
 
     // Get matrices
     solver.elements.beams.assemble_system(
@@ -260,8 +263,11 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
                 u[6] = q[3];
             });
 
+            // should not matter in modal analysis, argument needed for viscoelastic
+            let h = 0.0;
+
             // Update beam elements from state
-            solver.elements.beams.calculate_system(&state);
+            solver.elements.beams.calculate_system(&state, h);
 
             // Write frequency to file
             write!(file, "\n{}", lambda.sqrt() / (2. * PI)).unwrap();

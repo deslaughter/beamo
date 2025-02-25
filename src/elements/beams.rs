@@ -1002,7 +1002,7 @@ pub fn calculate_mu_damping(
 
 
 pub fn calculate_viscoelastic_force(
-    kv_i: MatRef<f64>,
+    kv_i: MatRef<f64>, //[36][n_prony]
     tau_i: ColRef<f64>,
     rr0: MatRef<f64>,
     strain_dot_n: MatRef<f64>,
@@ -1038,18 +1038,6 @@ pub fn calculate_viscoelastic_force(
 
     // copy kv_i needs to be reshaped to match formatting of mu_cuu
     let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
-
-
-    // let kvi_col = kv_i.col(0);
-    // let kvi_mat = kvi_col.as_mat_ref(6, 6);
-    // let tau_i_curr = tau_i.subrows(0, 1);
-
-    // kvi should now be [36][n_terms]
-    // viscohist should be a column of size 6 * n_terms
-    println!("Do the loop and add here.");
-    println!("Look at history to see if correct shapes...visco_hist.");
-    // create temp variables for each thing to get the info in the loop
-    // and add manually at this level rather than adding deeper down.
 
     izip!(
         kv_i.col_iter().enumerate(),
