@@ -22,7 +22,7 @@ pub struct State {
     /// Acceleration `[6][n_nodes]`
     pub vd: Mat<f64>,
     /// Algorithmic acceleration `[6][n_nodes]`
-    a: Mat<f64>,
+    pub a: Mat<f64>,
     /// Viscoelastic history states `[6*n_terms][n_quadrature]`
     pub visco_hist: Mat<f64>,
     /// Viscoelastic history states contributions from
@@ -125,6 +125,7 @@ impl State {
         );
 
         self.calc_displacement(h);
+        self.calculate_x();
     }
 
     /// Update state prediction from iteration increment
@@ -144,6 +145,7 @@ impl State {
         );
 
         self.calc_displacement(h);
+        self.calculate_x();
     }
 
     /// Calculate algorithmic acceleration for next step

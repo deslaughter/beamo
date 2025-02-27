@@ -25,7 +25,7 @@ use ottr::{
 #[ignore]
 fn test_damping() {
     // Damping ratio for modes 1-4
-    let zeta = col![0.1];
+    let zeta = col![0.01];
 
     // Select damping type
     // let damping = Damping::None;
@@ -34,9 +34,9 @@ fn test_damping() {
 
     // Settings
     let i_mode = 0; // Mode to simulate
-    let v_scale = 1.; // Velocity scaling factor
+    let v_scale = 80.; // Velocity scaling factor
     let t_end = 0.7; // Simulation length
-    let time_step = 0.001; // Time step
+    let time_step = 0.01; // Time step
     let rho_inf = 1.; // Numerical damping
     let max_iter = 6; // Max convergence iterations
     let n_steps = (t_end / time_step) as usize;
@@ -386,19 +386,18 @@ fn test_viscoelastic_grad() {
     let undamped_damping=Damping::None;
 
     // Choose one of these damping models to check gradients of
-    // let damping=Damping::None;
+    let damping=Damping::None;
     // let damping = Damping::Mu(col![0.016, 0.016, 0.016, 0.016, 0.016, 0.016]);
-    let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
+    // let damping = Damping::Viscoelastic(c_star_tau_i.clone(), tau_i.clone());
 
     // Settings
     let i_mode = 0; // Mode to simulate
-    let v_scale = 1.; // Velocity scaling factor
-    // let t_end = 3.1; //3.1; // Simulation length - no simulation
-    let time_step = 0.1; // 0.001, Time step
+    let v_scale = 70.; // Velocity scaling factor
+    let t_end = 0.1; //3.1; // Simulation length, gradient is checked at this time (approx)
+    let time_step = 0.01; // 0.001, Time step
     let rho_inf = 1.; // Numerical damping
     let max_iter = 20; // Max convergence iterations
-    // let n_steps = (t_end / time_step) as usize; - no simulation
-    // let n_steps = 1; - no simulation
+    let n_steps = (t_end / time_step) as usize;
 
     // Create output directory
     let out_dir = "output/modal";
@@ -429,17 +428,24 @@ fn test_viscoelastic_grad() {
 
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
-    let mut state = model.create_state();
+    let mut ref_state = model.create_state();
 
     // Apply scaled mode shape to state as velocity
     let v = eig_vec.col(i_mode) * Scale(v_scale);
-    state
+    ref_state
         .v
         .col_iter_mut()
         .enumerate()
         .for_each(|(i_node, mut node_v)| {
             node_v.copy_from(v.subrows(i_node * 6, 6));
         });
+
+    // Do a number of time integration steps so that gradient can be
+    // checked starting from nonzero displacements
+    for _iter in 0..n_steps {
+        solver.step(&mut ref_state);
+    }
+    // println!("u: {:?}", ref_state.u.clone().subrows(0, 3));
 
     //------------------------------------------------------------------
     // Numerical Gradient Calculation
@@ -463,13 +469,19 @@ fn test_viscoelastic_grad() {
     let xd = Col::<f64>::zeros(ndof);
 
 
-    state
-        .v
-        .col_iter_mut()
-        .enumerate()
-        .for_each(|(i_node, mut node_v)| {
-            node_v.copy_from(v.subrows(i_node * 6, 6));
-        });
+    // Copy all of state from the reference
+    state.n_nodes = ref_state.n_nodes;
+    state.x0.copy_from(ref_state.x0.clone());
+    state.x.copy_from(ref_state.x.clone());
+    state.u_delta.copy_from(ref_state.u_delta.clone());
+    state.u_prev.copy_from(ref_state.u_prev.clone());
+    state.u.copy_from(ref_state.u.clone());
+    state.v.copy_from(ref_state.v.clone());
+    state.vd.copy_from(ref_state.vd.clone());
+    state.a.copy_from(ref_state.a.clone());
+    state.visco_hist.copy_from(ref_state.visco_hist.clone());
+    state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
+    print!("copy v {:?}", state.v.clone());
 
     // Do a residual + gradient eval
     solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
@@ -482,13 +494,18 @@ fn test_viscoelastic_grad() {
         let mut res_vec = Col::<f64>::zeros(ndof);
         let mut xd = Col::<f64>::zeros(ndof);
 
-        state
-        .v
-        .col_iter_mut()
-        .enumerate()
-        .for_each(|(i_node, mut node_v)| {
-            node_v.copy_from(v.subrows(i_node * 6, 6));
-        });
+        // Copy all of state from the reference
+        state.n_nodes = ref_state.n_nodes;
+        state.x0.copy_from(ref_state.x0.clone());
+        state.x.copy_from(ref_state.x.clone());
+        state.u_delta.copy_from(ref_state.u_delta.clone());
+        state.u_prev.copy_from(ref_state.u_prev.clone());
+        state.u.copy_from(ref_state.u.clone());
+        state.v.copy_from(ref_state.v.clone());
+        state.vd.copy_from(ref_state.vd.clone());
+        state.a.copy_from(ref_state.a.clone());
+        state.visco_hist.copy_from(ref_state.visco_hist.clone());
+        state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
 
         xd[i] = delta;
 
@@ -502,13 +519,18 @@ fn test_viscoelastic_grad() {
         let mut res_vec = Col::<f64>::zeros(ndof);
         let mut xd = Col::<f64>::zeros(ndof);
 
-        state
-        .v
-        .col_iter_mut()
-        .enumerate()
-        .for_each(|(i_node, mut node_v)| {
-            node_v.copy_from(v.subrows(i_node * 6, 6));
-        });
+        // Copy all of state from the reference
+        state.n_nodes = ref_state.n_nodes;
+        state.x0.copy_from(ref_state.x0.clone());
+        state.x.copy_from(ref_state.x.clone());
+        state.u_delta.copy_from(ref_state.u_delta.clone());
+        state.u_prev.copy_from(ref_state.u_prev.clone());
+        state.u.copy_from(ref_state.u.clone());
+        state.v.copy_from(ref_state.v.clone());
+        state.vd.copy_from(ref_state.vd.clone());
+        state.a.copy_from(ref_state.a.clone());
+        state.visco_hist.copy_from(ref_state.visco_hist.clone());
+        state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
 
         xd[i] = -delta;
 
