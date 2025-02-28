@@ -223,6 +223,240 @@ fn test_heavy_top() {
 }
 
 #[test]
+fn test_heavy_top_grad() {
+    let time_step: f64 = 0.002;
+    let t_end: f64 = 0.06; // original is 2.
+    let n_steps = (t_end / time_step).ceil() as usize;
+
+    // Model
+    let mut model = Model::new();
+    // model.set_solver_tolerance(1e-5, 1e-3);
+    model.set_solver_tolerance(1e-9, 1e-9);
+    model.set_time_step(time_step);
+    model.set_rho_inf(0.9);
+    model.set_max_iter(10);
+
+    // Heavy top parameters
+    let m = 15.;
+    let mut j = Mat::<f64>::zeros(3, 3);
+    j.diagonal_mut()
+        .column_vector_mut()
+        .copy_from(col![0.234375, 0.46875, 0.234375]);
+    let omega = col![0., 150., -4.61538];
+    let gamma = col![0., 0., -9.81];
+    let x = col![0., 1., 0.];
+
+    // translational velocity
+    let mut x_dot = col![0., 0., 0.];
+    cross(omega.as_ref(), x.as_ref(), x_dot.as_mut());
+
+    // angular acceleration
+    let mut x_tilde = Mat::<f64>::zeros(3, 3);
+    vec_tilde(x.as_ref(), x_tilde.as_mut());
+    let j_bar: Mat<f64> = &j - m * &x_tilde * &x_tilde;
+    let mut x_cross_m_gamma = col![0., 0., 0.];
+    cross(
+        x.as_ref(),
+        (Scale(m) * &gamma).as_ref(),
+        x_cross_m_gamma.as_mut(),
+    );
+    let mut omega_cross_j_bar_omega = col![0., 0., 0.];
+    let j_bar_omega: Col<f64> = &j_bar * &omega;
+    cross(
+        omega.as_ref(),
+        j_bar_omega.as_ref(),
+        omega_cross_j_bar_omega.as_mut(),
+    );
+    let omega_dot = j_bar
+        .partial_piv_lu()
+        .solve(&x_cross_m_gamma - &omega_cross_j_bar_omega);
+
+    // translational acceleration
+    let mut omega_dot_cross_x = col![0., 0., 0.];
+    cross(omega_dot.as_ref(), x.as_ref(), omega_dot_cross_x.as_mut());
+    let mut omega_cross_x_dot = col![0., 0., 0.];
+    cross(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
+    let x_ddot = omega_dot_cross_x + omega_cross_x_dot;
+
+    // Add mass element
+    let mass_node_id = model
+        .add_node()
+        .position(x[0], x[1], x[2], 1., 0., 0., 0.)
+        .velocity(x_dot[0], x_dot[1], x_dot[2], omega[0], omega[1], omega[2])
+        .acceleration(
+            x_ddot[0],
+            x_ddot[1],
+            x_ddot[2],
+            omega_dot[0],
+            omega_dot[1],
+            omega_dot[2],
+        )
+        .build();
+    let mut mass_matrix = Mat::<f64>::zeros(6, 6);
+    mass_matrix
+        .diagonal_mut()
+        .column_vector_mut()
+        .subrows_mut(0, 3)
+        .fill(m);
+    mass_matrix.submatrix_mut(3, 3, 3, 3).copy_from(&j);
+    model.add_mass_element(mass_node_id, mass_matrix);
+
+    let ground_node_id = model.add_node().position_xyz(0., 0., 0.).build();
+    model.add_rigid_constraint(mass_node_id, ground_node_id);
+    model.add_prescribed_constraint(ground_node_id);
+
+    // Set gravity
+    model.set_gravity(gamma[0], gamma[1], gamma[2]);
+
+    //--------------------------------------------------------------------------
+    // run simulation
+    //--------------------------------------------------------------------------
+
+    // Create solver
+    let mut solver = model.create_solver();
+
+    // Create state
+    let mut state = model.create_state();
+
+    // Time step
+    for _i in 0..n_steps {
+        // Step
+        let res = solver.step(&mut state);
+        assert_eq!(res.converged, true);
+    }
+
+
+    //--------------------------------------------------------------------------
+    // create a reference state from the time n position
+    //--------------------------------------------------------------------------
+
+    let mut ref_state = model.create_state();
+
+    // Copy all of state to the reference
+    ref_state.n_nodes = state.n_nodes;
+    ref_state.x0.copy_from(state.x0.clone());
+    ref_state.x.copy_from(state.x.clone());
+    ref_state.u_delta.copy_from(state.u_delta.clone());
+    ref_state.u_prev.copy_from(state.u_prev.clone());
+    ref_state.u.copy_from(state.u.clone());
+    ref_state.v.copy_from(state.v.clone());
+    ref_state.vd.copy_from(state.vd.clone());
+    ref_state.a.copy_from(state.a.clone());
+    ref_state.visco_hist.copy_from(state.visco_hist.clone());
+    ref_state.strain_dot_n.copy_from(state.strain_dot_n.clone());
+
+
+    //------------------------------------------------------------------
+    // numerical gradient calculation
+    //------------------------------------------------------------------
+    // Loop through perturbations
+
+    let delta = 1e-7;
+
+    let ndof = solver.n_system + solver.n_lambda;
+
+    // Analytical derivative of residual at reference state.
+    let mut dres_mat = Mat::<f64>::zeros(ndof, ndof);
+
+    // Memory to ignore when calling with perturbations
+    let mut dres_mat_ignore = Mat::<f64>::zeros(ndof, ndof);
+
+    // Numerical approximation of 'dres_mat'
+    let mut dres_mat_num = Mat::<f64>::zeros(ndof, ndof);
+
+    // Initial Calculation for analytical gradient
+    let mut state = model.create_state();
+    let mut res_vec = Col::<f64>::zeros(ndof);
+    let xd = Col::<f64>::zeros(ndof);
+
+
+    // Do a residual + gradient eval
+
+    // Copy all of state from the reference
+    state.n_nodes = ref_state.n_nodes;
+    state.x0.copy_from(ref_state.x0.clone());
+    state.x.copy_from(ref_state.x.clone());
+    state.u_delta.copy_from(ref_state.u_delta.clone());
+    state.u_prev.copy_from(ref_state.u_prev.clone());
+    state.u.copy_from(ref_state.u.clone());
+    state.v.copy_from(ref_state.v.clone());
+    state.vd.copy_from(ref_state.vd.clone());
+    state.a.copy_from(ref_state.a.clone());
+    state.visco_hist.copy_from(ref_state.visco_hist.clone());
+    state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
+
+    solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
+
+
+    for i in 0..ndof {
+
+        // Positive side of finite difference
+        let mut state = model.create_state();
+        let mut res_vec = Col::<f64>::zeros(ndof);
+        let mut xd = Col::<f64>::zeros(ndof);
+
+        // Copy all of state from the reference
+        state.n_nodes = ref_state.n_nodes;
+        state.x0.copy_from(ref_state.x0.clone());
+        state.x.copy_from(ref_state.x.clone());
+        state.u_delta.copy_from(ref_state.u_delta.clone());
+        state.u_prev.copy_from(ref_state.u_prev.clone());
+        state.u.copy_from(ref_state.u.clone());
+        state.v.copy_from(ref_state.v.clone());
+        state.vd.copy_from(ref_state.vd.clone());
+        state.a.copy_from(ref_state.a.clone());
+        state.visco_hist.copy_from(ref_state.visco_hist.clone());
+        state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
+
+        xd[i] = delta;
+
+        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+
+        let tmp = dres_mat_num.col(i) + res_vec*Scale(0.5/delta);
+        dres_mat_num.col_mut(i).copy_from(tmp.clone());
+
+        // Negative side of finite difference
+        let mut state = model.create_state();
+        let mut res_vec = Col::<f64>::zeros(ndof);
+        let mut xd = Col::<f64>::zeros(ndof);
+
+        // Copy all of state from the reference
+        state.n_nodes = ref_state.n_nodes;
+        state.x0.copy_from(ref_state.x0.clone());
+        state.x.copy_from(ref_state.x.clone());
+        state.u_delta.copy_from(ref_state.u_delta.clone());
+        state.u_prev.copy_from(ref_state.u_prev.clone());
+        state.u.copy_from(ref_state.u.clone());
+        state.v.copy_from(ref_state.v.clone());
+        state.vd.copy_from(ref_state.vd.clone());
+        state.a.copy_from(ref_state.a.clone());
+        state.visco_hist.copy_from(ref_state.visco_hist.clone());
+        state.strain_dot_n.copy_from(ref_state.strain_dot_n.clone());
+
+        xd[i] = -delta;
+
+        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+
+        let tmp = dres_mat_num.col(i) - res_vec*Scale(0.5/delta);
+        dres_mat_num.col_mut(i).copy_from(tmp);
+
+    }
+
+    let grad_diff = dres_mat.clone() - dres_mat_num.clone();
+
+    // println!("Analytical: {:?}", dres_mat);
+    // println!("Numerical: {:?}", dres_mat_num);
+
+    println!("Grad diff norm: {:?}", grad_diff.norm_l2());
+    println!("Grad (analytical) norm: {:?}", dres_mat.norm_l2());
+    println!("Norm ratio (diff/analytical): {:?}", grad_diff.norm_l2() / dres_mat.norm_l2());
+
+    assert!(grad_diff.norm_l2() / dres_mat.norm_l2() < 1e-10);
+
+}
+
+
+#[test]
 #[ignore]
 fn test_rigid_platform() {
     let time_step: f64 = 0.01;
