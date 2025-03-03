@@ -401,13 +401,15 @@ impl Beams {
         // Update the viscoelastic history variables
         self.elem_index.iter().for_each(|ei| match &ei.damping {
             Damping::Viscoelastic(_, tau_i) => {
-                update_viscoelastic(
-                    state.visco_hist.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
-                    state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps), //time n+1
-                    h,
-                    tau_i.as_col_ref()
-                );
+                tau_i.iter().enumerate().for_each(|(index, tau_i_curr)|{
+                    update_viscoelastic(
+                        state.visco_hist.subcols_mut(ei.i_qp_start, ei.n_qps).subrows_mut(6*index, 6),
+                        strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
+                        state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps), //time n+1
+                        h,
+                        *tau_i_curr,
+                    );
+                });
             }
             _ => (),
         });
@@ -436,7 +438,7 @@ impl Beams {
         self.qp.calc(self.gravity.as_ref());
 
         let mut strain_dot_local = Mat::zeros(6,
-            state.visco_hist.shape().1);
+            state.strain_dot_n.shape().1);
 
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
@@ -1000,12 +1002,12 @@ pub fn calculate_mu_damping(
 
 
 pub fn calculate_viscoelastic_force(
-    kv_i: MatRef<f64>,
+    kv_i: MatRef<f64>, //[36][n_prony]
     tau_i: ColRef<f64>,
     rr0: MatRef<f64>,
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
-    visco_hist: MatRef<f64>,
+    visco_hist: MatRef<f64>, //[6*n_prony][n_qps in elem]
     h : f64,
     e1_tilde: MatRef<f64>,
     v: MatRef<f64>,
@@ -1013,58 +1015,108 @@ pub fn calculate_viscoelastic_force(
     mut mu_cuu: MatMut<f64>,
     mut fd_c: MatMut<f64>,
     mut fd_d: MatMut<f64>,
-    sd: MatMut<f64>,
-    pd: MatMut<f64>,
-    od: MatMut<f64>,
-    qd: MatMut<f64>,
-    gd: MatMut<f64>,
-    xd: MatMut<f64>,
-    yd: MatMut<f64>,
+    mut sd: MatMut<f64>,
+    mut pd: MatMut<f64>,
+    mut od: MatMut<f64>,
+    mut qd: MatMut<f64>,
+    mut gd: MatMut<f64>,
+    mut xd: MatMut<f64>,
+    mut yd: MatMut<f64>,
 ) {
 
-    // Quadrature viscoelastic forces saved into fd_c
-    calc_fd_c_viscoelastic(fd_c.as_mut(), h, kv_i, tau_i, rr0,
-                            strain_dot_n,
-                            strain_dot_n1,
-                            visco_hist);
+    // fill everything with zeros
+    mu_cuu.fill_zero();
+    fd_c.fill_zero();
+    fd_d.fill_zero();
+    sd.fill_zero();
+    pd.fill_zero();
+    od.fill_zero();
+    qd.fill_zero();
+    gd.fill_zero();
+    xd.fill_zero();
+    yd.fill_zero();
 
-    // Additional components similar to fd_d
-    calc_fd_d(fd_d.as_mut(), fd_c.as_ref(), e1_tilde);
-
-    // copy kv_i needs to be reshaped to match formatting
+    // copy kv_i needs to be reshaped to match formatting of mu_cuu
     let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
 
-    flat_kvi.col_iter_mut().for_each(
-        |col_kvi| {
-            let mut mat_kvi = col_kvi.as_mat_mut(6,6);
-            mat_kvi.copy_from((Scale(h/2.)*kv_i).as_mat_ref());
-        }
-    );
+    izip!(
+        kv_i.col_iter().enumerate(),
+        tau_i.iter()
+    )
+    .for_each(|((index,kvi_col), tau_i_curr)| {
 
-    // Gradient of global forces w.r.t. global strain rate at n+1
-    // saved into mu_cuu
-    calc_inertial_matrix(
-        mu_cuu.as_mut(),
-        flat_kvi.as_mat_ref(),
-        rr0
-    );
+        let kvi_mat = kvi_col.as_mat_ref(6, 6);
+
+        let mut mu_cuu_tmp: Mat<f64> = faer::Mat::zeros(mu_cuu.shape().0, mu_cuu.shape().1);
+        let mut fd_c_tmp: Mat<f64> = faer::Mat::zeros(fd_c.shape().0, fd_c.shape().1);
+        let mut fd_d_tmp: Mat<f64> = faer::Mat::zeros(fd_d.shape().0, fd_d.shape().1);
+        let mut sd_tmp: Mat<f64> = faer::Mat::zeros(sd.shape().0, sd.shape().1);
+        let mut pd_tmp: Mat<f64> = faer::Mat::zeros(pd.shape().0, pd.shape().1);
+        let mut od_tmp: Mat<f64> = faer::Mat::zeros(od.shape().0, od.shape().1);
+        let mut qd_tmp: Mat<f64> = faer::Mat::zeros(qd.shape().0, qd.shape().1);
+        let mut gd_tmp: Mat<f64> = faer::Mat::zeros(gd.shape().0, gd.shape().1);
+        let mut xd_tmp: Mat<f64> = faer::Mat::zeros(xd.shape().0, xd.shape().1);
+        let mut yd_tmp: Mat<f64> = faer::Mat::zeros(yd.shape().0, yd.shape().1);
+        let mut flat_kvi_tmp: Mat<f64> = faer::Mat::zeros(flat_kvi.shape().0, flat_kvi.shape().1);
+
+        // Quadrature viscoelastic forces saved into fd_c
+        calc_fd_c_viscoelastic(fd_c_tmp.as_mut(), h,
+                                kvi_mat,
+                                *tau_i_curr,
+                                rr0,
+                                strain_dot_n,
+                                strain_dot_n1,
+                                visco_hist.subrows(6*index, 6));
+
+        // Additional components similar to fd_d
+        calc_fd_d(fd_d_tmp.as_mut(), fd_c_tmp.as_ref(), e1_tilde);
 
 
-    calc_sd_pd_od_qd_gd_xd_yd(
-        sd,
-        pd,
-        od,
-        qd,
-        gd,
-        xd,
-        yd,
-        mu_cuu.as_ref(),
-        v_prime.subrows(0, 3),
-        v.subrows(3, 3),
-        fd_c.as_ref(),
-        e1_tilde,
-    );
+        flat_kvi_tmp.col_iter_mut().for_each(
+            |col_kvi| {
+                let mut mat_kvi_grad = col_kvi.as_mat_mut(6,6);
+                mat_kvi_grad.copy_from((Scale(h/2.)*kvi_mat).as_mat_ref());
+            }
+        );
 
+        // Gradient of global forces w.r.t. global strain rate at n+1
+        // saved into mu_cuu
+        calc_inertial_matrix(
+            mu_cuu_tmp.as_mut(),
+            flat_kvi_tmp.as_mat_ref(),
+            rr0
+        );
+
+        calc_sd_pd_od_qd_gd_xd_yd(
+            sd_tmp.as_mut(),
+            pd_tmp.as_mut(),
+            od_tmp.as_mut(),
+            qd_tmp.as_mut(),
+            gd_tmp.as_mut(),
+            xd_tmp.as_mut(),
+            yd_tmp.as_mut(),
+            mu_cuu_tmp.as_ref(),
+            v_prime.subrows(0, 3),
+            v.subrows(3, 3),
+            fd_c_tmp.as_ref(),
+            e1_tilde,
+        );
+
+        fd_c += fd_c_tmp;
+        fd_d += fd_d_tmp;
+
+        flat_kvi += flat_kvi_tmp;
+        mu_cuu += mu_cuu_tmp;
+
+        sd += sd_tmp;
+        pd += pd_tmp;
+        od += od_tmp;
+        qd += qd_tmp;
+        gd += gd_tmp;
+        xd += xd_tmp;
+        yd += yd_tmp;
+
+    });
 }
 
 #[inline]

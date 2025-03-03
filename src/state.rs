@@ -22,8 +22,8 @@ pub struct State {
     /// Acceleration `[6][n_nodes]`
     pub vd: Mat<f64>,
     /// Algorithmic acceleration `[6][n_nodes]`
-    a: Mat<f64>,
-    /// Viscoelastic history states `[6][n_quadrature]`
+    pub a: Mat<f64>,
+    /// Viscoelastic history states `[6*n_terms][n_quadrature]`
     pub visco_hist: Mat<f64>,
     /// Viscoelastic history states contributions from
     /// time n in the step to time n+1 `[6][n_quadrature]`
@@ -32,7 +32,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(nodes: &[Node], nqp : usize) -> Self {
+    pub fn new(nodes: &[Node], nqp : usize, n_prony : usize) -> Self {
         let n_nodes = nodes.len();
         let mut state = Self {
             n_nodes,
@@ -44,7 +44,7 @@ impl State {
             v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
             a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
-            visco_hist: Mat::zeros(6, nqp),
+            visco_hist: Mat::zeros(6*n_prony, nqp),
             strain_dot_n: Mat::zeros(6, nqp),
         };
         state.calc_displacement(0.);
@@ -79,7 +79,7 @@ impl State {
                 q_delta
                     .as_mut()
                     .quat_from_rotation_vector(h_rv_delta.as_ref());
-                q.quat_compose(q_delta.as_ref(), q_prev);
+                q.quat_compose(q_delta.as_ref(), q_prev); // This should be reverse of reference paper.
             },
         );
     }
@@ -125,6 +125,7 @@ impl State {
         );
 
         self.calc_displacement(h);
+        self.calculate_x();
     }
 
     /// Update state prediction from iteration increment
@@ -144,6 +145,7 @@ impl State {
         );
 
         self.calc_displacement(h);
+        self.calculate_x();
     }
 
     /// Calculate algorithmic acceleration for next step

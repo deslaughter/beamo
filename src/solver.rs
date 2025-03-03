@@ -1,4 +1,5 @@
 use std::ops::Div;
+use crate::util::Quat;
 
 use faer::{
     linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism, MatMut, ColRef, ColMut
@@ -10,7 +11,7 @@ use crate::{
     elements::Elements,
     node::{ActiveDOFs, NodeFreedomMap},
     state::State,
-    util::vec_tilde,
+    util::{quat_as_matrix, vec_tilde},
 };
 
 pub struct StepParameters {
@@ -119,7 +120,6 @@ impl Solver {
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)
         self.elements.beams.calculate_strain_dot(state);
-        println!("TODO : Verify this above calculation is consistent with end of previous step.");
 
         state.predict_next_state(
             self.p.h,
@@ -346,8 +346,6 @@ impl Solver {
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)
         self.elements.beams.calculate_strain_dot(state);
-        println!("TODO : Verify this above calculation is consistent with end of previous step.");
-
 
         state.predict_next_state(
             self.p.h,
@@ -606,9 +604,10 @@ impl Solver {
         let mut tan = Mat::<f64>::zeros(3, 3);
         izip!(
             state.u_delta.subrows(3, 3).col_iter(),
+            state.x.subrows(3,4).col_iter(),
             self.nfm.node_dofs.iter()
         )
-        .for_each(|(r_delta, dofs)| {
+        .for_each(|(r_delta, quat, dofs)| {
             match dofs.active {
                 ActiveDOFs::All | ActiveDOFs::Rotation => {
                     // Multiply r_delta by h
@@ -640,7 +639,27 @@ impl Solver {
                     matmul(tan.as_mut(), &mt, &mt, Some(1.), a, Parallelism::None);
                     zipped!(&mut tan, &mt).for_each(|unzipped!(t, mt)| *t += *mt * b);
 
-                    self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan);
+                    // // ------- Rotation from x[4:] for time n+1
+                    // // This does not work correctly, here for testing
+                    // let mut r_mat = Mat::<f64>::zeros(3,3);
+                    // quat_as_matrix(quat, r_mat.as_mut());
+                    // self.t.submatrix_mut(i, i, 3, 3).copy_from(r_mat * &tan);
+
+                    // // ------- Rotation from from just the increment
+                    // // This gives the same error values in gradient as using T transpose.
+                    // let mut q_delta = Col::<f64>::zeros(4);
+                    // let mut r_mat = Mat::<f64>::zeros(3,3);
+                    // println!("Using R*T");
+                    // q_delta
+                    //     .as_mut()
+                    //     .quat_from_rotation_vector((r_delta * self.p.h).as_ref());
+                    // quat_as_matrix(q_delta.as_ref(), r_mat.as_mut());
+                    // self.t.submatrix_mut(i, i, 3, 3).copy_from(r_mat * &tan);
+                    // println!("norm(RT - T^T)/norm(T): {:}", (r_mat * &tan - &tan.transpose()).norm_l2()/&tan.norm_l2());
+
+                    // ------- Transpose or no Tranpose cases (use a single line)
+                    self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan.transpose());
+                    // self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan); // Original code, this is wrong.
                 }
                 _ => {}
             };
