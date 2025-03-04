@@ -1,8 +1,9 @@
-use std::ops::Div;
 use crate::util::Quat;
+use std::ops::Div;
 
 use faer::{
-    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, Mat, Parallelism, MatMut, ColRef, ColMut
+    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, ColMut, ColRef, Mat,
+    MatMut, Parallelism,
 };
 use itertools::izip;
 
@@ -15,21 +16,29 @@ use crate::{
 };
 
 pub struct StepParameters {
-    h: f64, // time step
-    alpha_f: f64,
-    alpha_m: f64,
-    beta: f64,
-    gamma: f64,
-    beta_prime: f64,
-    gamma_prime: f64,
-    max_iter: usize,
-    conditioner: f64,
-    abs_tol: f64,
-    rel_tol: f64,
+    pub h: f64, // time step
+    pub alpha_f: f64,
+    pub alpha_m: f64,
+    pub beta: f64,
+    pub gamma: f64,
+    pub beta_prime: f64,
+    pub gamma_prime: f64,
+    pub max_iter: usize,
+    pub conditioner: f64,
+    pub abs_tol: f64,
+    pub rel_tol: f64,
+    pub is_static: bool,
 }
 
 impl StepParameters {
-    pub fn new(h: f64, rho_inf: f64, atol: f64, rtol: f64, max_iter: usize) -> Self {
+    pub fn new(
+        h: f64,
+        rho_inf: f64,
+        atol: f64,
+        rtol: f64,
+        max_iter: usize,
+        is_static: bool,
+    ) -> Self {
         let alpha_m = (2. * rho_inf - 1.) / (rho_inf + 1.);
         let alpha_f = rho_inf / (rho_inf + 1.);
         let gamma = 0.5 + alpha_f - alpha_m;
@@ -46,6 +55,7 @@ impl StepParameters {
             conditioner: beta * h * h,
             abs_tol: atol,
             rel_tol: rtol,
+            is_static,
         }
     }
 }
@@ -116,7 +126,6 @@ impl Solver {
     }
 
     pub fn step(&mut self, state: &mut State) -> StepResults {
-
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)
         self.elements.beams.calculate_strain_dot(state);
@@ -181,17 +190,28 @@ impl Solver {
 
             // Assemble system matrix
             let mut st_11 = self.st.submatrix_mut(0, 0, self.n_system, self.n_system);
-            zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
-                *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
-            });
-            matmul(
-                st_11,
-                self.kt.as_ref(),
-                self.t.as_ref(),
-                Some(1.),
-                1.,
-                faer::Parallelism::None,
-            );
+            if self.p.is_static {
+                matmul(
+                    st_11,
+                    self.kt.as_ref(),
+                    self.t.as_ref(),
+                    None,
+                    1.,
+                    faer::Parallelism::None,
+                );
+            } else {
+                zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
+                    *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
+                });
+                matmul(
+                    st_11,
+                    self.kt.as_ref(),
+                    self.t.as_ref(),
+                    Some(1.),
+                    1.,
+                    faer::Parallelism::None,
+                );
+            }
 
             // Assemble constraints
             let st_21 = self
@@ -201,7 +221,7 @@ impl Solver {
             let mut st_12 = self
                 .st
                 .submatrix_mut(0, self.n_system, self.n_system, self.n_lambda);
-            zipped!(&mut st_12, &self.b.transpose()).for_each(|unzipped!(st, bt)| *st = *bt);
+            st_12.copy_from(self.b.transpose());
             self.st
                 .submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_lambda)
                 .fill_zero();
@@ -226,6 +246,9 @@ impl Solver {
                 .subrows_mut(self.n_system, self.n_lambda)
                 .copy_from(&self.phi);
 
+            // println!("rhs = {:?}", self.rhs);
+            // println!("st = {:?}", self.st.submatrix(0, 0, 6, 6));
+
             // Condition residual
             zipped!(&mut self.rhs.subrows_mut(0, self.n_system))
                 .for_each(|unzipped!(v)| *v *= self.p.conditioner);
@@ -236,10 +259,15 @@ impl Solver {
             zipped!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
                 .for_each(|unzipped!(v)| *v /= self.p.conditioner);
 
+            // println!("rhs = {:?}", self.rhs);
+            // println!("st_c = {:?}", st_c.submatrix(0, 0, 6, 6));
+
             // Solve system
             let lu = st_c.partial_piv_lu();
             let x = lu.solve(&self.rhs);
             self.x.copy_from(&x);
+
+            // println!("x = {:?}", self.x);
 
             // De-condition solution vector
             zipped!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
@@ -293,12 +321,16 @@ impl Solver {
             //------------------------------------------------------------------
 
             // Update state prediction
-            state.update_prediction(
-                self.p.h,
-                self.p.beta_prime,
-                self.p.gamma_prime,
-                self.x_delta.as_ref(),
-            );
+            if self.p.is_static {
+                state.update_static_prediction(self.p.h, self.x_delta.as_ref());
+            } else {
+                state.update_dynamic_prediction(
+                    self.p.h,
+                    self.p.beta_prime,
+                    self.p.gamma_prime,
+                    self.x_delta.as_ref(),
+                );
+            }
 
             // Update lambda
             zipped!(
@@ -312,7 +344,7 @@ impl Solver {
                 return res;
             }
 
-            println!("Error: {} (iter {})", res.err, res.iter);
+            // println!("Error: {} (iter {})", res.err, res.iter);
 
             // Increment iteration count
             res.iter += 1;
@@ -320,7 +352,9 @@ impl Solver {
 
         // Converged, update algorithmic acceleration
         state.update_algorithmic_acceleration(self.p.alpha_m, self.p.alpha_f);
-        self.elements.beams.update_viscoelastic_history(state, self.p.h);
+        self.elements
+            .beams
+            .update_viscoelastic_history(state, self.p.h);
         res.converged = true;
         res
     }
@@ -328,13 +362,13 @@ impl Solver {
     // Function to calculate the residual and gradient for a solver step
     // Does not actually do an update
     // state does get modified
-    pub fn step_res_grad(&mut self,
-                        state: &mut State,
-                        xd: ColRef<f64>,
-                        mut res_vec: ColMut<f64>,
-                        mut dres_mat: MatMut<f64>,) -> StepResults {
-
-
+    pub fn step_res_grad(
+        &mut self,
+        state: &mut State,
+        xd: ColRef<f64>,
+        mut res_vec: ColMut<f64>,
+        mut dres_mat: MatMut<f64>,
+    ) -> StepResults {
         //------------------------------------------------------------------
         // Setup Solution Point like step
         //------------------------------------------------------------------
@@ -354,7 +388,6 @@ impl Solver {
             self.p.alpha_m,
             self.p.alpha_f,
         );
-
 
         //------------------------------------------------------------------
         // Perturb Solution Point (Same as update in self.step)
@@ -378,7 +411,7 @@ impl Solver {
                 };
             });
 
-        state.update_prediction(
+        state.update_dynamic_prediction(
             self.p.h,
             self.p.beta_prime,
             self.p.gamma_prime,
@@ -436,12 +469,8 @@ impl Solver {
         );
 
         // Calculate constraints
-        self.constraints.assemble_constraints(
-            &self.nfm,
-            state,
-            self.phi.as_mut(),
-            self.b.as_mut(),
-        );
+        self.constraints
+            .assemble_constraints(&self.nfm, state, self.phi.as_mut(), self.b.as_mut());
 
         // Calculate tangent matrix
         self.populate_tangent_matrix(state);
@@ -604,7 +633,7 @@ impl Solver {
         let mut tan = Mat::<f64>::zeros(3, 3);
         izip!(
             state.u_delta.subrows(3, 3).col_iter(),
-            state.x.subrows(3,4).col_iter(),
+            state.x.subrows(3, 4).col_iter(),
             self.nfm.node_dofs.iter()
         )
         .for_each(|(r_delta, quat, dofs)| {

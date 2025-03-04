@@ -16,6 +16,7 @@ pub struct Model {
     h: f64,
     rho_inf: f64,
     max_iter: usize,
+    is_static: bool,
     solver_abs_tol: f64,
     solver_rel_tol: f64,
     pub nodes: Vec<Node>,
@@ -33,6 +34,7 @@ impl Model {
             h: 0.01,
             rho_inf: 1.,
             max_iter: 6,
+            is_static: false,
             solver_abs_tol: 1e-5,
             solver_rel_tol: 1e-3,
             nodes: vec![],
@@ -66,6 +68,14 @@ impl Model {
         self.max_iter = max_iter;
     }
 
+    pub fn set_dynamic_solve(&mut self) {
+        self.is_static = false;
+    }
+
+    pub fn set_static_solve(&mut self) {
+        self.is_static = true;
+    }
+
     /// Create solver
     pub fn create_solver(&self) -> Solver {
         let nfm = self.create_node_freedom_map();
@@ -77,6 +87,7 @@ impl Model {
             self.solver_abs_tol,
             self.solver_rel_tol,
             self.max_iter,
+            self.is_static,
         );
         Solver::new(step_parameters, nfm, elements, constraints)
     }
@@ -115,13 +126,12 @@ impl Model {
 
     /// Creates and returns state object
     pub fn create_state(&self) -> State {
-
         // calculate number of quadrature points
         let mut nqp = 0;
 
-        self.beam_elements.iter().for_each(
-            |elem|
-            nqp += elem.quadrature.points.len());
+        self.beam_elements
+            .iter()
+            .for_each(|elem| nqp += elem.quadrature.points.len());
 
         let mut n_prony = 1;
 

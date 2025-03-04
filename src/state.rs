@@ -32,7 +32,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(nodes: &[Node], nqp : usize, n_prony : usize) -> Self {
+    pub fn new(nodes: &[Node], nqp: usize, n_prony: usize) -> Self {
         let n_nodes = nodes.len();
         let mut state = Self {
             n_nodes,
@@ -44,7 +44,7 @@ impl State {
             v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
             a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
-            visco_hist: Mat::zeros(6*n_prony, nqp),
+            visco_hist: Mat::zeros(6 * n_prony, nqp),
             strain_dot_n: Mat::zeros(6, nqp),
         };
         state.calc_displacement(0.);
@@ -128,8 +128,8 @@ impl State {
         self.calculate_x();
     }
 
-    /// Update state prediction from iteration increment
-    pub fn update_prediction(
+    /// Update state dynamic prediction from iteration increment
+    pub fn update_dynamic_prediction(
         &mut self,
         h: f64,
         beta_prime: f64,
@@ -143,6 +143,16 @@ impl State {
                 *vd += beta_prime * *x_delta;
             },
         );
+
+        self.calc_displacement(h);
+        self.calculate_x();
+    }
+
+    /// Update state static prediction from iteration increment
+    pub fn update_static_prediction(&mut self, h: f64, x_delta: MatRef<f64>) {
+        zipped!(&mut self.u_delta, &x_delta).for_each(|unzipped!(q_delta, x_delta)| {
+            *q_delta += *x_delta / h;
+        });
 
         self.calc_displacement(h);
         self.calculate_x();
