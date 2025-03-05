@@ -1,5 +1,7 @@
-use crate::node::Node;
-use crate::util::Quat;
+use crate::{
+    node::Node,
+    util::{quat_compose, quat_from_rotation_vector},
+};
 use faer::{unzipped, zipped, Col, Mat, MatRef};
 use itertools::izip;
 
@@ -73,13 +75,11 @@ impl State {
         let mut q_delta = Col::<f64>::zeros(4);
         let mut h_rv_delta = Col::<f64>::zeros(3);
         izip!(r_prev.col_iter(), rv_delta.col_iter(), r.col_iter_mut()).for_each(
-            |(q_prev, rv_delta, mut q)| {
+            |(q_prev, rv_delta, q)| {
                 zipped!(&mut h_rv_delta, &rv_delta)
                     .for_each(|unzipped!(h_rv_delta, rv_delta)| *h_rv_delta = *rv_delta * h);
-                q_delta
-                    .as_mut()
-                    .quat_from_rotation_vector(h_rv_delta.as_ref());
-                q.quat_compose(q_delta.as_ref(), q_prev); // This should be reverse of reference paper.
+                quat_from_rotation_vector(h_rv_delta.as_ref(), q_delta.as_mut());
+                quat_compose(q_delta.as_ref(), q_prev, q); // This should be reverse of reference paper.
             },
         );
     }
@@ -101,7 +101,7 @@ impl State {
 
         // Calculate current rotation
         izip!(x0_r.col_iter(), q_r.col_iter(), x_r.col_iter_mut())
-            .for_each(|(x0, q, mut x)| x.quat_compose(q, x0));
+            .for_each(|(x0, q, x)| quat_compose(q, x0, x));
     }
 
     /// Calculate state prediction at end of next time step
@@ -168,17 +168,15 @@ impl State {
 mod tests {
 
     use super::*;
-    use crate::model::Model;
+    use crate::{model::Model, util::quat_from_axis_angle};
     use faer::{assert_matrix_eq, col, mat};
     use std::f64::consts::PI;
 
     fn create_state() -> State {
         let mut q1: Col<f64> = Col::zeros(4);
         let mut q2: Col<f64> = Col::zeros(4);
-        q1.as_mut()
-            .quat_from_axis_angle(90. * PI / 180., col![1., 0., 0.].as_ref());
-        q2.as_mut()
-            .quat_from_axis_angle(45. * PI / 180., col![0., 1., 0.].as_ref());
+        quat_from_axis_angle(90. * PI / 180., col![1., 0., 0.].as_ref(), q1.as_mut());
+        quat_from_axis_angle(45. * PI / 180., col![0., 1., 0.].as_ref(), q2.as_mut());
         let mut model = Model::new();
         model
             .add_node()

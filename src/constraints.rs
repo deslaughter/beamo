@@ -6,9 +6,9 @@ use itertools::Itertools;
 use crate::{
     node::NodeFreedomMap,
     state::State,
-    util::vec_tilde,
     util::{
-        axial_vector_of_matrix, matrix_ax, quat_as_matrix, quat_inverse, quat_rotate_vector, Quat,
+        axial_vector_of_matrix, matrix_ax, quat_as_matrix, quat_compose, quat_from_rotation_vector,
+        quat_inverse, quat_rotate_vector, vec_tilde,
     },
 };
 
@@ -158,8 +158,7 @@ impl Constraint {
 
     pub fn set_displacement(&mut self, x: f64, y: f64, z: f64, rx: f64, ry: f64, rz: f64) {
         let mut q = col![0., 0., 0., 0.];
-        q.as_mut()
-            .quat_from_rotation_vector(col![rx, ry, rz].as_ref());
+        quat_from_rotation_vector(col![rx, ry, rz].as_ref(), q.as_mut());
         self.u_prescribed[0] = x;
         self.u_prescribed[1] = y;
         self.u_prescribed[2] = z;
@@ -184,9 +183,11 @@ impl Constraint {
 
         // Angular residual:  Phi(3:6) = axial(R2*inv(R1))
         quat_inverse(r_base, self.rbinv.as_mut());
-        self.rt_rbinv
-            .as_mut()
-            .quat_compose(r_target.as_ref(), self.rbinv.as_ref());
+        quat_compose(
+            r_target.as_ref(),
+            self.rbinv.as_ref(),
+            self.rt_rbinv.as_mut(),
+        );
         quat_as_matrix(self.rt_rbinv.as_ref(), self.c.as_mut());
         axial_vector_of_matrix(self.c.as_ref(), self.phi.subrows_mut(3, 3));
 
@@ -220,9 +221,7 @@ impl Constraint {
         // Angular residual:  Phi(3:6) = axial(R2*inv(rb))
         if self.n_dofs == 6 {
             quat_inverse(r_base, self.rbinv.as_mut());
-            self.rt_rbinv
-                .as_mut()
-                .quat_compose(r_target, self.rbinv.as_ref());
+            quat_compose(r_target, self.rbinv.as_ref(), self.rt_rbinv.as_mut());
             quat_as_matrix(self.rt_rbinv.as_ref(), self.c.as_mut());
             axial_vector_of_matrix(self.c.as_ref(), self.phi.subrows_mut(3, 3));
         }

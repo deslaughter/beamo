@@ -9,7 +9,7 @@ use crate::{
     interp::{gauss_legendre_lobotto_points, shape_deriv_matrix, shape_interp_matrix},
     model::Model,
     quadrature::Quadrature,
-    util::{quat_as_matrix, Quat},
+    util::{quat_as_matrix, quat_from_rotation_vector, quat_from_tangent_twist},
 };
 
 pub fn add_beamdyn_blade(
@@ -79,7 +79,7 @@ pub fn add_beamdyn_blade(
         .map(|(&si, nd, deriv)| {
             let twist = nd[3];
             let tan = deriv.transpose() / deriv.norm_l2();
-            q.as_mut().quat_from_tangent_twist(tan.as_ref(), twist); // Calculate twist about tangent
+            quat_from_tangent_twist(tan.as_ref(), twist, q.as_mut()); // Calculate twist about tangent
             model
                 .add_node()
                 .element_location(si)
@@ -147,9 +147,7 @@ pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
 pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
     let mut m = Mat::<f64>::zeros(3, 3);
     let mut q_rot = col![0., 0., 0., 0.];
-    q_rot
-        .as_mut()
-        .quat_from_rotation_vector(col![0., -PI / 2., 0.].as_ref());
+    quat_from_rotation_vector(col![0., -PI / 2., 0.].as_ref(), q_rot.as_mut());
     quat_as_matrix(q_rot.as_ref(), m.as_mut());
     let mut m_rot = Mat::<f64>::zeros(6, 6);
     m_rot.submatrix_mut(0, 0, 3, 3).copy_from(&m);

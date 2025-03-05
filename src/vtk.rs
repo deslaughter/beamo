@@ -5,7 +5,7 @@ use vtkio::model::*;
 use crate::{
     elements::{beams::Beams, springs::Springs},
     state::State,
-    util::{quat_as_matrix, Quat},
+    util::{quat_as_matrix, quat_compose},
 };
 
 // Currently assumes there is one beam element
@@ -17,7 +17,7 @@ pub fn beams_nodes_as_vtk(beams: &Beams) -> Vtk {
     )
     .map(|(r, r0)| {
         let mut q = Col::<f64>::zeros(4);
-        q.as_mut().quat_compose(r, r0);
+        quat_compose(r, r0, q.as_mut());
         let mut m = Mat::<f64>::zeros(3, 3);
         quat_as_matrix(q.as_ref(), m.as_mut());
         m
@@ -105,7 +105,7 @@ pub fn beams_qps_as_vtk(beams: &Beams) -> Vtk {
     )
     .map(|(r, r0)| {
         let mut q = Col::<f64>::zeros(4);
-        q.as_mut().quat_compose(r, r0);
+        quat_compose(r, r0, q.as_mut());
         let mut m = Mat::<f64>::zeros(3, 3);
         quat_as_matrix(q.as_ref(), m.as_mut());
         m

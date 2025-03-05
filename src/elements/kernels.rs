@@ -1,10 +1,13 @@
 use faer::{
-    col::{AsColMut, AsColRef}, linalg::matmul::matmul, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale
+    col::{AsColMut, AsColRef},
+    linalg::matmul::matmul,
+    unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale,
 };
 use itertools::izip;
 
 use crate::util::{
-    quat_as_matrix, quat_derivative, quat_rotate_vector, vec_tilde, ColAsMatMut, ColAsMatRef, Quat,
+    quat_as_matrix, quat_compose, quat_derivative, quat_rotate_vector, vec_tilde, ColAsMatMut,
+    ColAsMatRef,
 };
 
 #[inline]
@@ -14,8 +17,7 @@ pub fn calc_x(x: MatMut<f64>, x0: MatRef<f64>, u: MatRef<f64>) {
         x[0] = x0[0] + u[0];
         x[1] = x0[1] + u[1];
         x[2] = x0[2] + u[2];
-        x.subrows_mut(3, 4)
-            .quat_compose(u.subrows(3, 4), x0.subrows(3, 4));
+        quat_compose(u.subrows(3, 4), x0.subrows(3, 4), x.subrows_mut(3, 4));
     });
 }
 
@@ -64,7 +66,7 @@ pub fn rotate_col_to_sectional(col_star: MatMut<f64>, col: MatRef<f64>, rr0: Mat
                 col_col.as_col_ref(),
                 None,
                 1.,
-                Parallelism::None
+                Parallelism::None,
             );
         },
     );
@@ -626,11 +628,10 @@ pub fn calc_fd_d(fd_d: MatMut<f64>, fd_c: MatRef<f64>, e1_tilde: MatRef<f64>) {
     );
 }
 
-
 /// Calculate viscoelastic forces into fd_c
 pub fn calc_fd_c_viscoelastic(
     fd_c: MatMut<f64>,
-    h : f64,
+    h: f64,
     kv_i: MatRef<f64>,
     tau_i: f64,
     rr0: MatRef<f64>,
@@ -648,15 +649,9 @@ pub fn calc_fd_c_viscoelastic(
         strain_dot_n1.col_iter(),
         visco_hist.col_iter(),
     )
-    .for_each(|(fd_c,
-        rr0_col,
-        sd_n,
-        sd_n1,
-        visc_col)| {
-
-        let visco_curr = Scale(tmp.exp()) * visc_col
-            + Scale(h/2. * tmp.exp()) * sd_n
-            + Scale(h/2.) * sd_n1;
+    .for_each(|(fd_c, rr0_col, sd_n, sd_n1, visc_col)| {
+        let visco_curr =
+            Scale(tmp.exp()) * visc_col + Scale(h / 2. * tmp.exp()) * sd_n + Scale(h / 2.) * sd_n1;
 
         let mut fd_tmp = Col::<f64>::zeros(6);
 
@@ -673,25 +668,16 @@ pub fn calc_fd_c_viscoelastic(
         let rr0 = rr0_col.as_mat_ref(6, 6);
 
         // global force at quadrature point
-        matmul(
-            fd_c,
-            rr0,
-            fd_tmp.as_ref(),
-            None,
-            1.,
-            Parallelism::None,
-        );
+        matmul(fd_c, rr0, fd_tmp.as_ref(), None, 1., Parallelism::None);
     });
-
 }
-
 
 /// Calculate viscoelastic forces into fd_c
 pub fn update_viscoelastic(
     visco_hist: MatMut<f64>,
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
-    h : f64,
+    h: f64,
     tau_i: f64,
 ) {
     // Viscoelastic history decay
@@ -702,18 +688,13 @@ pub fn update_viscoelastic(
         strain_dot_n.col_iter(),
         strain_dot_n1.col_iter(),
     )
-    .for_each(|(mut hist,
-        sd_n,
-        sd_n1)| {
-
+    .for_each(|(mut hist, sd_n, sd_n1)| {
         // Decay previous history
         hist *= Scale(tmp.exp());
 
         // Add history from this time step
-        hist += Scale(h/2. * tmp.exp()) * sd_n + Scale(h/2.) * sd_n1;
-
+        hist += Scale(h / 2. * tmp.exp()) * sd_n + Scale(h / 2.) * sd_n1;
     });
-
 }
 
 #[inline]
@@ -941,7 +922,6 @@ pub fn calc_sd_pd_od_qd_gd_xd_yd(
                 -1.,
                 Parallelism::None,
             );
-
 
             // Od - stiffness matrix
             vec_tilde(u_dot_prime, alpha.as_mut());

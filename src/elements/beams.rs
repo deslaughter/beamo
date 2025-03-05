@@ -6,18 +6,18 @@ use crate::node::{Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
 use crate::state::State;
 use crate::util::{ColAsMatMut, ColAsMatRef};
+use faer::col::AsColRef;
 use faer::linalg::matmul::matmul;
 use faer::linalg::solvers::Eigendecomposition;
+use faer::mat::AsMatRef;
 use faer::prelude::{c64, SpSolver};
 use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
-use faer::mat::AsMatRef;
-use faer::col::AsColRef;
 use itertools::{izip, multiunzip, Itertools};
 
-
-use super::kernels::{calc_fd_c, calc_fd_d, calc_inertial_matrix,
-    calc_sd_pd_od_qd_gd_xd_yd, calc_fd_c_viscoelastic,
-    rotate_col_to_sectional,update_viscoelastic,};
+use super::kernels::{
+    calc_fd_c, calc_fd_c_viscoelastic, calc_fd_d, calc_inertial_matrix, calc_sd_pd_od_qd_gd_xd_yd,
+    rotate_col_to_sectional, update_viscoelastic,
+};
 
 pub struct BeamElement {
     pub id: usize,
@@ -352,9 +352,8 @@ impl Beams {
         beams
     }
 
-
     /// Calculate strain rate
-    pub fn calculate_strain_dot(&mut self, state: &mut State){
+    pub fn calculate_strain_dot(&mut self, state: &mut State) {
         // Calculate the strain rate at the quadrature points
         // and save the data into state.
         // Calculated strains in the local/sectional frame.
@@ -383,15 +382,13 @@ impl Beams {
             rotate_col_to_sectional(
                 state.strain_dot_n.subcols_mut(ei.i_qp_start, ei.n_qps),
                 self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps)
+                self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
             );
         });
-
     }
 
     /// Update the viscoelastic history variables
-    pub fn update_viscoelastic_history(&mut self, state: &mut State, h: f64){
-
+    pub fn update_viscoelastic_history(&mut self, state: &mut State, h: f64) {
         // strain rate at start of time step
         let strain_dot_n = state.strain_dot_n.clone();
 
@@ -401,9 +398,12 @@ impl Beams {
         // Update the viscoelastic history variables
         self.elem_index.iter().for_each(|ei| match &ei.damping {
             Damping::Viscoelastic(_, tau_i) => {
-                tau_i.iter().enumerate().for_each(|(index, tau_i_curr)|{
+                tau_i.iter().enumerate().for_each(|(index, tau_i_curr)| {
                     update_viscoelastic(
-                        state.visco_hist.subcols_mut(ei.i_qp_start, ei.n_qps).subrows_mut(6*index, 6),
+                        state
+                            .visco_hist
+                            .subcols_mut(ei.i_qp_start, ei.n_qps)
+                            .subrows_mut(6 * index, 6),
                         strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
                         state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps), //time n+1
                         h,
@@ -413,7 +413,6 @@ impl Beams {
             }
             _ => (),
         });
-
     }
 
     /// Calculate element properties``
@@ -437,8 +436,7 @@ impl Beams {
         // Calculate quadrature point values
         self.qp.calc(self.gravity.as_ref());
 
-        let mut strain_dot_local = Mat::zeros(6,
-            state.strain_dot_n.shape().1);
+        let mut strain_dot_local = Mat::zeros(6, state.strain_dot_n.shape().1);
 
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
@@ -463,11 +461,10 @@ impl Beams {
                 );
             }
             Damping::Viscoelastic(kv_i, tau_i) => {
-
                 rotate_col_to_sectional(
                     strain_dot_local.subcols_mut(ei.i_qp_start, ei.n_qps),
                     self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps)
+                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
                 );
 
                 calculate_viscoelastic_force(
@@ -1000,7 +997,6 @@ pub fn calculate_mu_damping(
     )
 }
 
-
 pub fn calculate_viscoelastic_force(
     kv_i: MatRef<f64>, //[36][n_prony]
     tau_i: ColRef<f64>,
@@ -1008,7 +1004,7 @@ pub fn calculate_viscoelastic_force(
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
     visco_hist: MatRef<f64>, //[6*n_prony][n_qps in elem]
-    h : f64,
+    h: f64,
     e1_tilde: MatRef<f64>,
     v: MatRef<f64>,
     v_prime: MatRef<f64>,
@@ -1023,7 +1019,6 @@ pub fn calculate_viscoelastic_force(
     mut xd: MatMut<f64>,
     mut yd: MatMut<f64>,
 ) {
-
     // fill everything with zeros
     mu_cuu.fill_zero();
     fd_c.fill_zero();
@@ -1039,12 +1034,7 @@ pub fn calculate_viscoelastic_force(
     // copy kv_i needs to be reshaped to match formatting of mu_cuu
     let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
 
-    izip!(
-        kv_i.col_iter().enumerate(),
-        tau_i.iter()
-    )
-    .for_each(|((index,kvi_col), tau_i_curr)| {
-
+    izip!(kv_i.col_iter().enumerate(), tau_i.iter()).for_each(|((index, kvi_col), tau_i_curr)| {
         let kvi_mat = kvi_col.as_mat_ref(6, 6);
 
         let mut mu_cuu_tmp: Mat<f64> = faer::Mat::zeros(mu_cuu.shape().0, mu_cuu.shape().1);
@@ -1060,32 +1050,28 @@ pub fn calculate_viscoelastic_force(
         let mut flat_kvi_tmp: Mat<f64> = faer::Mat::zeros(flat_kvi.shape().0, flat_kvi.shape().1);
 
         // Quadrature viscoelastic forces saved into fd_c
-        calc_fd_c_viscoelastic(fd_c_tmp.as_mut(), h,
-                                kvi_mat,
-                                *tau_i_curr,
-                                rr0,
-                                strain_dot_n,
-                                strain_dot_n1,
-                                visco_hist.subrows(6*index, 6));
+        calc_fd_c_viscoelastic(
+            fd_c_tmp.as_mut(),
+            h,
+            kvi_mat,
+            *tau_i_curr,
+            rr0,
+            strain_dot_n,
+            strain_dot_n1,
+            visco_hist.subrows(6 * index, 6),
+        );
 
         // Additional components similar to fd_d
         calc_fd_d(fd_d_tmp.as_mut(), fd_c_tmp.as_ref(), e1_tilde);
 
-
-        flat_kvi_tmp.col_iter_mut().for_each(
-            |col_kvi| {
-                let mut mat_kvi_grad = col_kvi.as_mat_mut(6,6);
-                mat_kvi_grad.copy_from((Scale(h/2.)*kvi_mat).as_mat_ref());
-            }
-        );
+        flat_kvi_tmp.col_iter_mut().for_each(|col_kvi| {
+            let mut mat_kvi_grad = col_kvi.as_mat_mut(6, 6);
+            mat_kvi_grad.copy_from((Scale(h / 2.) * kvi_mat).as_mat_ref());
+        });
 
         // Gradient of global forces w.r.t. global strain rate at n+1
         // saved into mu_cuu
-        calc_inertial_matrix(
-            mu_cuu_tmp.as_mut(),
-            flat_kvi_tmp.as_mat_ref(),
-            rr0
-        );
+        calc_inertial_matrix(mu_cuu_tmp.as_mut(), flat_kvi_tmp.as_mat_ref(), rr0);
 
         calc_sd_pd_od_qd_gd_xd_yd(
             sd_tmp.as_mut(),
@@ -1115,7 +1101,6 @@ pub fn calculate_viscoelastic_force(
         gd += gd_tmp;
         xd += xd_tmp;
         yd += yd_tmp;
-
     });
 }
 
@@ -1291,8 +1276,10 @@ mod tests {
     use super::*;
 
     use crate::{
-        interp::gauss_legendre_lobotto_points, model::Model, quadrature::Quadrature,
-        util::vec_tilde, util::Quat,
+        interp::gauss_legendre_lobotto_points,
+        model::Model,
+        quadrature::Quadrature,
+        util::{quat_compose, quat_from_rotation_matrix, vec_tilde},
     };
     use approx::assert_ulps_eq;
     use faer::{assert_matrix_eq, col, mat};
@@ -2476,7 +2463,7 @@ mod tests {
             .enumerate()
             .map(|(i, &si)| {
                 let mut r = Col::<f64>::zeros(4);
-                r.as_mut().quat_from_rotation_matrix(rot(si).as_ref());
+                quat_from_rotation_matrix(rot(si).as_ref(), r.as_mut());
                 model
                     .add_node()
                     .element_location(si)
@@ -2658,9 +2645,10 @@ mod tests {
 
         let beams = setup_test(h);
         let mut rr0 = Col::<f64>::zeros(4);
-        rr0.as_mut().quat_compose(
+        quat_compose(
             beams.qp.u.col(0).subrows(3, 4),
             beams.qp.x0.col(0).subrows(3, 4),
+            rr0.as_mut(),
         );
         assert_ulps_eq!(rr0.norm_l2(), 1.);
         assert_matrix_eq!(

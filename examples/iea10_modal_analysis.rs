@@ -20,7 +20,10 @@ use ottr::{
     node::NodeFreedomMap,
     quadrature::Quadrature,
     state::State,
-    util::{quat_as_matrix, quat_rotate_vector, Quat},
+    util::{
+        quat_as_matrix, quat_compose, quat_from_axis_angle, quat_from_rotation_vector,
+        quat_rotate_vector,
+    },
 };
 
 fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
@@ -94,7 +97,6 @@ fn main() {
     let mut k = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
     let mut r = Col::<f64>::zeros(nfm.total_dofs);
 
-
     //Only matters for viscoelastic material, but needs to be passed to create_beams
     let h = 0.001;
 
@@ -117,7 +119,7 @@ fn main() {
             .col_iter_mut()
             .zip(u.col_iter())
             .for_each(|(mut us, u)| {
-                q.as_mut().quat_from_rotation_vector(u.subrows(3, 3));
+                quat_from_rotation_vector(u.subrows(3, 3), q.as_mut());
                 us[0] = u[0];
                 us[1] = u[1];
                 us[2] = u[2];
@@ -236,7 +238,6 @@ fn modal_analysis(
     state: &State,
     n_dofs: usize,
 ) -> (Col<f64>, Mat<f64>) {
-
     //Only matters for viscoelastic material, but needs to be passed to create_beams
     let h = 0.001;
 
@@ -385,11 +386,9 @@ fn setup_test() -> Model {
     let s = xi.iter().map(|&xi| (xi + 1.) / 2.).collect_vec();
 
     let mut r = Col::<f64>::zeros(4);
-    r.as_mut()
-        .quat_from_axis_angle(PI / 2., col![0., 1., 0.].as_ref());
+    quat_from_axis_angle(PI / 2., col![0., 1., 0.].as_ref(), r.as_mut());
     let mut ru = Col::<f64>::zeros(4);
-    ru.as_mut()
-        .quat_from_axis_angle(-PI / 2., col![0., 1., 0.].as_ref());
+    quat_from_axis_angle(-PI / 2., col![0., 1., 0.].as_ref(), ru.as_mut());
 
     let mut model = Model::new();
     let node_ids = node_position_raw
@@ -407,7 +406,7 @@ fn setup_test() -> Model {
             let mut rt = col![0., 0., 0.];
             let mut rq = col![0., 0., 0., 0.];
             quat_rotate_vector(ru.as_ref(), pr.as_ref(), rt.as_mut());
-            rq.as_mut().quat_compose(q.as_ref(), ru.as_ref());
+            quat_compose(q.as_ref(), ru.as_ref(), rq.as_mut());
             model
                 .add_node()
                 .element_location(s)

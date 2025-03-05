@@ -16,7 +16,7 @@ use ottr::{
     elements::beams::Damping,
     external::add_beamdyn_blade,
     model::Model,
-    util::{quat_as_rotation_vector, ColAsMatRef, Quat},
+    util::{quat_as_rotation_vector, quat_from_rotation_vector, ColAsMatRef},
     vtk::beams_qps_as_vtk,
 };
 
@@ -253,7 +253,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
 
             izip!(state.u.col_iter_mut(), phi.col_iter()).for_each(|(mut u, phi)| {
                 let phi = phi * Scale(1.);
-                q.as_mut().quat_from_rotation_vector(phi.subrows(3, 3));
+                quat_from_rotation_vector(phi.subrows(3, 3), q.as_mut());
                 u[0] = phi[0];
                 u[1] = phi[1];
                 u[2] = phi[2];
