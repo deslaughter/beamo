@@ -741,15 +741,6 @@ impl Beams {
                 1.,
                 Parallelism::None,
             );
-            u.as_mut()
-                .subrows_mut(3, 4)
-                .col_iter_mut()
-                .for_each(|mut c| {
-                    let m = c.norm_l2();
-                    if m != 0. {
-                        c /= m;
-                    }
-                });
 
             // Displacement derivative
             let mut u_prime = self.qp.u_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
@@ -805,6 +796,22 @@ impl Beams {
         izip!(self.qp.v_prime.col_iter_mut(), self.qp.jacobian.iter()).for_each(
             |(mut col, &jacobian)| zipped!(&mut col).for_each(|unzipped!(col)| *col /= jacobian),
         );
+
+        // Normalize quaternion and quaternion derivative
+        izip!(
+            self.qp.u.subrows_mut(3, 4).col_iter_mut(),
+            self.qp.u_prime.subrows_mut(3, 4).col_iter_mut()
+        )
+        .for_each(|(mut q, mut q_prime)| {
+            let m = q.norm_l2();
+            if m != 0. {
+                q /= m;
+                let a =
+                    (q[0] * q_prime[0] + q[1] * q_prime[1] + q[2] * q_prime[2] + q[3] * q_prime[3])
+                        / m.powi(3);
+                zipped!(&mut q_prime, q).for_each(|unzipped!(qp, q)| *qp = *qp / m - *q * a)
+            }
+        });
     }
 
     #[inline]
