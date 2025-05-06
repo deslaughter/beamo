@@ -372,7 +372,7 @@ impl Solver {
 
         // May need to calculate the displacements before proceeding with strain calculation.
         println!("TODO: Not sure if this is needed here. If needed, add to solver.step as well.");
-        state.calc_displacement(self.p.h);
+        state.calc_step_end(self.p.h);
 
         // Update strain_dot from previous step before
         // predicting (which overrides velocities)

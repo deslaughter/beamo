@@ -15,9 +15,9 @@ pub struct State {
     pub x: Mat<f64>,
     /// Displacement increment `[6][n_nodes]`
     pub u_delta: Mat<f64>,
-    /// Previous state `[7][n_nodes]`
+    /// Previous step displacement `[7][n_nodes]`
     pub u_prev: Mat<f64>,
-    /// Current state `[7][n_nodes]`
+    /// Displacement `[7][n_nodes]`
     pub u: Mat<f64>,
     /// Velocity `[6][n_nodes]`
     pub v: Mat<f64>,
@@ -49,59 +49,59 @@ impl State {
             visco_hist: Mat::zeros(6 * n_prony, nqp),
             strain_dot_n: Mat::zeros(6, nqp),
         };
-        state.calc_displacement(0.);
-        state.calculate_x();
+        state.calc_step_end(0.);
         state
     }
 
     /// Calculate current displacement from previous displacement and displacement increment
-    pub fn calc_displacement(&mut self, h: f64) {
+    pub fn calc_step_end(&mut self, h: f64) {
         // Get translation parts of matrices
-        let mut q_t = self.u.subrows_mut(0, 3);
-        let q_prev_t = self.u_prev.subrows(0, 3);
-        let q_delta_t = self.u_delta.subrows(0, 3);
+        let mut u_np1 = self.u.subrows_mut(0, 3);
+        let u_n = self.u_prev.subrows(0, 3);
+        let u_delta_n = self.u_delta.subrows(0, 3);
+        let mut x_np1 = self.x.subrows_mut(0, 3);
+        let x0 = self.x0.subrows(0, 3);
 
-        // Calculate change in position
-        zipped!(&mut q_t, &q_prev_t, &q_delta_t).for_each(|unzipped!(q, q_prev, q_delta)| {
-            *q = *q_prev + *q_delta * h;
+        // Calculate total displacement at end-of-step
+        zipped!(&mut u_np1, &u_n, &u_delta_n).for_each(|unzipped!(u_np1, u_n, u_delta_n)| {
+            *u_np1 = *u_n + *u_delta_n * h;
+        });
+
+        // Calculate absolute rotation at end-of-step
+        zipped!(&mut x_np1, &x0, &u_np1).for_each(|unzipped!(x, x0, u)| {
+            *x = *x0 + *u;
         });
 
         // Get rotation parts of matrices
-        let r = self.u.subrows_mut(3, 4);
-        let r_prev = self.u_prev.subrows(3, 4);
-        let rv_delta = self.u_delta.subrows(3, 3);
+        let r_np1 = self.u.subrows_mut(3, 4);
+        let r_n = self.u_prev.subrows(3, 4);
+        let ur_delta = self.u_delta.subrows(3, 3);
+        let rr0_np1 = self.x.subrows_mut(3, 4);
+        let r0 = self.x0.subrows(3, 4);
 
         // Calculate change in rotation
-        let mut q_delta = Col::<f64>::zeros(4);
-        let mut h_rv_delta = Col::<f64>::zeros(3);
-        izip!(r_prev.col_iter(), rv_delta.col_iter(), r.col_iter_mut()).for_each(
-            |(q_prev, rv_delta, q)| {
-                zipped!(&mut h_rv_delta, &rv_delta)
-                    .for_each(|unzipped!(h_rv_delta, rv_delta)| *h_rv_delta = *rv_delta * h);
-                quat_from_rotation_vector(h_rv_delta.as_ref(), q_delta.as_mut());
-                quat_compose(q_delta.as_ref(), q_prev, q); // This should be reverse of reference paper.
-            },
-        );
-    }
+        let mut q_delta_np1 = Col::<f64>::zeros(4);
+        let mut r_delta = Col::<f64>::zeros(3);
+        izip!(
+            r_n.col_iter(),
+            r0.col_iter(),
+            ur_delta.col_iter(),
+            r_np1.col_iter_mut(),
+            rr0_np1.col_iter_mut(),
+        )
+        .for_each(|(r_n, r0, ur_delta, mut r_np1, rr0_np1)| {
+            // Get delta rotation vector
+            r_delta.copy_from(&ur_delta * h);
 
-    /// Calculate current position from initial position and displacement
-    pub fn calculate_x(&mut self) {
-        let mut x_t = self.x.subrows_mut(0, 3);
-        let x0_t = self.x0.subrows(0, 3);
-        let q_t = self.u.subrows(0, 3);
+            // Get delta rotation as quaternion
+            quat_from_rotation_vector(r_delta.as_ref(), q_delta_np1.as_mut());
 
-        // Calculate current position
-        zipped!(&mut x_t, &x0_t, &q_t).for_each(|unzipped!(x, x0, q)| {
-            *x = *x0 + *q;
+            // Compose rotation displacement at start-of-step with delta rotation to get end-of-step rotation displacement
+            quat_compose(q_delta_np1.as_ref(), r_n, r_np1.as_mut());
+
+            // Compose end-of-step rotation displacement with initial rotation to get end-of-step absolute rotation
+            quat_compose(r_np1.as_ref(), r0, rr0_np1);
         });
-
-        let x_r = self.x.subrows_mut(3, 4);
-        let x0_r = self.x0.subrows(3, 4);
-        let q_r = self.u.subrows(3, 4);
-
-        // Calculate current rotation
-        izip!(x0_r.col_iter(), q_r.col_iter(), x_r.col_iter_mut())
-            .for_each(|(x0, q, x)| quat_compose(q, x0, x));
     }
 
     /// Calculate state prediction at end of next time step
@@ -115,17 +115,16 @@ impl State {
     ) {
         self.u_prev.copy_from(&self.u);
         zipped!(&mut self.u_delta, &mut self.v, &mut self.vd, &mut self.a).for_each(
-            |unzipped!(q_delta, v, vd, a)| {
+            |unzipped!(u_delta, v, vd, a)| {
                 let (v_p, vd_p, a_p) = (*v, *vd, *a);
                 *vd = 0.;
                 *a = (alpha_f * vd_p - alpha_m * a_p) / (1. - alpha_m);
                 *v = v_p + h * (1. - gamma) * a_p + gamma * h * *a;
-                *q_delta = v_p + (0.5 - beta) * h * a_p + beta * h * *a;
+                *u_delta = v_p + (0.5 - beta) * h * a_p + beta * h * *a;
             },
         );
 
-        self.calc_displacement(h);
-        self.calculate_x();
+        self.calc_step_end(h);
     }
 
     /// Update state dynamic prediction from iteration increment
@@ -136,16 +135,34 @@ impl State {
         gamma_prime: f64,
         x_delta: MatRef<f64>,
     ) {
-        zipped!(&mut self.u_delta, &mut self.v, &mut self.vd, &x_delta).for_each(
-            |unzipped!(q_delta, v, vd, x_delta)| {
-                *q_delta += *x_delta / h;
-                *v += gamma_prime * *x_delta;
-                *vd += beta_prime * *x_delta;
-            },
-        );
+        // Add incremental change in translation/rotation position
+        zipped!(&x_delta, &mut self.u_delta).for_each(|unzipped!(x_delta, u_delta)| {
+            *u_delta += *x_delta / h;
+        });
 
-        self.calc_displacement(h);
-        self.calculate_x();
+        // Add incremental change in translational velocity/acceleration
+        zipped!(
+            &x_delta.subrows(0, 3),
+            &mut self.v.subrows_mut(0, 3),
+            &mut self.vd.subrows_mut(0, 3)
+        )
+        .for_each(|unzipped!(x_delta, v, vd)| {
+            *v += gamma_prime * *x_delta;
+            *vd += beta_prime * *x_delta;
+        });
+
+        // Add incremental change in rotational velocity/acceleration
+        zipped!(
+            &x_delta.subrows(3, 3),
+            &mut self.v.subrows_mut(3, 3),
+            &mut self.vd.subrows_mut(3, 3)
+        )
+        .for_each(|unzipped!(x_delta, v, vd)| {
+            *v += gamma_prime * *x_delta;
+            *vd += beta_prime * *x_delta;
+        });
+
+        self.calc_step_end(h);
     }
 
     /// Update state static prediction from iteration increment
@@ -154,8 +171,7 @@ impl State {
             *q_delta += *x_delta / h;
         });
 
-        self.calc_displacement(h);
-        self.calculate_x();
+        self.calc_step_end(h);
     }
 
     /// Calculate algorithmic acceleration for next step

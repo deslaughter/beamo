@@ -325,7 +325,6 @@ fn test_heavy_top_grad() {
         assert_eq!(res.converged, true);
     }
 
-
     //--------------------------------------------------------------------------
     // create a reference state from the time n position
     //--------------------------------------------------------------------------
@@ -344,7 +343,6 @@ fn test_heavy_top_grad() {
     ref_state.a.copy_from(state.a.clone());
     ref_state.visco_hist.copy_from(state.visco_hist.clone());
     ref_state.strain_dot_n.copy_from(state.strain_dot_n.clone());
-
 
     //------------------------------------------------------------------
     // numerical gradient calculation
@@ -369,7 +367,6 @@ fn test_heavy_top_grad() {
     let mut res_vec = Col::<f64>::zeros(ndof);
     let xd = Col::<f64>::zeros(ndof);
 
-
     // Do a residual + gradient eval
 
     // Copy all of state from the reference
@@ -387,9 +384,7 @@ fn test_heavy_top_grad() {
 
     solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
 
-
     for i in 0..ndof {
-
         // Positive side of finite difference
         let mut state = model.create_state();
         let mut res_vec = Col::<f64>::zeros(ndof);
@@ -410,9 +405,14 @@ fn test_heavy_top_grad() {
 
         xd[i] = delta;
 
-        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+        solver.step_res_grad(
+            &mut state,
+            xd.as_ref(),
+            res_vec.as_mut(),
+            dres_mat_ignore.as_mut(),
+        );
 
-        let tmp = dres_mat_num.col(i) + res_vec*Scale(0.5/delta);
+        let tmp = dres_mat_num.col(i) + res_vec * Scale(0.5 / delta);
         dres_mat_num.col_mut(i).copy_from(tmp.clone());
 
         // Negative side of finite difference
@@ -435,11 +435,15 @@ fn test_heavy_top_grad() {
 
         xd[i] = -delta;
 
-        solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat_ignore.as_mut());
+        solver.step_res_grad(
+            &mut state,
+            xd.as_ref(),
+            res_vec.as_mut(),
+            dres_mat_ignore.as_mut(),
+        );
 
-        let tmp = dres_mat_num.col(i) - res_vec*Scale(0.5/delta);
+        let tmp = dres_mat_num.col(i) - res_vec * Scale(0.5 / delta);
         dres_mat_num.col_mut(i).copy_from(tmp);
-
     }
 
     let grad_diff = dres_mat.clone() - dres_mat_num.clone();
@@ -449,12 +453,13 @@ fn test_heavy_top_grad() {
 
     println!("Grad diff norm: {:?}", grad_diff.norm_l2());
     println!("Grad (analytical) norm: {:?}", dres_mat.norm_l2());
-    println!("Norm ratio (diff/analytical): {:?}", grad_diff.norm_l2() / dres_mat.norm_l2());
+    println!(
+        "Norm ratio (diff/analytical): {:?}",
+        grad_diff.norm_l2() / dres_mat.norm_l2()
+    );
 
     assert!(grad_diff.norm_l2() / dres_mat.norm_l2() < 1e-10);
-
 }
-
 
 #[test]
 #[ignore]
@@ -640,7 +645,6 @@ fn test_rigid_platform() {
         let t = (i as f64) * time_step;
 
         // Output current position and rotation
-        state.calculate_x();
         let u = state.x.col(platform.node_id).subrows(0, 3);
         let q = state.x.col(platform.node_id).subrows(3, 4);
         quat_as_rotation_vector(q, rv.as_mut());
