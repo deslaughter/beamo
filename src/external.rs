@@ -1,8 +1,7 @@
 use core::panic;
-use std::{f64::consts::PI, fs};
-
-use faer::{col, prelude::SpSolver, Mat};
+use faer::prelude::*;
 use itertools::{izip, Itertools};
+use std::{f64::consts::PI, fs};
 
 use crate::{
     elements::beams::{BeamSection, Damping},

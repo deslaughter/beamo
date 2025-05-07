@@ -1,6 +1,6 @@
 use std::cmp;
 
-use faer::{col, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut};
+use faer::{col, unzip, zip, Col, ColMut, ColRef, Mat, MatMut};
 use itertools::Itertools;
 
 use crate::{
@@ -209,14 +209,14 @@ impl Constraint {
     ) {
         // Position residual: Phi(0:3) = u2 + X0 - u1 - R1*X0
         quat_rotate_vector(r_base.as_ref(), self.x0.as_ref(), self.r_x0.as_mut());
-        zipped!(
+        zip!(
             &mut self.phi.subrows_mut(0, 3),
             &u_base,
             &u_target,
             &self.x0,
             &self.r_x0
         )
-        .for_each(|unzipped!(phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
+        .for_each(|unzip!(phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
 
         // Angular residual:  Phi(3:6) = axial(R2*inv(rb))
         if self.n_dofs == 6 {
@@ -234,8 +234,8 @@ impl Constraint {
             // AX(c)
             matrix_ax(self.c.as_ref(), self.ax.as_mut());
             // B(3:6,3:6) = -AX(R2*inv(R1))
-            zipped!(&mut self.b_base.submatrix_mut(3, 3, 3, 3), &self.ax)
-                .for_each(|unzipped!(b, ax)| *b = -*ax);
+            zip!(&mut self.b_base.submatrix_mut(3, 3, 3, 3), &self.ax)
+                .for_each(|unzip!(b, ax)| *b = -*ax);
         }
 
         // Target constraint gradient

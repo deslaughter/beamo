@@ -1,17 +1,4 @@
-use std::{
-    f64::consts::PI,
-    fs::{self, File},
-    io::Write,
-};
-
-use faer::{
-    col,
-    complex_native::c64,
-    linalg::matmul::matmul,
-    linalg::solvers::{Eigendecomposition, SpSolver},
-    mat, unzipped, zipped, Col, Mat, MatRef, Parallelism, Scale,
-};
-
+use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::{izip, Itertools};
 use ottr::{
     elements::beams::{BeamSection, Beams, Damping},
@@ -24,6 +11,11 @@ use ottr::{
         quat_as_matrix, quat_compose, quat_from_axis_angle, quat_from_rotation_vector,
         quat_rotate_vector,
     },
+};
+use std::{
+    f64::consts::PI,
+    fs::{self, File},
+    io::Write,
 };
 
 fn dump_matrix(file_name: &str, mat: MatRef<f64>) {
@@ -139,10 +131,10 @@ fn main() {
             .enumerate()
             .for_each(|(j, mut c)| c.copy_from(vd.col(i).subrows(j * 6, 6)));
 
-        m.fill_zero();
-        c.fill_zero();
-        k.fill_zero();
-        r.fill_zero();
+        m.fill(0.);
+        c.fill(0.);
+        k.fill(0.);
+        r.fill(0.);
 
         //Only matters for viscoelastic material, but needs to be passed to create_beams
         let h = 0.001;
@@ -153,11 +145,11 @@ fn main() {
         // Calculate energy dissipation
         matmul(
             force.as_mut(),
+            Accum::Replace,
             c.as_ref(),
             v.col(i),
-            None,
             1.,
-            Parallelism::None,
+            Par::Seq,
         );
         energy[i] = &force.transpose() * &v.col(i);
     });
@@ -226,7 +218,7 @@ fn main() {
 //             .iter()
 //             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
 //             .unwrap();
-//         zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
+//         zip!(&mut c).for_each(|unzip!(c)| *c /= max);
 //     });
 
 //     (eig_val, eig_vec)
@@ -256,9 +248,9 @@ fn modal_analysis(
     let lu = m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(k.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<c64> = a.eigendecomposition();
-    let eig_val_raw = eig.s().column_vector();
-    let eig_vec_raw = eig.u();
+    let eig = a.eigen().unwrap();
+    let eig_val_raw = eig.S().column_vector();
+    let eig_vec_raw = eig.U();
 
     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
     eig_order.sort_by(|&i, &j| {
@@ -284,7 +276,7 @@ fn modal_analysis(
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
+        zip!(&mut c).for_each(|unzip!(c)| *c /= max);
     });
 
     (eig_val, eig_vec)
@@ -813,37 +805,37 @@ fn setup_test() -> Model {
             // Rotate mass matrix
             matmul(
                 m6.as_mut(),
+                Accum::Replace,
                 rr.as_ref(),
                 s.m_star.as_ref(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
             matmul(
                 s.m_star.as_mut(),
+                Accum::Replace,
                 m6.as_ref(),
                 rr.transpose(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
 
             // Rotate stiffness matrix
             matmul(
                 m6.as_mut(),
+                Accum::Replace,
                 rr.as_ref(),
                 s.c_star.as_ref(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
             matmul(
                 s.c_star.as_mut(),
+                Accum::Replace,
                 m6.as_ref(),
                 rr.transpose(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
         });
     }

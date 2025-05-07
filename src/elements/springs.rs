@@ -1,13 +1,12 @@
-use faer::{
-    linalg::matmul::matmul, unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism,
-};
+use faer::prelude::*;
+use faer::{linalg::matmul::matmul, Accum};
 
 use itertools::{izip, Itertools};
 
 use crate::{
     node::{Node, NodeFreedomMap},
     state::State,
-    util::{vec_tilde, ColAsMatMut, ColAsMatRef},
+    util::{vec_tilde, ColMutReshape, ColRefReshape},
 };
 
 /// Spring element definition
@@ -164,8 +163,8 @@ impl Springs {
                 .iter()
                 .zip([1., -1.])
                 .for_each(|(&i, sign)| {
-                    zipped!(&mut r.as_mut().subrows_mut(i, 3), f)
-                        .for_each(|unzipped!(r, f)| *r += sign * *f);
+                    zip!(&mut r.as_mut().subrows_mut(i, 3), f)
+                        .for_each(|unzip!(r, f)| *r += sign * *f);
                 });
 
             // Get start DOFs for each node
@@ -175,11 +174,11 @@ impl Springs {
                 .collect_vec();
 
             // Stiffness matrix
-            let a = a_col.as_mat_ref(3, 3);
+            let a = a_col.reshape(3, 3);
             elem_dof_start_pairs.iter().for_each(|(&i, &j)| {
                 let sign = if i == j { 1. } else { -1. };
-                zipped!(&mut k.as_mut().submatrix_mut(i, j, 3, 3), a)
-                    .for_each(|unzipped!(k, a)| *k += sign * *a);
+                zip!(&mut k.as_mut().submatrix_mut(i, j, 3, 3), a)
+                    .for_each(|unzip!(k, a)| *k += sign * *a);
             });
         });
     }
@@ -192,7 +191,7 @@ impl Springs {
 /// Calculate xyz distance between element nodes
 #[inline]
 fn calc_r(mut r: MatMut<f64>, x0: MatRef<f64>, u1: MatRef<f64>, u2: MatRef<f64>) {
-    zipped!(&mut r, &x0, &u1, &u2).for_each(|unzipped!(r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
+    zip!(&mut r, &x0, &u1, &u2).for_each(|unzip!(r, x0, u1, u2)| *r = *x0 + *u2 - *u1);
 }
 
 /// Calculate distance between element nodes, length of spring
@@ -210,7 +209,7 @@ fn calc_c(
     l_ref: ColRef<f64>,
     l: ColRef<f64>,
 ) {
-    zipped!(&mut c1, &mut c2, &k, &l_ref, &l).for_each(|unzipped!(c1, c2, k, l_ref, l)| {
+    zip!(&mut c1, &mut c2, &k, &l_ref, &l).for_each(|unzip!(c1, c2, k, l_ref, l)| {
         *c1 = *k * (*l_ref / *l - 1.);
         *c2 = *k * *l_ref / (*l).powi(3);
     });
@@ -220,7 +219,7 @@ fn calc_c(
 #[inline]
 fn calc_f(f: MatMut<f64>, c1: ColRef<f64>, r: MatRef<f64>) {
     izip!(f.col_iter_mut(), c1.iter(), r.col_iter())
-        .for_each(|(mut f, &c1, r)| zipped!(&mut f, r).for_each(|unzipped!(f, r)| *f = c1 * *r));
+        .for_each(|(mut f, &c1, r)| zip!(&mut f, r).for_each(|unzip!(f, r)| *f = c1 * *r));
 }
 
 /// Calculate element stiffness matrix
@@ -241,7 +240,7 @@ fn calc_a(
         l.iter(),
     )
     .for_each(|(a_col, &c1, &c2, r, l)| {
-        let mut a = a_col.as_mat_mut(3, 3);
+        let mut a = a_col.reshape_mut(3, 3);
         vec_tilde(r, r_tilde.as_mut());
         a.as_mut()
             .diagonal_mut()
@@ -249,11 +248,11 @@ fn calc_a(
             .fill(c1 - c2 * l.powi(2));
         matmul(
             a,
+            Accum::Add,
             r_tilde.as_ref(),
             r_tilde.as_ref(),
-            Some(1.),
             -c2,
-            Parallelism::None,
+            Par::Seq,
         );
     });
 }
@@ -265,14 +264,15 @@ fn calc_a(
 #[cfg(test)]
 mod tests {
 
-    use faer::{assert_matrix_eq, col, mat};
-
-    use crate::model::Model;
-
     use super::*;
+    use crate::model::Model;
+    use equator::assert;
+    use faer::utils::approx::*;
 
     #[test]
     fn test_force() {
+        let approx_eq = CwiseMat(ApproxEq::eps());
+
         let mut model = Model::new();
 
         let n1 = model.add_node().position_xyz(0., 0., 0.).build();
@@ -287,9 +287,9 @@ mod tests {
         springs.calculate(&state);
         assert_eq!(springs.l_ref[0], 1.);
         assert_eq!(springs.l[0], 1.);
-        assert_matrix_eq!(springs.f.col(0).as_2d(), col![0., 0., 0.].as_2d());
-        assert_matrix_eq!(
-            springs.a.col(0).as_mat_ref(3, 3),
+        assert!(springs.f.col(0) ~ col![0., 0., 0.]);
+        assert!(
+            springs.a.col(0).reshape(3, 3) ~
             mat![[-10., 0., 0.], [0., 0., 0.], [0., 0., 0.]]
         );
 
@@ -300,9 +300,9 @@ mod tests {
         assert_eq!(springs.l[0], 2.);
         assert_eq!(springs.c1[0], -5.);
         assert_eq!(springs.c2[0], 10. * 1. / (2. as f64).powi(3));
-        assert_matrix_eq!(springs.f.col(0).as_2d(), col![-10., 0., 0.].as_2d());
-        assert_matrix_eq!(
-            springs.a.col(0).as_mat_ref(3, 3),
+        assert!(springs.f.col(0) ~ col![-10., 0., 0.]);
+        assert!(
+            springs.a.col(0).reshape(3, 3) ~
             mat![[-10., 0., 0.], [0., -5., 0.], [0., 0., -5.]]
         );
     }

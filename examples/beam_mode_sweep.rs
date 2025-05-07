@@ -1,16 +1,4 @@
-use std::{
-    f64::consts::PI,
-    fs::{self, File},
-    io::Write,
-};
-
-use faer::{
-    col,
-    complex_native::c64,
-    linalg::solvers::{Eigendecomposition, SpSolver},
-    mat, unzipped, zipped, Col, ColRef, Mat, Scale,
-};
-
+use faer::prelude::*;
 use itertools::{izip, Itertools};
 use ottr::{
     elements::beams::{BeamSection, Damping},
@@ -18,7 +6,12 @@ use ottr::{
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
-    util::{quat_as_rotation_vector, ColAsMatRef},
+    util::{quat_as_rotation_vector, ColRefReshape},
+};
+use std::{
+    f64::consts::PI,
+    fs::{self, File},
+    io::Write,
 };
 
 const V_SCALE: f64 = 1.0;
@@ -112,7 +105,7 @@ fn run_simulation(mode: usize, time_step: f64, n_steps: usize, shape: ColRef<f64
 
     // Apply scaled mode shape to state as velocity
     let v = shape * Scale(V_SCALE);
-    state.v.copy_from(v.as_ref().as_mat_ref(6, state.n_nodes));
+    state.v.copy_from(v.as_ref().reshape(6, state.n_nodes));
 
     // Create output file
     let mut file = File::create(format!("{OUT_DIR}/sweep_{:02}.csv", mode)).unwrap();
@@ -172,9 +165,9 @@ fn modal_analysis(model: &Model) -> (Col<f64>, Mat<f64>) {
     let lu = solver.m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(solver.kt.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<c64> = a.eigendecomposition();
-    let eig_val_raw = eig.s().column_vector();
-    let eig_vec_raw = eig.u();
+    let eig = a.eigen().unwrap();
+    let eig_val_raw = eig.S().column_vector();
+    let eig_vec_raw = eig.U();
 
     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
     eig_order.sort_by(|&i, &j| {
@@ -200,7 +193,7 @@ fn modal_analysis(model: &Model) -> (Col<f64>, Mat<f64>) {
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
+        zip!(&mut c).for_each(|unzip!(c)| *c /= max);
     });
 
     // Write mode shapes to output file

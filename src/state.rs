@@ -2,7 +2,7 @@ use crate::{
     node::Node,
     util::{quat_compose, quat_from_rotation_vector},
 };
-use faer::{unzipped, zipped, Col, Mat, MatRef};
+use faer::prelude::*;
 use itertools::izip;
 
 #[derive(Debug, Clone)]
@@ -63,12 +63,12 @@ impl State {
         let x0 = self.x0.subrows(0, 3);
 
         // Calculate total displacement at end-of-step
-        zipped!(&mut u_np1, &u_n, &u_delta_n).for_each(|unzipped!(u_np1, u_n, u_delta_n)| {
+        zip!(&mut u_np1, &u_n, &u_delta_n).for_each(|unzip!(u_np1, u_n, u_delta_n)| {
             *u_np1 = *u_n + *u_delta_n * h;
         });
 
         // Calculate absolute rotation at end-of-step
-        zipped!(&mut x_np1, &x0, &u_np1).for_each(|unzipped!(x, x0, u)| {
+        zip!(&mut x_np1, &x0, &u_np1).for_each(|unzip!(x, x0, u)| {
             *x = *x0 + *u;
         });
 
@@ -114,8 +114,8 @@ impl State {
         alpha_f: f64,
     ) {
         self.u_prev.copy_from(&self.u);
-        zipped!(&mut self.u_delta, &mut self.v, &mut self.vd, &mut self.a).for_each(
-            |unzipped!(u_delta, v, vd, a)| {
+        zip!(&mut self.u_delta, &mut self.v, &mut self.vd, &mut self.a).for_each(
+            |unzip!(u_delta, v, vd, a)| {
                 let (v_p, vd_p, a_p) = (*v, *vd, *a);
                 *vd = 0.;
                 *a = (alpha_f * vd_p - alpha_m * a_p) / (1. - alpha_m);
@@ -136,28 +136,28 @@ impl State {
         x_delta: MatRef<f64>,
     ) {
         // Add incremental change in translation/rotation position
-        zipped!(&x_delta, &mut self.u_delta).for_each(|unzipped!(x_delta, u_delta)| {
+        zip!(&x_delta, &mut self.u_delta).for_each(|unzip!(x_delta, u_delta)| {
             *u_delta += *x_delta / h;
         });
 
         // Add incremental change in translational velocity/acceleration
-        zipped!(
+        zip!(
             &x_delta.subrows(0, 3),
             &mut self.v.subrows_mut(0, 3),
             &mut self.vd.subrows_mut(0, 3)
         )
-        .for_each(|unzipped!(x_delta, v, vd)| {
+        .for_each(|unzip!(x_delta, v, vd)| {
             *v += gamma_prime * *x_delta;
             *vd += beta_prime * *x_delta;
         });
 
         // Add incremental change in rotational velocity/acceleration
-        zipped!(
+        zip!(
             &x_delta.subrows(3, 3),
             &mut self.v.subrows_mut(3, 3),
             &mut self.vd.subrows_mut(3, 3)
         )
-        .for_each(|unzipped!(x_delta, v, vd)| {
+        .for_each(|unzip!(x_delta, v, vd)| {
             *v += gamma_prime * *x_delta;
             *vd += beta_prime * *x_delta;
         });
@@ -167,7 +167,7 @@ impl State {
 
     /// Update state static prediction from iteration increment
     pub fn update_static_prediction(&mut self, h: f64, x_delta: MatRef<f64>) {
-        zipped!(&mut self.u_delta, &x_delta).for_each(|unzipped!(q_delta, x_delta)| {
+        zip!(&mut self.u_delta, &x_delta).for_each(|unzip!(q_delta, x_delta)| {
             *q_delta += *x_delta / h;
         });
 
@@ -185,7 +185,8 @@ mod tests {
 
     use super::*;
     use crate::{model::Model, util::quat_from_axis_angle};
-    use faer::{assert_matrix_eq, col, mat};
+    use equator::assert;
+    use faer::utils::approx::*;
     use std::f64::consts::PI;
 
     fn create_state() -> State {
@@ -213,10 +214,11 @@ mod tests {
 
     #[test]
     fn test_state_x0() {
+        let approx_eq = CwiseMat(ApproxEq::eps());
+
         let state = create_state();
-        assert_matrix_eq!(
-            state.x0,
-            mat![
+        assert!(
+            state.x0 ~ mat![
                 [3.0000000000000000, 2.0000000000000000],
                 [5.0000000000000000, -3.0000000000000000],
                 [7.0000000000000000, -5.0000000000000000],
@@ -224,17 +226,11 @@ mod tests {
                 [0.7071067811865475, 0.7071067811865475],
                 [0.0000000000000000, 0.0000000000000000],
                 [0.0000000000000000, 0.0000000000000000],
-            ],
-            comp = float
+            ]
         );
-    }
 
-    #[test]
-    fn test_state_u() {
-        let state = create_state();
-        assert_matrix_eq!(
-            state.u,
-            mat![
+        assert!(
+            state.u ~ mat![
                 [4.0000000000000000, 1.0000000000000000],
                 [6.0000000000000000, 1.0000000000000000],
                 [8.0000000000000000, 6.0000000000000000],
@@ -242,17 +238,11 @@ mod tests {
                 [0.7071067811865475, 0.0000000000000000],
                 [0.0000000000000000, 0.3826834323650898],
                 [0.0000000000000000, 0.0000000000000000],
-            ],
-            comp = float
+            ]
         );
-    }
 
-    #[test]
-    fn test_state_x() {
-        let state = create_state();
-        assert_matrix_eq!(
-            state.x,
-            mat![
+        assert!(
+            state.x ~ mat![
                 [7., 11., 15., 0., 1., 0., 0.],
                 [
                     3.,
@@ -263,33 +253,18 @@ mod tests {
                     0.2705980500730985,
                     -0.27059805007309845,
                 ]
-            ]
-            .transpose(),
-            comp = float
+            ].transpose()
         );
-    }
 
-    #[test]
-    fn test_state_v() {
-        let state = create_state();
-        assert_matrix_eq!(
-            state.v,
-            mat![[1., 2., 3., 4., 5., 6.], [-1., -2., -3., -4., -5., -6.]].transpose(),
-            comp = float
+        assert!(
+            state.v ~ mat![[1., 2., 3., 4., 5., 6.], [-1., -2., -3., -4., -5., -6.]].transpose()
         );
-    }
 
-    #[test]
-    fn test_state_vd() {
-        let state = create_state();
-        assert_matrix_eq!(
-            state.vd,
-            mat![
+        assert!(
+            state.vd ~ mat![
                 [7., 8., 9., 10., 11., 12.],
                 [-7., -8., -9., -10., -11., -12.],
-            ]
-            .transpose(),
-            comp = float
+            ].transpose()
         );
     }
 }

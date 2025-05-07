@@ -1,4 +1,4 @@
-use faer::{col, prelude::SpSolverLstsq, Col, Mat, MatMut};
+use faer::prelude::*;
 use itertools::{izip, Itertools};
 
 // Returns the dot product of two vectors
@@ -286,8 +286,8 @@ mod test_gll {
 pub fn polyfit(x: &[f64], y: &[f64], degree: usize) -> Vec<f64> {
     let a = Mat::from_fn(x.len(), degree + 1, |i, j| x[i].powi(j as i32));
     let qr = a.qr();
-    let c = qr.solve_lstsq(col::from_slice(y));
-    c.as_slice().to_vec()
+    let c = qr.solve_lstsq(ColRef::from_slice(y));
+    c.try_as_col_major().unwrap().as_slice().to_vec()
 }
 
 /// Fit curve that passes through origin
@@ -296,8 +296,8 @@ pub fn polyfit_origin(x: &[f64], y: &[f64], degree: usize) -> Vec<f64> {
     let qr = a.qr();
     let mut c = Col::zeros(degree + 1);
     c.subrows_mut(1, degree)
-        .copy_from(qr.solve_lstsq(col::from_slice(y)));
-    c.as_slice().to_vec()
+        .copy_from(qr.solve_lstsq(ColRef::from_slice(y)));
+    c.try_as_col_major().unwrap().as_slice().to_vec()
 }
 
 /// Calculate first derivative of coefficients
@@ -320,51 +320,44 @@ pub fn polyval(c: &[f64], x: f64) -> f64 {
 #[cfg(test)]
 mod test_poly {
 
-    use approx::assert_ulps_eq;
+    use super::*;
+    use equator::assert;
+    use faer::utils::approx::*;
     use itertools::Itertools;
 
-    use super::*;
-
     #[test]
-    fn test_polyfit() {
+    fn test_poly_funcs() {
+        let approx_eq = ApproxEq::eps();
+
         let x = vec![0., 1., 2., 3., 4.];
         let y = vec![0.5, 2.3, -1., 0.7, 1.2];
         let c = polyfit(&x, &y, 2);
         assert_eq!(c.len(), 3);
-        assert_ulps_eq!(c[0], 1.1228571428571412);
-        assert_ulps_eq!(c[1], -0.7057142857142826);
-        assert_ulps_eq!(c[2], 0.17142857142857063);
-    }
+        assert!(c[0] ~ 1.1228571428571412);
+        assert!(c[1] ~ -0.7057142857142826);
+        assert!(c[2] ~ 0.17142857142857063);
 
-    #[test]
-    fn test_polyfit_origin() {
         let x = vec![0., 1., 2., 3., 4.];
         let y = x.iter().map(|x| 2. * x + 3. * x * x).collect_vec();
         let c = polyfit_origin(&x, &y, 2);
         assert_eq!(c.len(), 3);
-        assert_ulps_eq!(c[0], 0.);
-        assert_ulps_eq!(c[1], 2.);
-        assert_ulps_eq!(c[2], 3.);
-        assert_ulps_eq!(polyval(&c, 0.), 0., max_ulps = 8);
-        assert_ulps_eq!(polyval(&c, 0.5), 1.75, max_ulps = 8);
-        assert_ulps_eq!(polyval(&c, 1.), 5., max_ulps = 8);
-    }
+        assert!(c[0] ~ 0.);
+        assert!(c[1] ~ 2.);
+        assert!(c[2] ~ 3.);
+        assert!(polyval(&c, 0.) ~ 0.);
+        assert!(polyval(&c, 0.5) ~ 1.75);
+        assert!(polyval(&c, 1.) ~ 5.);
 
-    #[test]
-    fn test_polyval() {
         let c = vec![1.1228571428571412, -0.7057142857142826, 0.17142857142857063];
-        assert_ulps_eq!(polyval(&c, 0.), 1.1228571428571412, max_ulps = 8);
-        assert_ulps_eq!(polyval(&c, 0.5), 0.8128571428571431, max_ulps = 8);
-    }
+        assert!(polyval(&c, 0.) ~ 1.1228571428571412);
+        assert!(polyval(&c, 0.5) ~ 0.8128571428571431);
 
-    #[test]
-    fn test_polyder() {
         let c = vec![1., 3., 2.];
         let dc = polyder(&c);
-        assert_ulps_eq!(dc[0], 3.);
-        assert_ulps_eq!(dc[1], 4.);
-        assert_ulps_eq!(polyval(&dc, 0.), 3., max_ulps = 8);
-        assert_ulps_eq!(polyval(&dc, 0.5), 5., max_ulps = 8);
+        assert!(dc[0] ~ 3.);
+        assert!(dc[1] ~ 4.);
+        assert!(polyval(&dc, 0.) ~ 3.);
+        assert!(polyval(&dc, 0.5) ~ 5.);
     }
 }
 
@@ -395,15 +388,17 @@ pub fn shape_deriv_matrix(rows: &[f64], cols: &[f64], mut m: MatMut<f64>) {
 #[cfg(test)]
 mod test_integration {
 
-    use faer::{assert_matrix_eq, linalg::matmul::matmul, mat, Mat, Parallelism};
-    use itertools::Itertools;
-
-    use crate::util::{quat_as_matrix, quat_from_tangent_twist};
-
     use super::*;
+    use crate::util::{quat_as_matrix, quat_from_tangent_twist};
+    use equator::assert;
+    use faer::utils::approx::*;
+    use faer::{linalg::matmul::matmul, Accum};
+    use itertools::Itertools;
 
     #[test]
     fn test_shape_functions() {
+        let approx_eq = CwiseMat(ApproxEq::eps());
+
         // Shape Functions, Derivative of Shape Functions, GLL points for an q-order element
         let p = gauss_legendre_lobotto_points(4);
         assert_eq!(
@@ -436,11 +431,11 @@ mod test_integration {
         let mut ref_tan = Mat::<f64>::zeros(3, s.len());
         matmul(
             ref_tan.as_mut().transpose_mut(),
+            Accum::Replace,
             shape_deriv,
             ref_line.subrows(0, 3).transpose(),
-            None,
             1.,
-            Parallelism::None,
+            Par::Seq,
         );
         ref_tan.col_iter_mut().for_each(|mut c| {
             let m = c.norm_l2();
@@ -449,16 +444,14 @@ mod test_integration {
             }
         });
 
-        assert_matrix_eq!(
-            ref_tan.transpose(),
-            mat![
+        assert!(
+            ref_tan.transpose() ~ mat![
                 [0.9128709291752768, -0.365148371670111, 0.1825741858350555],
                 [0.9801116185947563, -0.1889578775710052, 0.06063114380768645],
                 [0.9622504486493763, 0.19245008972987512, -0.1924500897298752],
                 [0.7994326396775596, 0.4738974351647219, -0.3692271327549852],
                 [0.7071067811865474, 0.5656854249492382, -0.4242640687119285],
-            ],
-            comp = float
+            ]
         );
 
         // Quaternion at each node along reference line
@@ -472,26 +465,21 @@ mod test_integration {
 
         let mut m = Mat::<f64>::zeros(3, 3);
         quat_as_matrix(ref_q.col(3), m.as_mut());
-        assert_matrix_eq!(
-            m,
-            mat![
+        assert!(
+            m ~ mat![
                 [0.7994326396775595, -0.509929465806723, 0.3176151673334238],
                 [0.47389743516472144, 0.8602162169490122, 0.18827979456709748],
                 [-0.3692271327549849, 0.0000000000000000, 0.9293391869697156]
-            ],
-            comp = float
+            ]
         );
 
-        assert_matrix_eq!(
-            ref_q.subcols(3, 1),
-            mat![
+        assert!(
+            ref_q.subcols(3, 1) ~ mat![
                 [0.9472312341234699],
                 [-0.049692141629315074],
                 [0.18127630174800594],
                 [0.25965858850765167],
             ]
-            .as_ref(),
-            comp = float
         );
     }
 }

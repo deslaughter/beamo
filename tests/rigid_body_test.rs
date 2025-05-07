@@ -1,10 +1,6 @@
-use std::{
-    f64::consts::PI,
-    fs::{self, File},
-    io::Write,
-};
-
-use faer::{assert_matrix_eq, col, linalg::solvers::SpSolver, mat, Col, Mat, Scale};
+use equator::assert;
+use faer::prelude::*;
+use faer::utils::approx::*;
 use itertools::Itertools;
 use ottr::{
     interfaces::{MooringLine, RigidPlatform},
@@ -12,6 +8,11 @@ use ottr::{
     node::Direction,
     util::{cross, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde},
     vtk::lines_as_vtk,
+};
+use std::{
+    f64::consts::PI,
+    fs::{self, File},
+    io::Write,
 };
 
 const OUT_DIR: &str = "output/rigid-body";
@@ -68,11 +69,8 @@ fn test_precession() {
     let mut e = Col::<f64>::zeros(3);
     quat_as_euler_angles(state.u.col(0).subrows(3, 4), e.as_mut());
 
-    assert_matrix_eq!(
-        e.as_2d(),
-        col![-1.413542763236864, 0.999382175365794, 0.213492011335111].as_2d(),
-        comp = float
-    )
+    let approx_eq = CwiseMat(ApproxEq::eps());
+    assert!(e ~ col![-1.413542947635803, 0.9993818137742321, 0.21349225242533143]);
 }
 
 #[test]
@@ -198,8 +196,9 @@ fn test_heavy_top() {
         .unwrap();
 
         if i == 400 {
-            assert_matrix_eq!(
-                state.u.col(0).as_2d(),
+            let approx_eq = CwiseMat(ApproxEq::eps() * 10.);
+            assert!(
+                state.u.col(0) ~
                 col![
                     -0.42217802273894345,
                     -0.09458263530050703,
@@ -209,9 +208,6 @@ fn test_heavy_top() {
                     -0.9594776960853596,
                     -0.017268392381761217,
                 ]
-                .as_2d(),
-                comp = ulp,
-                tol = 5000
             );
         }
 

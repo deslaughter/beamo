@@ -17,9 +17,8 @@ name = "beam_mode_sweep"
 name = "bar_urc_model_compare"
 
 [dependencies]
-approx = "0.5.1"
-faer = "0.20.2"
+equator = "0.4.2"
+faer = "0.22.6"
 gauss-quad = "0.2.1"
 itertools = "0.13.0"
-nalgebra = "0.33.2"
 vtkio = "0.6"

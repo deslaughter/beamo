@@ -1,14 +1,10 @@
-use std::ops::Rem;
-
 use crate::node::Node;
 use crate::node::NodeFreedomMap;
 use crate::state::State;
-use crate::util::ColAsMatRef;
-
-use faer::unzipped;
-use faer::zipped;
-use faer::{Col, ColMut, Mat, MatMut};
+use crate::util::ColRefReshape;
+use faer::prelude::*;
 use itertools::{izip, Itertools};
+use std::ops::Rem;
 
 use super::kernels::{
     calc_fg, calc_fi, calc_gi, calc_inertial_matrix, calc_ki, calc_m_eta_rho, calc_rr0, calc_x,
@@ -184,29 +180,29 @@ impl Masses {
 
         // Mass matrix
         izip!(elem_first_dof_indices.iter(), self.muu.col_iter()).for_each(|(&i, me_col)| {
-            zipped!(
+            zip!(
                 &mut m.as_mut().submatrix_mut(i, i, 6, 6),
-                me_col.as_mat_ref(6, 6)
+                me_col.reshape(6, 6)
             )
-            .for_each(|unzipped!(m, me)| *m += *me);
+            .for_each(|unzip!(m, me)| *m += *me);
         });
 
         // Gyroscopic matrix
         izip!(elem_first_dof_indices.iter(), self.gi.col_iter()).for_each(|(&i, ge_col)| {
-            zipped!(
+            zip!(
                 &mut g.as_mut().submatrix_mut(i, i, 6, 6),
-                ge_col.as_mat_ref(6, 6)
+                ge_col.reshape(6, 6)
             )
-            .for_each(|unzipped!(g, ge)| *g += *ge);
+            .for_each(|unzip!(g, ge)| *g += *ge);
         });
 
         // Stiffness matrix
         izip!(elem_first_dof_indices.iter(), self.ki.col_iter()).for_each(|(&i, ke_col)| {
-            zipped!(
+            zip!(
                 &mut k.as_mut().submatrix_mut(i, i, 6, 6),
-                ke_col.as_mat_ref(6, 6)
+                ke_col.reshape(6, 6)
             )
-            .for_each(|unzipped!(k, ke)| *k += *ke);
+            .for_each(|unzip!(k, ke)| *k += *ke);
         });
 
         // Residual vector
@@ -216,8 +212,8 @@ impl Masses {
             self.fg.col_iter()
         )
         .for_each(|(&i, fi, fg)| {
-            zipped!(&mut r.as_mut().subrows_mut(i, 6), fi, fg)
-                .for_each(|unzipped!(r, fi, fg)| *r += *fi - *fg);
+            zip!(&mut r.as_mut().subrows_mut(i, 6), fi, fg)
+                .for_each(|unzip!(r, fi, fg)| *r += *fi - *fg);
         });
     }
 }

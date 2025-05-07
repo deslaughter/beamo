@@ -4,12 +4,7 @@ use std::{
     io::Write,
 };
 
-use faer::{
-    col,
-    complex_native::c64,
-    linalg::solvers::{Eigendecomposition, SpSolver},
-    mat, unzipped, zipped, Col, Mat, Scale,
-};
+use faer::prelude::*;
 
 use itertools::{izip, Itertools};
 use ottr::{
@@ -17,7 +12,7 @@ use ottr::{
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
-    util::ColAsMatMut,
+    util::ColMutReshape,
 };
 
 #[test]
@@ -106,9 +101,8 @@ fn test_damping() {
 
     // Loop through times and run simulation
     for (t, u_col) in izip!(ts.iter(), u.col_iter_mut()) {
-        let u = u_col.as_mat_mut(3, model.n_nodes());
-        zipped!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3))
-            .for_each(|unzipped!(u, us)| *u = *us);
+        let u = u_col.reshape_mut(3, model.n_nodes());
+        zip!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3)).for_each(|unzip!(u, us)| *u = *us);
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
@@ -273,7 +267,7 @@ fn test_viscoelastic() {
     // let tau_i = col![0.05];
     // let mut c_star_all = Mat::<f64>::zeros(36, 1);
     // let c_star_col = c_star_all.col_mut(0);
-    // let mut c_single_mat = c_star_col.as_mat_mut(6, 6);
+    // let mut c_single_mat = c_star_col.reshape_mut(6, 6);
     // c_single_mat.copy_from(c_star_tau_i.clone());
 
     // ------------ Prony series stiffnesses for multiple terms
@@ -435,11 +429,11 @@ fn test_viscoelastic() {
     // Make c_star_tau_i into a column and insert as columns
     let mut c_star_all = Mat::<f64>::zeros(36, n_tau);
     let c_star_col = c_star_all.col_mut(0);
-    let mut c_single_mat = c_star_col.as_mat_mut(6, 6);
+    let mut c_single_mat = c_star_col.reshape_mut(6, 6);
     c_single_mat.copy_from(c_star_tau_0.clone());
 
     let c_star_col = c_star_all.col_mut(1);
-    let mut c_single_mat = c_star_col.as_mat_mut(6, 6);
+    let mut c_single_mat = c_star_col.reshape_mut(6, 6);
     c_single_mat.copy_from(c_star_tau_1.clone());
 
     let undamped_damping = Damping::None;
@@ -504,9 +498,8 @@ fn test_viscoelastic() {
 
     // Loop through times and run simulation
     for (t, u_col) in izip!(ts.iter(), u.col_iter_mut()) {
-        let u = u_col.as_mat_mut(3, model.n_nodes());
-        zipped!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3))
-            .for_each(|unzipped!(u, us)| *u = *us);
+        let u = u_col.reshape_mut(3, model.n_nodes());
+        zip!(&mut u.subrows_mut(0, 3), state.u.subrows(0, 3)).for_each(|unzip!(u, us)| *u = *us);
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
@@ -702,7 +695,7 @@ fn test_viscoelastic_grad() {
 
     // Viscoelastic stiffness at time scale tau_i
     // This should be a list of matrices for later expansion to multiple term Prony series
-    let c_star_tau_i = mat![
+    let _c_star_tau_i = mat![
         [
             1.4644469574323347e+08,
             -1.0188771691870348e-13,
@@ -753,7 +746,7 @@ fn test_viscoelastic_grad() {
         ],
     ];
 
-    let tau_i = col![0.05];
+    let _tau_i = col![0.05];
 
     let undamped_damping = Damping::None;
 
@@ -964,9 +957,9 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     let lu = solver.m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(solver.kt.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<c64> = a.eigendecomposition();
-    let eig_val_raw = eig.s().column_vector();
-    let eig_vec_raw = eig.u();
+    let eig = a.eigen().unwrap();
+    let eig_val_raw = eig.S().column_vector();
+    let eig_vec_raw = eig.U();
 
     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
     eig_order.sort_by(|&i, &j| {
@@ -992,7 +985,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
+        zip!(&mut c).for_each(|unzip!(c)| *c /= max);
     });
 
     // Write mode shapes to output file

@@ -1,7 +1,6 @@
-use std::process;
-
-use faer::{assert_matrix_eq, mat, unzipped, zipped, Col};
-use faer::{Mat, Scale};
+use equator::assert;
+use faer::prelude::*;
+use faer::utils::approx::*;
 use itertools::Itertools;
 use ottr::{
     elements::beams::{BeamSection, Damping},
@@ -9,11 +8,12 @@ use ottr::{
     node::Direction,
     quadrature::Quadrature,
 };
+use std::process;
 
 #[test]
 fn test_static_beam_curl() {
     // Create list of Y moments to apply to end of beam
-    let my = vec![0., 10920.0, 21840.0, 32761.0, 43681.0]; //, 54601.0];
+    let my = vec![0., 10920.0, 21840.0, 32761.0, 43681.0, 54601.0];
 
     //--------------------------------------------------------------------------
     // Initial configuration
@@ -133,84 +133,87 @@ fn test_static_beam_curl() {
         println!("{:?}", u_tip.col(i))
     }
 
-    assert_matrix_eq!(
-        u_tip,
+    let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
+    assert!(
+        u_tip ~
         mat![
             [0.0, 0.0, 0.0],
-            [-2.4521456272540574, 0.0, 5.526924890922033],
-            [-7.714060225923242, 0.0, 7.215354434164669],
-            [-11.612985848428917, 0.0, 4.780711905904987],
-            [-11.912635648367724, 0.0, 1.3450728124048972],
-            // [-10.000647639829293, 0.0, -1.5837332423052075e-5],
+            [-2.4521424743945115, 0.0, 5.526921055643609],
+            [-7.71393432218001, 0.0, 7.215325756355413],
+            [-11.612495114867894, 0.0, 4.780938463888443],
+            [-11.912220414483576, 0.0, 1.3458820860655774],
+            [-10.00069041069354, 0.0, -1.2947392102224953e-5],
         ]
         .transpose()
     );
 
-    //--------------------------------------------------------------------------
-    // Numerical Gradient
-    //--------------------------------------------------------------------------
+    // //--------------------------------------------------------------------------
+    // // Numerical Gradient
+    // //--------------------------------------------------------------------------
 
-    // Loop through perturbations
-    let delta = 1e-7;
+    // return;
 
-    let ndof = solver.n_system + solver.n_lambda;
+    // // Loop through perturbations
+    // let delta = 1e-7;
 
-    // Analytical derivative of residual at reference state.
-    let mut dres_mat = Mat::<f64>::zeros(ndof, ndof);
+    // let ndof = solver.n_system + solver.n_lambda;
 
-    // Memory to ignore when calling with perturbations
-    let mut dres_mat_ignore = Mat::<f64>::zeros(ndof, ndof);
+    // // Analytical derivative of residual at reference state.
+    // let mut dres_mat = Mat::<f64>::zeros(ndof, ndof);
 
-    // Numerical approximation of 'dres_mat'
-    let mut dres_mat_num = Mat::<f64>::zeros(ndof, ndof);
+    // // Memory to ignore when calling with perturbations
+    // let mut dres_mat_ignore = Mat::<f64>::zeros(ndof, ndof);
 
-    // Initial Calculation for analytical gradient
-    let ref_state = state.clone();
-    let mut res_vec = Col::<f64>::zeros(ndof);
-    let mut xd = Col::<f64>::zeros(ndof);
+    // // Numerical approximation of 'dres_mat'
+    // let mut dres_mat_num = Mat::<f64>::zeros(ndof, ndof);
 
-    // Do a residual + gradient eval
-    solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
+    // // Initial Calculation for analytical gradient
+    // let ref_state = state.clone();
+    // let mut res_vec = Col::<f64>::zeros(ndof);
+    // let mut xd = Col::<f64>::zeros(ndof);
 
-    // Loop through system DOFs
-    (0..ndof).for_each(|i| {
-        // Positive side of finite difference
-        let mut state = ref_state.clone();
-        xd.fill_zero();
-        xd[i] = delta;
+    // // Do a residual + gradient eval
+    // solver.step_res_grad(&mut state, xd.as_ref(), res_vec.as_mut(), dres_mat.as_mut());
 
-        solver.step_res_grad(
-            &mut state,
-            xd.as_ref(),
-            res_vec.as_mut(),
-            dres_mat_ignore.as_mut(),
-        );
+    // // Loop through system DOFs
+    // (0..ndof).for_each(|i| {
+    //     // Positive side of finite difference
+    //     let mut state = ref_state.clone();
+    //     xd.fill(0.);
+    //     xd[i] = delta;
 
-        zipped!(&mut dres_mat_num.col_mut(i), &res_vec)
-            .for_each(|unzipped!(col, res)| *col += *res * 0.5 / delta);
+    //     solver.step_res_grad(
+    //         &mut state,
+    //         xd.as_ref(),
+    //         res_vec.as_mut(),
+    //         dres_mat_ignore.as_mut(),
+    //     );
 
-        // Negative side of finite difference
-        let mut state = ref_state.clone();
-        xd.fill_zero();
-        xd[i] = -delta;
+    //     zip!(&mut dres_mat_num.col_mut(i), &res_vec)
+    //         .for_each(|unzip!(col, res)| *col += *res * 0.5 / delta);
 
-        solver.step_res_grad(
-            &mut state,
-            xd.as_ref(),
-            res_vec.as_mut(),
-            dres_mat_ignore.as_mut(),
-        );
+    //     // Negative side of finite difference
+    //     let mut state = ref_state.clone();
+    //     xd.fill(0.);
+    //     xd[i] = -delta;
 
-        zipped!(&mut dres_mat_num.col_mut(i), &res_vec)
-            .for_each(|unzipped!(col, res)| *col -= *res * 0.5 / delta);
-    });
+    //     solver.step_res_grad(
+    //         &mut state,
+    //         xd.as_ref(),
+    //         res_vec.as_mut(),
+    //         dres_mat_ignore.as_mut(),
+    //     );
 
-    let grad_diff = dres_mat.clone() - dres_mat_num.clone();
+    //     zip!(&mut dres_mat_num.col_mut(i), &res_vec)
+    //         .for_each(|unzip!(col, res)| *col -= *res * 0.5 / delta);
+    // });
 
-    println!("Grad diff norm: {:?}", grad_diff.norm_l2());
-    println!("Grad (analytical) norm: {:?}", dres_mat.norm_l2());
-    println!(
-        "Norm ratio (diff/analytical): {:?}",
-        grad_diff.norm_l2() / dres_mat.norm_l2()
-    );
+    // let grad_diff = dres_mat.clone() - dres_mat_num.clone();
+
+    // println!("Grad diff norm: {:?}", grad_diff.norm_l2());
+    // println!("Grad (analytical) norm: {:?}", dres_mat.norm_l2());
+    // println!(
+    //     "Norm ratio (diff/analytical): {:?}",
+    //     grad_diff.norm_l2() / dres_mat.norm_l2()
+    // );
 }

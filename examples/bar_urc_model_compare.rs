@@ -1,23 +1,16 @@
-use std::{
-    f64::consts::PI,
-    fs::{self, File},
-    io::Write,
-};
-
-use faer::{
-    col,
-    prelude::{c64, SpSolver},
-    sparse::solvers::Eigendecomposition,
-    unzipped, zipped, Col, ColRef, Mat, Scale,
-};
-
+use faer::prelude::*;
 use itertools::izip;
 use ottr::{
     elements::beams::Damping,
     external::add_beamdyn_blade,
     model::Model,
-    util::{quat_as_rotation_vector, quat_from_rotation_vector, ColAsMatRef},
+    util::{quat_as_rotation_vector, quat_from_rotation_vector, ColRefReshape},
     vtk::beams_qps_as_vtk,
+};
+use std::{
+    f64::consts::PI,
+    fs::{self, File},
+    io::Write,
 };
 
 fn main() {
@@ -113,6 +106,7 @@ fn main() {
     //     });
 }
 
+#[allow(dead_code)]
 fn run_simulation(
     mode: usize,
     time_step: f64,
@@ -127,7 +121,7 @@ fn run_simulation(
 
     // Apply scaled mode shape to state as velocity
     let v = shape;
-    state.v.copy_from(v.as_ref().as_mat_ref(6, state.n_nodes));
+    state.v.copy_from(v.as_ref().reshape(6, state.n_nodes));
 
     // Create output file
     let mut file = File::create(format!("{out_dir}/displacement_{:02}.csv", mode)).unwrap();
@@ -188,9 +182,9 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     let lu = solver.m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
     let a = lu.solve(solver.kt.submatrix(6, 6, ndof_bc, ndof_bc));
 
-    let eig: Eigendecomposition<c64> = a.eigendecomposition();
-    let eig_val_raw = eig.s().column_vector();
-    let eig_vec_raw = eig.u();
+    let eig = a.eigen().unwrap();
+    let eig_val_raw = eig.S().column_vector();
+    let eig_vec_raw = eig.U();
 
     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
     eig_order.sort_by(|&i, &j| {
@@ -216,7 +210,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zipped!(&mut c).for_each(|unzipped!(c)| *c /= max);
+        zip!(&mut c).for_each(|unzip!(c)| *c /= max);
     });
 
     // Write eigenanalysis results to output file
@@ -249,7 +243,7 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     izip!(0..eig_val.nrows(), eig_val.iter(), eig_vec.col_iter()).for_each(
         |(i, &lambda, phi_col)| {
             // Apply eigvector displacements to state
-            let phi = phi_col.as_mat_ref(6, state.u.ncols());
+            let phi = phi_col.reshape(6, state.u.ncols());
 
             izip!(state.u.col_iter_mut(), phi.col_iter()).for_each(|(mut u, phi)| {
                 let phi = phi * Scale(1.);

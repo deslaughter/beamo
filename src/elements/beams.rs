@@ -5,13 +5,9 @@ use crate::interp::{shape_deriv_matrix, shape_interp_matrix};
 use crate::node::{Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
 use crate::state::State;
-use crate::util::{ColAsMatMut, ColAsMatRef};
-use faer::col::AsColRef;
+use crate::util::{ColMutReshape, ColRefReshape};
 use faer::linalg::matmul::matmul;
-use faer::linalg::solvers::Eigendecomposition;
-use faer::mat::AsMatRef;
-use faer::prelude::{c64, SpSolver};
-use faer::{unzipped, zipped, Col, ColMut, ColRef, Mat, MatMut, MatRef, Parallelism, Scale};
+use faer::{prelude::*, Accum};
 use itertools::{izip, multiunzip, Itertools};
 
 use super::kernels::{
@@ -234,11 +230,11 @@ impl Beams {
             let mut qp_x0 = beams.qp.x0.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 qp_x0.as_mut().transpose_mut(),
+                faer::Accum::Replace,
                 shape_interp,
                 node_x0.transpose(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
             qp_x0.subrows_mut(3, 4).col_iter_mut().for_each(|mut c| {
                 let m = c.norm_l2();
@@ -257,11 +253,11 @@ impl Beams {
             let mut qp_x0_prime = beams.qp.x0_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 qp_x0_prime.as_mut().transpose_mut(),
+                faer::Accum::Replace,
                 shape_deriv,
                 node_x0.transpose(),
-                None,
                 1.0,
-                Parallelism::None,
+                Par::Seq,
             );
             izip!(qp_jacobian.iter_mut(), qp_x0_prime.col_iter_mut()).for_each(
                 |(j, mut x0_prime)| {
@@ -332,15 +328,15 @@ impl Beams {
                     let qp_c_star = beams.qp.c_star.subcols(ei.i_qp_start, ei.n_qps);
                     izip!(qp_g_star.col_iter_mut(), qp_c_star.col_iter()).for_each(
                         |(g_star_col, c_star_col)| {
-                            let mut g_star = g_star_col.as_mat_mut(6, 6);
-                            let c_star = c_star_col.as_mat_ref(6, 6);
+                            let mut g_star = g_star_col.reshape_mut(6, 6);
+                            let c_star = c_star_col.reshape(6, 6);
                             matmul(
                                 g_star.as_mut(),
+                                Accum::Replace,
                                 &mu_mat,
                                 c_star,
-                                None,
                                 1.,
-                                Parallelism::None,
+                                Par::Seq,
                             );
                         },
                     );
@@ -468,8 +464,8 @@ impl Beams {
                 );
 
                 calculate_viscoelastic_force(
-                    kv_i.as_mat_ref(),
-                    tau_i.as_col_ref(),
+                    kv_i.as_ref(),
+                    tau_i.as_ref(),
                     self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
                     state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
                     strain_dot_local.subcols(ei.i_qp_start, ei.n_qps),
@@ -522,8 +518,7 @@ impl Beams {
                     )
                     .for_each(|(&(i, j), muu)| {
                         let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
-                        zipped!(&mut me, &muu.as_mat_ref(6, 6))
-                            .for_each(|unzipped!(me, muu)| *me += *muu);
+                        zip!(&mut me, &muu.reshape(6, 6)).for_each(|unzip!(me, muu)| *me += *muu);
                     });
 
                     // Stiffness matrix
@@ -536,8 +531,7 @@ impl Beams {
                     )
                     .for_each(|(&(i, j), kuu)| {
                         let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
-                        zipped!(&mut ke, &kuu.as_mat_ref(6, 6))
-                            .for_each(|unzipped!(ke, kuu)| *ke += *kuu);
+                        zip!(&mut ke, &kuu.reshape(6, 6)).for_each(|unzip!(ke, kuu)| *ke += *kuu);
                     });
 
                     // Solve for A matrix given M and K
@@ -546,9 +540,9 @@ impl Beams {
                     let a = lu.solve(k.submatrix(6, 6, n_dof_bc, n_dof_bc));
 
                     // Perform eigendecomposition on A matrix to get values and vectors
-                    let eig: Eigendecomposition<c64> = a.eigendecomposition();
-                    let eig_val_raw = eig.s().column_vector();
-                    let eig_vec_raw = eig.u();
+                    let eig = a.eigen().unwrap();
+                    let eig_val_raw = eig.S().column_vector();
+                    let eig_vec_raw = eig.U();
 
                     // Get the order of the eigenvalues
                     let mut eig_order: Vec<_> = (0..eig_val_raw.nrows()).collect();
@@ -599,30 +593,30 @@ impl Beams {
                             .col_iter_mut()
                     )
                     .for_each(|(&(i, j), guu)| {
-                        zipped!(&mut guu.as_mat_mut(6, 6), &c_d.submatrix(i, j, 6, 6))
-                            .for_each(|unzipped!(guu, c)| *guu += *c);
+                        zip!(&mut guu.reshape_mut(6, 6), &c_d.submatrix(i, j, 6, 6))
+                            .for_each(|unzip!(guu, c)| *guu += *c);
                     });
 
                     // Calculate the damping force on each node
                     let mut v = Col::<f64>::zeros(n_dofs);
                     v.as_mut()
-                        .as_mat_mut(6, ei.n_nodes)
+                        .reshape_mut(6, ei.n_nodes)
                         .copy_from(self.node_v.subcols(ei.i_node_start, ei.n_nodes));
                     let f_d = &c_d * &v;
 
                     // Add to node dissipative force
-                    zipped!(
+                    zip!(
                         &mut self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
-                        &f_d.as_ref().as_mat_ref(6, ei.n_nodes)
+                        &f_d.as_ref().reshape(6, ei.n_nodes)
                     )
-                    .for_each(|unzipped!(node_fd, f_d)| *node_fd += *f_d);
+                    .for_each(|unzip!(node_fd, f_d)| *node_fd += *f_d);
                 }
                 _ => {}
             }
         });
 
         // Combine force components
-        zipped!(
+        zip!(
             &mut self.node_f, // total
             &self.node_fe,    // elastic
             &self.node_fd,    // dissipative
@@ -630,7 +624,7 @@ impl Beams {
             &self.node_fi,    // internal
             &self.node_fx     // external (distributed)
         )
-        .for_each(|unzipped!(f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
+        .for_each(|unzip!(f, fe, fd, fg, fi, fx)| *f = *fi + *fe + *fd - *fx - *fg);
     }
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
@@ -668,7 +662,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), muu)| {
                 let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut me, &muu.as_mat_ref(6, 6)).for_each(|unzipped!(me, muu)| *me += *muu);
+                zip!(&mut me, &muu.reshape(6, 6)).for_each(|unzip!(me, muu)| *me += *muu);
             });
 
             // Damping matrix
@@ -680,7 +674,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), guu)| {
                 let mut ge = g.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut ge, &guu.as_mat_ref(6, 6)).for_each(|unzipped!(ge, guu)| *ge += *guu);
+                zip!(&mut ge, &guu.reshape(6, 6)).for_each(|unzip!(ge, guu)| *ge += *guu);
             });
 
             // Stiffness matrix
@@ -692,7 +686,7 @@ impl Beams {
             )
             .for_each(|(&(i, j), kuu)| {
                 let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
-                zipped!(&mut ke, &kuu.as_mat_ref(6, 6)).for_each(|unzipped!(ke, kuu)| *ke += *kuu);
+                zip!(&mut ke, &kuu.reshape(6, 6)).for_each(|unzip!(ke, kuu)| *ke += *kuu);
             });
 
             // Get first node dof index of each element
@@ -709,7 +703,7 @@ impl Beams {
             )
             .for_each(|(&i, f)| {
                 let mut residual = r.as_mut().subrows_mut(i, 6);
-                zipped!(&mut residual, &f).for_each(|unzipped!(r, f)| *r += *f);
+                zip!(&mut residual, &f).for_each(|unzip!(r, f)| *r += *f);
             });
         });
     }
@@ -735,66 +729,66 @@ impl Beams {
             let mut u = self.qp.u.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 u.as_mut().transpose_mut(),
+                Accum::Replace,
                 shape_interp,
                 node_u.transpose(),
-                None,
                 1.,
-                Parallelism::None,
+                Par::Seq,
             );
 
             // Displacement derivative
             let mut u_prime = self.qp.u_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 u_prime.as_mut().transpose_mut(),
+                Accum::Replace,
                 shape_deriv,
                 node_u.transpose(),
-                None,
                 1.0,
-                Parallelism::None,
+                Par::Seq,
             );
 
             // Interpolate velocity
             let mut v = self.qp.v.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 v.as_mut().transpose_mut(),
+                Accum::Replace,
                 shape_interp,
                 node_v.transpose(),
-                None,
                 1.0,
-                Parallelism::None,
+                Par::Seq,
             );
 
             // Velocity derivative
             let mut qp_v_prime = self.qp.v_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 qp_v_prime.as_mut().transpose_mut(),
+                Accum::Replace,
                 shape_deriv,
                 node_v.transpose(),
-                None,
                 1.0,
-                Parallelism::None,
+                Par::Seq,
             );
 
             // Interpolate acceleration
             let mut vd = self.qp.vd.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
                 vd.as_mut().transpose_mut(),
+                Accum::Replace,
                 shape_interp,
                 node_vd.transpose(),
-                None,
                 1.0,
-                Parallelism::None,
+                Par::Seq,
             );
         }
 
         // Divide each column of u_prime by Jacobian
         izip!(self.qp.u_prime.col_iter_mut(), self.qp.jacobian.iter()).for_each(
-            |(mut col, &jacobian)| zipped!(&mut col).for_each(|unzipped!(col)| *col /= jacobian),
+            |(mut col, &jacobian)| zip!(&mut col).for_each(|unzip!(col)| *col /= jacobian),
         );
 
         // Divide each column of v_prime by Jacobian
         izip!(self.qp.v_prime.col_iter_mut(), self.qp.jacobian.iter()).for_each(
-            |(mut col, &jacobian)| zipped!(&mut col).for_each(|unzipped!(col)| *col /= jacobian),
+            |(mut col, &jacobian)| zip!(&mut col).for_each(|unzip!(col)| *col /= jacobian),
         );
 
         // Normalize quaternion and quaternion derivative
@@ -809,7 +803,7 @@ impl Beams {
                 let a =
                     (q[0] * q_prime[0] + q[1] * q_prime[1] + q[2] * q_prime[2] + q[3] * q_prime[3])
                         / m.powi(3);
-                zipped!(&mut q_prime, q).for_each(|unzipped!(qp, q)| *qp = *qp / m - *q * a)
+                zip!(&mut q_prime, q).for_each(|unzip!(qp, q)| *qp = *qp / m - *q * a)
             }
         });
     }
@@ -817,11 +811,11 @@ impl Beams {
     #[inline]
     fn integrate_forces(&mut self) {
         // Zero node matrices
-        self.node_fe.fill_zero();
-        self.node_fd.fill_zero();
-        self.node_fi.fill_zero();
-        self.node_fx.fill_zero();
-        self.node_fg.fill_zero();
+        self.node_fe.fill(0.);
+        self.node_fd.fill(0.);
+        self.node_fi.fill(0.);
+        self.node_fx.fill(0.);
+        self.node_fg.fill(0.);
 
         // Loop through elements
         for ei in self.elem_index.iter() {
@@ -887,9 +881,9 @@ impl Beams {
 
     #[inline]
     fn integrate_matrices(&mut self) {
-        self.node_muu.fill_zero();
-        self.node_guu.fill_zero();
-        self.node_kuu.fill_zero();
+        self.node_muu.fill(0.);
+        self.node_guu.fill(0.);
+        self.node_kuu.fill(0.);
 
         // Loop through elements
         for ei in self.elem_index.iter() {
@@ -948,7 +942,7 @@ fn integrate_fe(
         shape_deriv.col_iter()
     )
     .for_each(|(mut fe, phi, phi_prime)| {
-        acc.fill_zero();
+        acc.fill(0.);
         izip!(
             qp_w.iter(),
             qp_j.iter(),
@@ -958,12 +952,12 @@ fn integrate_fe(
             qp_fd.col_iter()
         )
         .for_each(|(&w, &j, &phi, &phi_prime, fc, fd)| {
-            zipped!(&mut acc, &fc, &fd)
-                .for_each(|unzipped!(acc, fc, fd)| *acc += w * (*fc * phi_prime + *fd * phi * j));
+            zip!(&mut acc, &fc, &fd)
+                .for_each(|unzip!(acc, fc, fd)| *acc += w * (*fc * phi_prime + *fd * phi * j));
         });
 
         // Add values to node matrix
-        zipped!(&mut fe, &acc).for_each(|unzipped!(fe, acc)| *fe += *acc);
+        zip!(&mut fe, &acc).for_each(|unzip!(fe, acc)| *fe += *acc);
     });
 }
 
@@ -1027,22 +1021,22 @@ pub fn calculate_viscoelastic_force(
     mut yd: MatMut<f64>,
 ) {
     // fill everything with zeros
-    mu_cuu.fill_zero();
-    fd_c.fill_zero();
-    fd_d.fill_zero();
-    sd.fill_zero();
-    pd.fill_zero();
-    od.fill_zero();
-    qd.fill_zero();
-    gd.fill_zero();
-    xd.fill_zero();
-    yd.fill_zero();
+    mu_cuu.fill(0.);
+    fd_c.fill(0.);
+    fd_d.fill(0.);
+    sd.fill(0.);
+    pd.fill(0.);
+    od.fill(0.);
+    qd.fill(0.);
+    gd.fill(0.);
+    xd.fill(0.);
+    yd.fill(0.);
 
     // copy kv_i needs to be reshaped to match formatting of mu_cuu
     let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
 
     izip!(kv_i.col_iter().enumerate(), tau_i.iter()).for_each(|((index, kvi_col), tau_i_curr)| {
-        let kvi_mat = kvi_col.as_mat_ref(6, 6);
+        let kvi_mat = kvi_col.reshape(6, 6);
 
         let mut mu_cuu_tmp: Mat<f64> = faer::Mat::zeros(mu_cuu.shape().0, mu_cuu.shape().1);
         let mut fd_c_tmp: Mat<f64> = faer::Mat::zeros(fd_c.shape().0, fd_c.shape().1);
@@ -1072,13 +1066,13 @@ pub fn calculate_viscoelastic_force(
         calc_fd_d(fd_d_tmp.as_mut(), fd_c_tmp.as_ref(), e1_tilde);
 
         flat_kvi_tmp.col_iter_mut().for_each(|col_kvi| {
-            let mut mat_kvi_grad = col_kvi.as_mat_mut(6, 6);
-            mat_kvi_grad.copy_from((Scale(h / 2.) * kvi_mat).as_mat_ref());
+            let mut mat_kvi_grad = col_kvi.reshape_mut(6, 6);
+            mat_kvi_grad.copy_from(h / 2. * kvi_mat);
         });
 
         // Gradient of global forces w.r.t. global strain rate at n+1
         // saved into mu_cuu
-        calc_inertial_matrix(mu_cuu_tmp.as_mut(), flat_kvi_tmp.as_mat_ref(), rr0);
+        calc_inertial_matrix(mu_cuu_tmp.as_mut(), flat_kvi_tmp.as_ref(), rr0);
 
         calc_sd_pd_od_qd_gd_xd_yd(
             sd_tmp.as_mut(),
@@ -1121,15 +1115,15 @@ fn integrate_f(
 ) {
     let mut acc = Col::<f64>::zeros(6);
     izip!(node_f.col_iter_mut(), shape_interp.col_iter()).for_each(|(mut node_f, phi)| {
-        acc.fill_zero();
+        acc.fill(0.);
         izip!(qp_w.iter(), qp_j.iter(), phi.iter(), qp_f.col_iter(),).for_each(
             |(&w, &j, &phi, qp_f)| {
-                zipped!(&mut acc, &qp_f).for_each(|unzipped!(acc, f)| *acc += *f * phi * j * w);
+                zip!(&mut acc, &qp_f).for_each(|unzip!(acc, f)| *acc += *f * phi * j * w);
             },
         );
 
         // Add values to node matrix
-        zipped!(&mut node_f, &acc).for_each(|unzipped!(f, acc)| *f += *acc);
+        zip!(&mut node_f, &acc).for_each(|unzip!(f, acc)| *f += *acc);
     });
 }
 
@@ -1167,11 +1161,11 @@ fn integrate_element_matrices(
         .zip(node_m.col_iter_mut())
         .for_each(|(&(i, j), mut m_col)| {
             // Reset accumulator
-            acc.fill_zero();
+            acc.fill(0.);
 
             // c = w * j * phi_i * phi_j
-            zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
+                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_muu);
 
             // Copy accumulator to node
@@ -1184,33 +1178,33 @@ fn integrate_element_matrices(
         .zip(node_g.col_iter_mut())
         .for_each(|(&(i, j), mut g_col)| {
             // Reset accumulator
-            acc.fill_zero();
+            acc.fill(0.);
 
             // c = w * j * phi_i * phi_j
-            zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
+                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_gi);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_xd);
 
             // c = w * phi_i * phi_prime_j
-            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
-                .for_each(|unzipped!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
+            zip!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
+                .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_yd);
 
             // c = w * phi_prime_i * phi_j
-            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
-                .for_each(|unzipped!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
+            zip!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
+                .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_gd);
 
             // c = w * phi_prime_i * phi_prime_j / j
-            zipped!(
+            zip!(
                 &mut c,
                 &weight,
                 &jacobian,
                 &phi_prime.col(i),
                 &phi_prime.col(j)
             )
-            .for_each(|unzipped!(c, w, j, phi_prime_i, phi_prime_j)| {
+            .for_each(|unzip!(c, w, j, phi_prime_i, phi_prime_j)| {
                 *c = *w * *phi_prime_i * *phi_prime_j / *j
             });
             integrate_mat(acc.as_mut(), c.as_ref(), qp_mu_cuu);
@@ -1225,36 +1219,36 @@ fn integrate_element_matrices(
         .zip(node_k.col_iter_mut())
         .for_each(|(&(i, j), mut k_col)| {
             // Reset accumulator
-            acc.fill_zero();
+            acc.fill(0.);
 
             // c = w * j * phi_i * phi_j
-            zipped!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzipped!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
+            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
+                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_ki);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_qe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_qd);
 
             // c = w * phi_i * phi_prime_j
-            zipped!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
-                .for_each(|unzipped!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
+            zip!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
+                .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_pe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_pd);
 
             // c = w * phi_prime_i * phi_j
-            zipped!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
-                .for_each(|unzipped!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
+            zip!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
+                .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_oe);
             integrate_mat(acc.as_mut(), c.as_ref(), qp_od);
 
             // c = w * phi_prime_i * phi_prime_j / j
-            zipped!(
+            zip!(
                 &mut c,
                 &weight,
                 &jacobian,
                 &phi_prime.col(i),
                 &phi_prime.col(j)
             )
-            .for_each(|unzipped!(c, w, j, phi_prime_i, phi_prime_j)| {
+            .for_each(|unzip!(c, w, j, phi_prime_i, phi_prime_j)| {
                 *c = *w * *phi_prime_i * *phi_prime_j / *j
             });
             integrate_mat(acc.as_mut(), c.as_ref(), qp_cuu);
@@ -1268,8 +1262,7 @@ fn integrate_element_matrices(
 #[inline]
 fn integrate_mat(mut node_mat: ColMut<f64>, c: ColRef<f64>, qp_mat: MatRef<f64>) {
     izip!(qp_mat.col_iter(), c.iter()).for_each(|(qp_mat, &c)| {
-        zipped!(&mut node_mat, &qp_mat)
-            .for_each(|unzipped!(node_mat, qp_mat)| *node_mat += *qp_mat * c)
+        zip!(&mut node_mat, &qp_mat).for_each(|unzip!(node_mat, qp_mat)| *node_mat += *qp_mat * c)
     });
 }
 
@@ -1288,8 +1281,8 @@ mod tests {
         quadrature::Quadrature,
         util::{quat_compose, quat_from_rotation_matrix, vec_tilde},
     };
-    use approx::assert_ulps_eq;
-    use faer::{assert_matrix_eq, col, mat};
+    use equator::assert;
+    use faer::utils::approx::*;
 
     fn create_beams(h: f64) -> Beams {
         // Mass matrix 6x6
@@ -1504,12 +1497,14 @@ mod tests {
 
     #[test]
     fn test_node_x0() {
+        let approx_eq = CwiseMat(ApproxEq::eps() * 100.);
+
         //Only matters for viscoelastic material, but needs to be passed to create_beams
         let h = 0.001;
 
         let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.node_x0.subcols(0, 2).transpose(),
+        assert!(
+            beams.node_x0.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.,
@@ -1529,20 +1524,11 @@ mod tests {
                     -0.030192109815745303,
                     -0.09504013471947484
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_node_u() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.node_u.subcols(0, 2).transpose(),
+        assert!(
+            beams.node_u.subcols(0, 2).transpose() ~
             mat![
                 [0., 0., 0., 1., 0., 0., 0.],
                 [
@@ -1554,20 +1540,11 @@ mod tests {
                     0.,
                     0.
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_node_v() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.node_v.subcols(0, 2).transpose(),
+        assert!(
+            beams.node_v.subcols(0, 2).transpose() ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [
@@ -1578,20 +1555,11 @@ mod tests {
                     -0.014285714285714285,
                     0.003084570715675624
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_node_vd() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.node_vd.subcols(0, 2).transpose(),
+        assert!(
+            beams.node_vd.subcols(0, 2).transpose() ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [
@@ -1602,20 +1570,11 @@ mod tests {
                     -0.014285714285714285,
                     -0.014285714285714285
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_m_star() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.m_star.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.m_star.col(0).reshape(6, 6) ~
             mat![
                 [2., 0., 0., 0., 0.6, -0.4],
                 [0., 2., 0., -0.6, 0., 0.2],
@@ -1623,20 +1582,11 @@ mod tests {
                 [0., -0.6, 0.4, 1., 2., 3.],
                 [0.6, 0., -0.2, 2., 4., 6.],
                 [-0.4, 0.2, 0., 3., 6., 9.],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_c_star() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.c_star.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.c_star.col(0).reshape(6, 6) ~
             mat![
                 [1., 2., 3., 4., 5., 6.],
                 [2., 4., 6., 8., 10., 12.],
@@ -1644,21 +1594,12 @@ mod tests {
                 [4., 8., 12., 16., 20., 24.],
                 [5., 10., 15., 20., 25., 30.],
                 [6., 12., 18., 24., 30., 36.],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_x0() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.x0.col(0).as_2d().transpose(),
-            mat![[
+        assert!(
+            beams.qp.x0.col(0) ~
+            col![
                 0.12723021914310376,
                 -0.048949584217657216,
                 0.024151041535564563,
@@ -1666,21 +1607,12 @@ mod tests {
                 -0.014472327094052504,
                 -0.082444330164641907,
                 -0.17566801608760002
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_x0_prime() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.x0_prime.col(0).as_2d().transpose(),
-            mat![[
+        assert!(
+            beams.qp.x0_prime.col(0) ~
+            col![
                 0.92498434449987588,
                 -0.34174910719483215,
                 0.16616711516322963,
@@ -1688,21 +1620,12 @@ mod tests {
                 0.01993094516117577,
                 0.056965007432292485,
                 0.09338617439225547
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_u() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.u.col(0).as_2d().transpose(),
-            mat![[
+        assert!(
+            beams.qp.u.col(0) ~
+            col![
                 0.000064750114652809492,
                 -0.000063102480397445355,
                 0.000065079641503882152,
@@ -1710,21 +1633,12 @@ mod tests {
                 0.0012723018445566286,
                 0.,
                 0.
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_u_prime() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.u_prime.col(0).as_2d().transpose(),
-            mat![[
+        assert!(
+            beams.qp.u_prime.col(0) ~
+            col![
                 0.00094148768683727929,
                 -0.00090555198142222483,
                 0.00094867482792029139,
@@ -1732,21 +1646,12 @@ mod tests {
                 0.0092498359395732574,
                 0.,
                 0.
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_x() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.x.col(0).as_2d().transpose(),
-            mat![[
+        assert!(
+            beams.qp.x.col(0) ~
+            col![
                 0.12729496925775657,
                 -0.049012686698054662,
                 0.024216121177068447,
@@ -1754,26 +1659,12 @@ mod tests {
                 -0.013224334332128548,
                 -0.08222076069525557,
                 -0.1757727679794095,
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_jacobian() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams
-                .qp
-                .jacobian
-                .subrows(0, beams.elem_index[0].n_qps)
-                .as_2d()
-                .transpose(),
-            mat![[
+        assert!(
+            beams.qp.jacobian.subrows(0, beams.elem_index[0].n_qps) ~
+            col![
                 2.7027484463552831,
                 2.5851972184835246,
                 2.5041356900076868,
@@ -1781,20 +1672,11 @@ mod tests {
                 2.8809584014451262,
                 3.223491986410379,
                 3.4713669823269537,
-            ]],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_strain() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.strain.subcols(0, 2).transpose(),
+        assert!(
+            beams.qp.strain.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.0009414876868371058,
@@ -1812,20 +1694,11 @@ mod tests {
                     0.,
                     0.
                 ]
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_rr0() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.rr0.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.rr0.col(0).reshape(6, 6) ~
             mat![
                 [
                     0.9246873610951006,
@@ -1875,20 +1748,11 @@ mod tests {
                     0.002960788533623304,
                     0.9861297269843315
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_muu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.muu.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.muu.col(0).reshape(6, 6) ~
             mat![
                 [
                     2.000000000000001,
@@ -1938,20 +1802,11 @@ mod tests {
                     5.3139393458205735,
                     9.79853227718398
                 ],
-            ],
-            comp = abs,
-            tol = 1e-12
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_cuu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.cuu.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.cuu.col(0).reshape(6, 6) ~
             mat![
                 [
                     1.3196125048858467,
@@ -2001,20 +1856,11 @@ mod tests {
                     24.058301996624223,
                     43.499066597147355
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_fc() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.fe_c.subcols(0, 2).transpose(),
+        assert!(
+            beams.qp.fe_c.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.10234015755301376,
@@ -2032,20 +1878,11 @@ mod tests {
                     0.45018629955393274,
                     0.7288106297098473,
                 ]
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_fi() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.fi.subcols(0, 2).transpose(),
+        assert!(
+            beams.qp.fi.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.0043751995416213951,
@@ -2063,20 +1900,11 @@ mod tests {
                     -0.060824965744675892,
                     -0.12868857402180306
                 ]
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_fd() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.fe_d.subcols(0, 2).transpose(),
+        assert!(
+            beams.qp.fe_d.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.,
@@ -2094,37 +1922,19 @@ mod tests {
                     0.33031057987442675,
                     -0.22352273933363573,
                 ]
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_fg() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.fg.subcols(0, 2).transpose(),
+        assert!(
+            beams.qp.fg.subcols(0, 2).transpose() ~
             mat![
                 [0., 0., 19.62, 3.330696665493577, -2.2538354951632567, 0.],
                 [0., 0., 19.62, 3.3957558632056069, -2.2939945293324624, 0.]
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_ouu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.oe.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.oe.col(0).reshape(6, 6) ~
             mat![
                 [
                     0.,
@@ -2174,20 +1984,11 @@ mod tests {
                     17.44949503500229,
                     -12.963070176574703
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_puu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.pe.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.pe.col(0).reshape(6, 6) ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2216,20 +2017,11 @@ mod tests {
                     -7.169566648400663,
                     -12.963070176574703
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_quu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.qe.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.qe.col(0).reshape(6, 6) ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2258,20 +2050,11 @@ mod tests {
                     -5.414954154362818,
                     3.820161491912928,
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_guu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.gi.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.gi.col(0).reshape(6, 6) ~
             mat![
                 [
                     0.,
@@ -2321,20 +2104,11 @@ mod tests {
                     0.013413253109011812,
                     0.022439101629457635
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_kuu() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = create_beams(h);
-        assert_matrix_eq!(
-            beams.qp.ki.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.ki.col(0).reshape(6, 6) ~
             mat![
                 [
                     0.,
@@ -2384,9 +2158,7 @@ mod tests {
                     0.04278211835291491,
                     -0.022253736971069835
                 ],
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
     }
 
@@ -2558,13 +2330,15 @@ mod tests {
     }
 
     #[test]
-    fn test_qp_m_star2() {
+    fn test_setup_test() {
+        let approx_eq = CwiseMat(ApproxEq::eps() * 100.);
         //Only matters for viscoelastic material, but needs to be passed to create_beams
         let h = 0.001;
 
         let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.m_star.col(0).as_mat_ref(6, 6),
+
+        assert!(
+            beams.qp.m_star.col(0).reshape(6, 6) ~
             mat![
                 [2., 0., 0., 0., 0.6, -0.4], // column 1
                 [0., 2., 0., -0.6, 0., 0.2], // column 2
@@ -2572,20 +2346,11 @@ mod tests {
                 [0., -0.6, 0.4, 1., 2., 3.], // column 4
                 [0.6, 0., -0.2, 2., 4., 6.], // column 5
                 [-0.4, 0.2, 0., 3., 6., 9.], // column 6
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_c_star2() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.c_star.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.c_star.col(0).reshape(6, 6) ~
             mat![
                 [1., 2., 3., 4., 5., 6.],      // column 1
                 [2., 4., 6., 8., 10., 12.],    // column 2
@@ -2593,20 +2358,11 @@ mod tests {
                 [4., 8., 12., 16., 20., 24.],  // column 4
                 [5., 10., 15., 20., 25., 30.], // column 5
                 [6., 12., 18., 24., 30., 36.], // column 6
-            ],
-            comp = ulp,
-            tol = 256
+            ]
         );
-    }
 
-    #[test]
-    fn test_qp_u2() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.u.col(0).as_2d(),
+        assert!(
+            beams.qp.u.col(0) ~
             col![
                 6.475011465280995e-5,
                 -6.310248039744534e-5,
@@ -2616,20 +2372,10 @@ mod tests {
                 0.0,
                 0.0
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_u_prime2() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.u_prime.col(0).as_2d(),
+        assert!(
+            beams.qp.u_prime.col(0) ~
             col![
                 0.0009414876868372848,
                 -0.0009055519814222241,
@@ -2639,47 +2385,26 @@ mod tests {
                 0.0,
                 0.0
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_rr03() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
         let mut rr0 = Col::<f64>::zeros(4);
         quat_compose(
             beams.qp.u.col(0).subrows(3, 4),
             beams.qp.x0.col(0).subrows(3, 4),
             rr0.as_mut(),
         );
-        assert_ulps_eq!(rr0.norm_l2(), 1.);
-        assert_matrix_eq!(
-            rr0.as_2d(),
+        assert!(
+            rr0 ~
             col![
                 0.9809020325848156,
                 -0.013224334332128542,
                 -0.08222076069525554,
                 -0.17577276797940944
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_strain3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.strain.col(0).as_2d(),
+        assert!(
+            beams.qp.strain.col(0) ~
             col![
                 0.0009414876868371058,
                 -0.0004838292834870028,
@@ -2688,20 +2413,10 @@ mod tests {
                 0.0,
                 0.0
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_cuu3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.cuu.col(0).as_mat_ref(6, 6),
+        assert!(
+            beams.qp.cuu.col(0).reshape(6, 6) ~
             mat![
                 [
                     1.3196125048858467,
@@ -2752,20 +2467,11 @@ mod tests {
                     43.499066597147355
                 ]
             ]
-            .transpose(),
-            comp = ulp,
-            tol = 256
+            .transpose()
         );
-    }
 
-    #[test]
-    fn test_qp_fc3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.fe_c.col(0).as_2d(),
+        assert!(
+            beams.qp.fe_c.col(0) ~
             col![
                 0.1023401575530157,
                 0.15123731179112812,
@@ -2774,20 +2480,10 @@ mod tests {
                 0.3249734441776684,
                 0.5875743638338343
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_fd3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.fe_d.col(0).as_2d(),
+        assert!(
+            beams.qp.fe_d.col(0) ~
             col![
                 0.0,
                 0.0,
@@ -2796,20 +2492,10 @@ mod tests {
                 0.24111122420709402,
                 -0.1751018655842545
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_qp_fi3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.qp.fi.col(0).as_2d(),
+        assert!(
+            beams.qp.fi.col(0) ~
             col![
                 0.004375199541621397,
                 -0.006996757474943007,
@@ -2818,20 +2504,10 @@ mod tests {
                 -0.01379034342897087,
                 -0.02975324221499824
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_node_fe3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.node_fe.col(0).as_2d(),
+        assert!(
+            beams.node_fe.col(0) ~
             col![
                 -0.11121183449279251,
                 -0.1614948289968797,
@@ -2840,20 +2516,10 @@ mod tests {
                 -0.29275354335734394,
                 -0.6838427114868927
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_node_fi3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.node_fi.col(0).as_2d(),
+        assert!(
+            beams.node_fi.col(0) ~
             col![
                 0.0001160455640893056,
                 -0.0006507362696177845,
@@ -2862,20 +2528,10 @@ mod tests {
                 -0.002199479688149198,
                 -0.002486843354672648,
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_node_fg3() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.node_fg.col(0).as_2d(),
+        assert!(
+            beams.node_fg.col(0) ~
             col![
                 0.0,
                 0.0,
@@ -2884,20 +2540,10 @@ mod tests {
                 -0.6120658127519634,
                 0.0,
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
         );
-    }
 
-    #[test]
-    fn test_node_f() {
-        //Only matters for viscoelastic material, but needs to be passed to create_beams
-        let h = 0.001;
-
-        let beams = setup_test(h);
-        assert_matrix_eq!(
-            beams.node_f.col(0).as_2d(),
+        assert!(
+            beams.node_f.col(0) ~
             col![
                 -0.1110957889287032,
                 -0.16214556526649748,
@@ -2906,9 +2552,7 @@ mod tests {
                 0.3171127897064705,
                 -0.6863295548415653
             ]
-            .as_2d(),
-            comp = ulp,
-            tol = 256
+
         );
     }
 }

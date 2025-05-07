@@ -1,7 +1,4 @@
-use faer::{
-    linalg::matmul::matmul, linalg::solvers::SpSolver, unzipped, zipped, Col, ColMut, ColRef, Mat,
-    MatMut, Parallelism,
-};
+use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::izip;
 
 use crate::{
@@ -143,7 +140,7 @@ impl Solver {
         };
 
         // Initialize lambda to zero
-        self.lambda.fill_zero();
+        self.lambda.fill(0.);
 
         // Loop until converged or max iteration limit reached
         while res.err > 1. {
@@ -152,16 +149,16 @@ impl Solver {
             //------------------------------------------------------------------
 
             // Reset matrices
-            self.m.fill_zero();
-            self.kt.fill_zero();
-            self.ct.fill_zero();
-            self.b.fill_zero();
-            self.t.fill_zero();
+            self.m.fill(0.);
+            self.kt.fill(0.);
+            self.ct.fill(0.);
+            self.b.fill(0.);
+            self.t.fill(0.);
             self.t.diagonal_mut().column_vector_mut().fill(1.);
-            self.r.fill_zero();
+            self.r.fill(0.);
 
             // Subtract direct nodal loads
-            zipped!(&mut self.r, &self.fx).for_each(|unzipped!(r, fx)| *r -= *fx);
+            zip!(&mut self.r, &self.fx).for_each(|unzip!(r, fx)| *r -= *fx);
 
             // Add elements to system
             self.elements.assemble_system(
@@ -190,23 +187,23 @@ impl Solver {
             if self.p.is_static {
                 matmul(
                     st_11,
+                    Accum::Replace,
                     self.kt.as_ref(),
                     self.t.as_ref(),
-                    None,
                     1.,
-                    faer::Parallelism::None,
+                    Par::Seq,
                 );
             } else {
-                zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
+                zip!(&mut st_11, &self.m, &self.ct).for_each(|unzip!(st, m, ct)| {
                     *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
                 });
                 matmul(
                     st_11,
+                    Accum::Add,
                     self.kt.as_ref(),
                     self.t.as_ref(),
-                    Some(1.),
                     1.,
-                    faer::Parallelism::None,
+                    Par::Seq,
                 );
             }
 
@@ -214,22 +211,22 @@ impl Solver {
             let st_21 = self
                 .st
                 .submatrix_mut(self.n_system, 0, self.n_lambda, self.n_system);
-            matmul(st_21, &self.b, &self.t, None, 1., faer::Parallelism::None);
+            matmul(st_21, Accum::Replace, &self.b, &self.t, 1., Par::Seq);
             let mut st_12 = self
                 .st
                 .submatrix_mut(0, self.n_system, self.n_system, self.n_lambda);
             st_12.copy_from(self.b.transpose());
             self.st
                 .submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_lambda)
-                .fill_zero();
+                .fill(0.);
 
             matmul(
                 self.r.subrows_mut(0, self.n_system),
+                Accum::Add,
                 self.b.transpose(),
                 self.lambda.as_ref(),
-                Some(1.),
                 1.,
-                faer::Parallelism::None,
+                Par::Seq,
             );
 
             //------------------------------------------------------------------
@@ -247,14 +244,14 @@ impl Solver {
             // println!("st = {:?}", self.st.submatrix(0, 0, 6, 6));
 
             // Condition residual
-            zipped!(&mut self.rhs.subrows_mut(0, self.n_system))
-                .for_each(|unzipped!(v)| *v *= self.p.conditioner);
+            zip!(&mut self.rhs.subrows_mut(0, self.n_system))
+                .for_each(|unzip!(v)| *v *= self.p.conditioner);
 
             // Condition system
-            zipped!(&mut st_c.subrows_mut(0, self.n_system))
-                .for_each(|unzipped!(v)| *v *= self.p.conditioner);
-            zipped!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
-                .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+            zip!(&mut st_c.subrows_mut(0, self.n_system))
+                .for_each(|unzip!(v)| *v *= self.p.conditioner);
+            zip!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
+                .for_each(|unzip!(v)| *v /= self.p.conditioner);
 
             // println!("rhs = {:?}", self.rhs);
             // println!("st_c = {:?}", st_c.submatrix(0, 0, 6, 6));
@@ -267,11 +264,11 @@ impl Solver {
             // println!("x = {:?}", self.x);
 
             // De-condition solution vector
-            zipped!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
-                .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+            zip!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
+                .for_each(|unzip!(v)| *v /= self.p.conditioner);
 
             // Negate solution vector
-            zipped!(&mut self.x).for_each(|unzipped!(x)| *x *= -1.);
+            zip!(&mut self.x).for_each(|unzip!(x)| *x *= -1.);
 
             //------------------------------------------------------------------
             // Update State & lambda
@@ -297,16 +294,16 @@ impl Solver {
             // Calculate convergence error (https://doi.org/10.1115/1.4033441)
             //------------------------------------------------------------------
 
-            let sys_sum_err_squared = zipped!(&self.x_delta, &state.u_delta)
-                .map(|unzipped!(pi, xi)| {
+            let sys_sum_err_squared = zip!(&self.x_delta, &state.u_delta)
+                .map(|unzip!(pi, xi)| {
                     (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
                 })
                 .as_ref()
                 .sum();
 
             let const_sum_err_squared =
-                zipped!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
-                    .map(|unzipped!(pi, xi)| {
+                zip!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
+                    .map(|unzip!(pi, xi)| {
                         (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
                     })
                     .sum();
@@ -330,11 +327,11 @@ impl Solver {
             }
 
             // Update lambda
-            zipped!(
+            zip!(
                 &mut self.lambda,
                 &self.x.subrows(self.n_system, self.n_lambda)
             )
-            .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
+            .for_each(|unzip!(lambda, dl)| *lambda += *dl);
 
             // Iteration limit reached return not converged
             if res.iter >= self.p.max_iter {
@@ -416,14 +413,14 @@ impl Solver {
         );
 
         // Initialize lambda to zero
-        self.lambda.fill_zero();
+        self.lambda.fill(0.);
 
         // Update lambda
-        zipped!(
+        zip!(
             &mut self.lambda,
             &self.x.subrows(self.n_system, self.n_lambda)
         )
-        .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
+        .for_each(|unzip!(lambda, dl)| *lambda += *dl);
 
         //------------------------------------------------------------------
         // Residual Evaluation + Gradient (Same as one loop in self.step)
@@ -443,16 +440,16 @@ impl Solver {
         //------------------------------------------------------------------
 
         // Reset matrices
-        self.m.fill_zero();
-        self.kt.fill_zero();
-        self.ct.fill_zero();
-        self.b.fill_zero();
-        self.t.fill_zero();
+        self.m.fill(0.);
+        self.kt.fill(0.);
+        self.ct.fill(0.);
+        self.b.fill(0.);
+        self.t.fill(0.);
         self.t.diagonal_mut().column_vector_mut().fill(1.);
-        self.r.fill_zero();
+        self.r.fill(0.);
 
         // Subtract direct nodal loads - not needed for gradient checking
-        // zipped!(&mut self.r, &self.fx).for_each(|unzipped!(r, fx)| *r -= *fx);
+        // zip!(&mut self.r, &self.fx).for_each(|unzip!(r, fx)| *r -= *fx);
 
         // Add elements to system
         self.elements.assemble_system(
@@ -474,38 +471,37 @@ impl Solver {
 
         // Assemble system matrix
         let mut st_11 = self.st.submatrix_mut(0, 0, self.n_system, self.n_system);
-        zipped!(&mut st_11, &self.m, &self.ct).for_each(|unzipped!(st, m, ct)| {
-            *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime
-        });
+        zip!(&mut st_11, &self.m, &self.ct)
+            .for_each(|unzip!(st, m, ct)| *st = *m * self.p.beta_prime + *ct * self.p.gamma_prime);
         matmul(
             st_11,
+            Accum::Add,
             self.kt.as_ref(),
             self.t.as_ref(),
-            Some(1.),
             1.,
-            faer::Parallelism::None,
+            Par::Seq,
         );
 
         // Assemble constraints
         let st_21 = self
             .st
             .submatrix_mut(self.n_system, 0, self.n_lambda, self.n_system);
-        matmul(st_21, &self.b, &self.t, None, 1., faer::Parallelism::None);
+        matmul(st_21, Accum::Replace, &self.b, &self.t, 1., Par::Seq);
         let mut st_12 = self
             .st
             .submatrix_mut(0, self.n_system, self.n_system, self.n_lambda);
-        zipped!(&mut st_12, &self.b.transpose()).for_each(|unzipped!(st, bt)| *st = *bt);
+        zip!(&mut st_12, &self.b.transpose()).for_each(|unzip!(st, bt)| *st = *bt);
         self.st
             .submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_lambda)
-            .fill_zero();
+            .fill(0.);
 
         matmul(
             self.r.subrows_mut(0, self.n_system),
+            Accum::Add,
             self.b.transpose(),
             self.lambda.as_ref(),
-            Some(1.),
             1.,
-            faer::Parallelism::None,
+            Par::Seq,
         );
 
         //------------------------------------------------------------------
@@ -524,14 +520,14 @@ impl Solver {
 
         /*
         // Condition residual
-        zipped!(&mut self.rhs.subrows_mut(0, self.n_system))
-            .for_each(|unzipped!(v)| *v *= self.p.conditioner);
+        zip!(&mut self.rhs.subrows_mut(0, self.n_system))
+            .for_each(|unzip!(v)| *v *= self.p.conditioner);
 
         // Condition system
-        zipped!(&mut st_c.subrows_mut(0, self.n_system))
-            .for_each(|unzipped!(v)| *v *= self.p.conditioner);
-        zipped!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
-            .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+        zip!(&mut st_c.subrows_mut(0, self.n_system))
+            .for_each(|unzip!(v)| *v *= self.p.conditioner);
+        zip!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
+            .for_each(|unzip!(v)| *v /= self.p.conditioner);
 
         // Solve system
         let lu = st_c.partial_piv_lu();
@@ -539,11 +535,11 @@ impl Solver {
         self.x.copy_from(&x);
 
         // De-condition solution vector
-        zipped!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
-            .for_each(|unzipped!(v)| *v /= self.p.conditioner);
+        zip!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
+            .for_each(|unzip!(v)| *v /= self.p.conditioner);
 
         // Negate solution vector
-        zipped!(&mut self.x).for_each(|unzipped!(x)| *x *= -1.);
+        zip!(&mut self.x).for_each(|unzip!(x)| *x *= -1.);
 
         //------------------------------------------------------------------
         // Update State & lambda
@@ -566,8 +562,8 @@ impl Solver {
             });
 
         // Calculate convergence error
-        res.err = zipped!(&self.x_delta, &state.u_delta)
-            .map(|unzipped!(xd, ud)| *xd / ((*ud * self.p.phi_tol).abs() + self.p.x_tol))
+        res.err = zip!(&self.x_delta, &state.u_delta)
+            .map(|unzip!(xd, ud)| *xd / ((*ud * self.p.phi_tol).abs() + self.p.x_tol))
             .norm_l2()
             .div((self.n_system as f64).sqrt());
 
@@ -588,11 +584,11 @@ impl Solver {
         );
 
         // Update lambda
-        zipped!(
+        zip!(
             &mut self.lambda,
             &self.x.subrows(self.n_system, self.n_lambda)
         )
-        .for_each(|unzipped!(lambda, dl)| *lambda += *dl);
+        .for_each(|unzip!(lambda, dl)| *lambda += *dl);
 
         // Iteration limit reached return not converged
         if x_err < self.p.x_tol && phi_err < self.p.phi_tol {
@@ -636,8 +632,8 @@ impl Solver {
             match dofs.active {
                 ActiveDOFs::All | ActiveDOFs::Rotation => {
                     // Multiply r_delta by h
-                    zipped!(&mut rv, &r_delta)
-                        .for_each(|unzipped!(rv, r_delta)| *rv = self.p.h * *r_delta);
+                    zip!(&mut rv, &r_delta)
+                        .for_each(|unzip!(rv, r_delta)| *rv = self.p.h * *r_delta);
 
                     // Get angle, return if angle is basically zero
                     let phi = rv.norm_l2();
@@ -659,10 +655,10 @@ impl Solver {
                     let b = (phi_c - 1.) / (phi * phi);
 
                     // Construct tangent matrix
-                    tan.fill_zero();
+                    tan.fill(0.);
                     tan.diagonal_mut().column_vector_mut().fill(1.);
-                    matmul(tan.as_mut(), &mt, &mt, Some(1.), a, Parallelism::None);
-                    zipped!(&mut tan, &mt).for_each(|unzipped!(t, mt)| *t += *mt * b);
+                    matmul(tan.as_mut(), Accum::Add, &mt, &mt, a, Par::Seq);
+                    zip!(&mut tan, &mt).for_each(|unzip!(t, mt)| *t += *mt * b);
 
                     // Use transpose of tangent matrix since model is in inertial frame
                     self.t.submatrix_mut(i, i, 3, 3).copy_from(&tan.transpose());
