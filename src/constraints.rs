@@ -1,8 +1,3 @@
-use std::cmp;
-
-use faer::{col, unzip, zip, Col, ColMut, ColRef, Mat, MatMut};
-use itertools::Itertools;
-
 use crate::{
     node::NodeFreedomMap,
     state::State,
@@ -11,6 +6,9 @@ use crate::{
         quat_inverse, quat_rotate_vector, vec_tilde,
     },
 };
+use faer::{linalg::matmul::matmul, prelude::*, Accum, Par};
+use itertools::Itertools;
+use std::cmp;
 
 #[derive(Clone, Copy)]
 pub enum ConstraintKind {
@@ -53,8 +51,10 @@ impl Constraints {
         &mut self,
         nfm: &NodeFreedomMap,
         state: &State,
+        lambda: ColRef<f64>,
         mut phi: ColMut<f64>,
         mut b: MatMut<f64>,
+        mut kt: MatMut<f64>,
     ) {
         // Loop through constraints and calculate residual and gradient
         self.constraints.iter_mut().for_each(|c| {
@@ -63,11 +63,14 @@ impl Constraints {
             let r_base = state.u.col(c.node_id_base).subrows(3, 4);
             let u_target = state.u.col(c.node_id_target).subrows(0, 3);
             let r_target = state.u.col(c.node_id_target).subrows(3, 4);
+            let lambda_target = lambda.subrows(c.first_dof_index, c.phi.nrows());
 
             // Switch calculation based on constraint type
             match c.kind {
                 ConstraintKind::Prescribed => c.calculate_prescribed(u_target, r_target),
-                ConstraintKind::Rigid => c.calculate_rigid(u_base, r_base, u_target, r_target),
+                ConstraintKind::Rigid => {
+                    c.calculate_rigid(u_base, r_base, u_target, r_target, lambda_target)
+                }
             }
         });
 
@@ -100,6 +103,15 @@ impl Constraints {
                         c.b_base.ncols(),
                     );
                     b_base.copy_from(&c.b_base);
+                    if dofs_base.n_dofs == 6 {
+                        let mut k_base = kt.as_mut().submatrix_mut(
+                            dofs_base.first_dof_index,
+                            dofs_base.first_dof_index,
+                            6,
+                            6,
+                        );
+                        zip!(&mut k_base, &c.k_base).for_each(|unzip!(k, k_const)| *k += *k_const);
+                    }
                 }
             }
         });
@@ -124,6 +136,10 @@ pub struct Constraint {
     c: Mat<f64>,
     /// Axial vector of rotation matrix
     ax: Mat<f64>,
+    /// Stiffness matrix for target node `[6,6]`
+    k_base: Mat<f64>,
+    r_x0_tilde: Mat<f64>,
+    lambda_tilde: Mat<f64>,
 }
 
 impl Constraint {
@@ -153,6 +169,9 @@ impl Constraint {
             rt_rbinv: Col::<f64>::zeros(4),
             c: Mat::<f64>::zeros(3, 3),
             ax: Mat::zeros(3, 3),
+            k_base: Mat::<f64>::zeros(n_dofs_base, n_dofs_base),
+            r_x0_tilde: Mat::<f64>::zeros(3, 3),
+            lambda_tilde: Mat::<f64>::zeros(3, 3),
         }
     }
 
@@ -206,9 +225,11 @@ impl Constraint {
         r_base: ColRef<f64>,
         u_target: ColRef<f64>,
         r_target: ColRef<f64>,
+        lambda: ColRef<f64>,
     ) {
         // Position residual: Phi(0:3) = u2 + X0 - u1 - R1*X0
         quat_rotate_vector(r_base.as_ref(), self.x0.as_ref(), self.r_x0.as_mut());
+        vec_tilde(self.r_x0.as_ref(), self.r_x0_tilde.as_mut());
         zip!(
             &mut self.phi.subrows_mut(0, 3),
             &u_base,
@@ -217,6 +238,19 @@ impl Constraint {
             &self.r_x0
         )
         .for_each(|unzip!(phi, u1, u2, x0, rb_x0)| *phi = *u2 + *x0 - *u1 - *rb_x0);
+
+        // Stiffness matrix for target node
+        vec_tilde(lambda.subrows(0, 3), self.lambda_tilde.as_mut());
+        if self.k_base.shape() == (6, 6) {
+            matmul(
+                self.k_base.submatrix_mut(3, 3, 3, 3),
+                Accum::Replace,
+                &self.lambda_tilde,
+                &self.r_x0_tilde,
+                -1.,
+                Par::Seq,
+            );
+        }
 
         // Angular residual:  Phi(3:6) = axial(R2*inv(rb))
         if self.n_dofs == 6 {
@@ -229,7 +263,9 @@ impl Constraint {
         // Base constraint gradient
         // Set at initialization B(0:3,0:3) = -I
         // B(0:3,3:6) = tilde(R1*X0)
-        vec_tilde(self.r_x0.as_ref(), self.b_base.submatrix_mut(0, 3, 3, 3));
+        self.b_base
+            .submatrix_mut(0, 3, 3, 3)
+            .copy_from(&self.r_x0_tilde);
         if self.n_dofs == 6 {
             // AX(c)
             matrix_ax(self.c.as_ref(), self.ax.as_mut());

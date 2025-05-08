@@ -175,8 +175,10 @@ impl Solver {
             self.constraints.assemble_constraints(
                 &self.nfm,
                 state,
+                self.lambda.as_ref(),
                 self.phi.as_mut(),
                 self.b.as_mut(),
+                self.kt.as_mut(),
             );
 
             // Calculate tangent matrix
@@ -463,8 +465,14 @@ impl Solver {
         );
 
         // Calculate constraints
-        self.constraints
-            .assemble_constraints(&self.nfm, state, self.phi.as_mut(), self.b.as_mut());
+        self.constraints.assemble_constraints(
+            &self.nfm,
+            state,
+            self.lambda.as_ref(),
+            self.phi.as_mut(),
+            self.b.as_mut(),
+            self.kt.as_mut(),
+        );
 
         // Calculate tangent matrix
         self.populate_tangent_matrix(state);

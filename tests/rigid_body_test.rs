@@ -181,6 +181,9 @@ fn test_heavy_top() {
     // Rotation vector for an
     let mut rv = Col::<f64>::zeros(3);
 
+    let mut n_iter_sum = 0;
+    let mut err_sum = 0.0;
+
     // Time step
     for i in 0..n_steps {
         let t = (i as f64) * time_step;
@@ -213,9 +216,16 @@ fn test_heavy_top() {
 
         // Step
         let res = solver.step(&mut state);
+        // println!("t={:.3}, iter={:?}, err={}", t, res.iter, res.err);
+        n_iter_sum += res.iter;
+        err_sum += res.err;
 
         assert_eq!(res.converged, true);
     }
+
+    // println!("Total iterations: {}", n_iter_sum);
+    // println!("Average iterations: {}", n_iter_sum as f64 / n_steps as f64);
+    // println!("Average error: {}", err_sum as f64 / n_steps as f64);
 }
 
 #[test]
