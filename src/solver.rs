@@ -92,7 +92,7 @@ impl Solver {
         constraints: Constraints,
     ) -> Self {
         let n_system_dofs = nfm.total_dofs;
-        let n_constraint_dofs = constraints.n_dofs;
+        let n_constraint_dofs = constraints.n_rows;
         let n_dofs = n_system_dofs + n_constraint_dofs;
         let n_nodes = nfm.node_dofs.len();
         Solver {

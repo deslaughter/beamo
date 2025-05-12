@@ -6,7 +6,7 @@ use ottr::{
     interfaces::{MooringLine, RigidPlatform},
     model::Model,
     node::Direction,
-    util::{cross, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde},
+    util::{cross_product, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde},
     vtk::lines_as_vtk,
 };
 use std::{
@@ -102,21 +102,21 @@ fn test_heavy_top() {
 
     // translational velocity
     let mut x_dot = col![0., 0., 0.];
-    cross(omega.as_ref(), x.as_ref(), x_dot.as_mut());
+    cross_product(omega.as_ref(), x.as_ref(), x_dot.as_mut());
 
     // angular acceleration
     let mut x_tilde = Mat::<f64>::zeros(3, 3);
     vec_tilde(x.as_ref(), x_tilde.as_mut());
     let j_bar: Mat<f64> = &j - m * &x_tilde * &x_tilde;
     let mut x_cross_m_gamma = col![0., 0., 0.];
-    cross(
+    cross_product(
         x.as_ref(),
         (Scale(m) * &gamma).as_ref(),
         x_cross_m_gamma.as_mut(),
     );
     let mut omega_cross_j_bar_omega = col![0., 0., 0.];
     let j_bar_omega: Col<f64> = &j_bar * &omega;
-    cross(
+    cross_product(
         omega.as_ref(),
         j_bar_omega.as_ref(),
         omega_cross_j_bar_omega.as_mut(),
@@ -127,9 +127,9 @@ fn test_heavy_top() {
 
     // translational acceleration
     let mut omega_dot_cross_x = col![0., 0., 0.];
-    cross(omega_dot.as_ref(), x.as_ref(), omega_dot_cross_x.as_mut());
+    cross_product(omega_dot.as_ref(), x.as_ref(), omega_dot_cross_x.as_mut());
     let mut omega_cross_x_dot = col![0., 0., 0.];
-    cross(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
+    cross_product(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
     let x_ddot = omega_dot_cross_x + omega_cross_x_dot;
 
     // Add mass element
@@ -254,21 +254,21 @@ fn test_heavy_top_grad() {
 
     // translational velocity
     let mut x_dot = col![0., 0., 0.];
-    cross(omega.as_ref(), x.as_ref(), x_dot.as_mut());
+    cross_product(omega.as_ref(), x.as_ref(), x_dot.as_mut());
 
     // angular acceleration
     let mut x_tilde = Mat::<f64>::zeros(3, 3);
     vec_tilde(x.as_ref(), x_tilde.as_mut());
     let j_bar: Mat<f64> = &j - m * &x_tilde * &x_tilde;
     let mut x_cross_m_gamma = col![0., 0., 0.];
-    cross(
+    cross_product(
         x.as_ref(),
         (Scale(m) * &gamma).as_ref(),
         x_cross_m_gamma.as_mut(),
     );
     let mut omega_cross_j_bar_omega = col![0., 0., 0.];
     let j_bar_omega: Col<f64> = &j_bar * &omega;
-    cross(
+    cross_product(
         omega.as_ref(),
         j_bar_omega.as_ref(),
         omega_cross_j_bar_omega.as_mut(),
@@ -279,9 +279,9 @@ fn test_heavy_top_grad() {
 
     // translational acceleration
     let mut omega_dot_cross_x = col![0., 0., 0.];
-    cross(omega_dot.as_ref(), x.as_ref(), omega_dot_cross_x.as_mut());
+    cross_product(omega_dot.as_ref(), x.as_ref(), omega_dot_cross_x.as_mut());
     let mut omega_cross_x_dot = col![0., 0., 0.];
-    cross(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
+    cross_product(omega.as_ref(), x_dot.as_ref(), omega_cross_x_dot.as_mut());
     let x_ddot = omega_dot_cross_x + omega_cross_x_dot;
 
     // Add mass element

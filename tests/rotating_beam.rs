@@ -8,7 +8,7 @@ use ottr::{
     interp::gauss_legendre_lobotto_points,
     model::Model,
     quadrature::Quadrature,
-    util::cross,
+    util::cross_product,
     vtk::beams_nodes_as_vtk,
 };
 
@@ -39,7 +39,7 @@ fn test_rotating_beam() {
         .map(|&si| {
             let p = col![10. * si + 2., 0., 0.];
             let mut v = col![0., 0., 0.];
-            cross(omega.as_ref(), p.as_ref(), v.as_mut());
+            cross_product(omega.as_ref(), p.as_ref(), v.as_mut());
             model
                 .add_node()
                 .element_location(si)

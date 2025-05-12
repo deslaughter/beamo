@@ -1,4 +1,4 @@
-use faer::prelude::*;
+use faer::{linalg::zip, prelude::*};
 use std::f64::consts::PI;
 
 #[inline]
@@ -273,7 +273,7 @@ pub fn quat_from_tangent_twist(tangent: ColRef<f64>, twist: f64, q: ColMut<f64>)
     ];
 
     let mut e3 = Col::<f64>::zeros(3);
-    cross(e1.as_ref(), e2.as_ref(), e3.as_mut());
+    cross_product(e1.as_ref(), e2.as_ref(), e3.as_mut());
 
     let mut q0 = Col::<f64>::zeros(4);
     quat_from_rotation_matrix(
@@ -293,10 +293,16 @@ pub fn quat_from_tangent_twist(tangent: ColRef<f64>, twist: f64, q: ColMut<f64>)
 }
 
 // Returns the cross product of two vectors
-pub fn cross(a: ColRef<f64>, b: ColRef<f64>, mut c: ColMut<f64>) {
+pub fn cross_product(a: ColRef<f64>, b: ColRef<f64>, mut c: ColMut<f64>) {
     c[0] = a[1] * b[2] - a[2] * b[1];
     c[1] = a[2] * b[0] - a[0] * b[2];
     c[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+pub fn dot_product(a: ColRef<f64>, b: ColRef<f64>) -> f64 {
+    let mut sum = 0.;
+    zip!(&a, &b).for_each(|unzip!(a, b)| sum += *a * *b);
+    sum
 }
 
 pub fn vec_tilde(v: ColRef<f64>, mut m: MatMut<f64>) {
