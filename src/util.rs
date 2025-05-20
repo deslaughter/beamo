@@ -1,4 +1,4 @@
-use faer::{linalg::zip, prelude::*};
+use faer::prelude::*;
 use std::f64::consts::PI;
 
 #[inline]
@@ -19,6 +19,22 @@ pub fn matrix_ax(m: MatRef<f64>, mut ax: MatMut<f64>) {
 }
 
 #[inline]
+/// AX2(a,b)
+pub fn matrix_ax2(a: MatRef<f64>, b: ColRef<f64>, mut out: MatMut<f64>) {
+    out[(0, 0)] = ((a[(1, 2)] - a[(2, 1)]) * b[0]) / 2.;
+    out[(0, 1)] = (-a[(0, 2)] * b[0] - a[(2, 1)] * b[1] - a[(2, 2)] * b[2]) / 2.;
+    out[(0, 2)] = (a[(0, 1)] * b[0] + a[(1, 1)] * b[1] + a[(1, 2)] * b[2]) / 2.;
+
+    out[(1, 0)] = (a[(1, 2)] * b[1] + a[(2, 0)] * b[0] + a[(2, 2)] * b[2]) / 2.;
+    out[(1, 1)] = ((-a[(0, 2)] + a[(2, 0)]) * b[1]) / 2.;
+    out[(1, 2)] = (-a[(0, 0)] * b[0] - a[(0, 2)] * b[2] - a[(1, 0)] * b[1]) / 2.;
+
+    out[(2, 0)] = (-a[(1, 0)] * b[0] - a[(1, 1)] * b[1] - a[(2, 1)] * b[2]) / 2.;
+    out[(2, 1)] = (a[(0, 0)] * b[0] + a[(0, 1)] * b[1] + a[(2, 0)] * b[2]) / 2.;
+    out[(2, 2)] = ((a[(0, 1)] - a[(1, 0)]) * b[2]) / 2.;
+}
+
+#[inline]
 pub fn quat_inverse(q_in: ColRef<f64>, mut q_out: ColMut<f64>) {
     let length = q_in.norm_l2();
     q_out[0] = q_in[0] / length;
@@ -32,13 +48,13 @@ pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
     let (w, x, y, z) = (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
 
     // Calculate the angle (in radians) and the rotation axis
-    let angle = 2.0 * w.acos();
+    let angle = 2. * w.acos();
     let angle = if angle > std::f64::consts::PI {
-        angle - 2.0 * std::f64::consts::PI
+        angle - 2. * std::f64::consts::PI
     } else {
         angle
     };
-    let norm = (1.0 - w * w).sqrt();
+    let norm = (1. - w * w).sqrt();
 
     // To avoid division by zero, check if norm is very small
     if norm < f64::EPSILON {
@@ -96,6 +112,13 @@ pub fn quat_as_matrix(q: ColRef<f64>, mut m: MatMut<f64>) {
     m[(2, 0)] = ik - wj;
     m[(2, 1)] = jk + wi;
     m[(2, 2)] = ww - ii - jj + kk;
+}
+
+#[inline]
+pub fn quat_as_matrix_alloc(q: ColRef<f64>) -> Mat<f64> {
+    let mut m = Mat::<f64>::zeros(3, 3);
+    quat_as_matrix(q, m.as_mut());
+    m
 }
 
 #[inline]
@@ -377,5 +400,15 @@ mod tests {
         let mut m: Mat<f64> = Mat::zeros(3, 3);
         quat_as_matrix(q.as_ref(), m.as_mut());
         assert!(m ~ mat![[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+    }
+
+    #[test]
+    fn test_ax2() {
+        let approx_eq = CwiseMat(ApproxEq::eps());
+        let a = mat![[0., 1., 2.], [3., 4., 5.], [6., 7., 8.]];
+        let b = col![1., 2., 3.];
+        let mut out = Mat::<f64>::zeros(3, 3);
+        matrix_ax2(a.as_ref(), b.as_ref(), out.as_mut());
+        assert!(out ~ mat![[-1., -20., 12.], [20., 4., -6.], [-16., 10., -3.]]);
     }
 }

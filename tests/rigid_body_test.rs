@@ -223,9 +223,9 @@ fn test_heavy_top() {
         assert_eq!(res.converged, true);
     }
 
-    // println!("Total iterations: {}", n_iter_sum);
-    // println!("Average iterations: {}", n_iter_sum as f64 / n_steps as f64);
-    // println!("Average error: {}", err_sum as f64 / n_steps as f64);
+    println!("Total iterations: {}", n_iter_sum);
+    println!("Average iterations: {}", n_iter_sum as f64 / n_steps as f64);
+    println!("Average error: {}", err_sum as f64 / n_steps as f64);
 }
 
 #[test]

@@ -231,6 +231,8 @@ impl Solver {
                 Par::Seq,
             );
 
+            // println!("St = {:?}", self.st);
+
             //------------------------------------------------------------------
             // Solve System
             //------------------------------------------------------------------
@@ -339,8 +341,6 @@ impl Solver {
             if res.iter >= self.p.max_iter {
                 return res;
             }
-
-            // println!("Error: {} (iter {})", res.err, res.iter);
 
             // Increment iteration count
             res.iter += 1;

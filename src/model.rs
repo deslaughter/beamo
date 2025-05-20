@@ -173,6 +173,21 @@ impl Model {
         self.constraints.last().unwrap().id
     }
 
+    /// Add prescribed constraint
+    pub fn add_revolute_joint(&mut self, base_node_id: usize, target_node_id: usize) -> usize {
+        let base_node = &self.nodes[base_node_id];
+        let target_node = &self.nodes[target_node_id];
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::Revolute,
+            node_id_base: base_node_id,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            vec: Col::zeros(3),
+        });
+        self.constraints.last().unwrap().id
+    }
+
     pub fn add_beam_element(
         &mut self,
         node_ids: &[usize],
