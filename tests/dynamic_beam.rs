@@ -90,7 +90,7 @@ fn create_model(omega: ColRef<f64>) -> (Model, usize) {
         .build();
 
     // Add constraint from hub node to first beam node
-    model.add_rigid_constraint(hub_node_id, beam_node_ids[0]);
+    model.add_prescribed_rotation(hub_node_id, beam_node_ids[0], col![1., 0., 0.]);
 
     //--------------------------------------------------------------------------
     // Create solver
@@ -320,11 +320,11 @@ fn test_revolute_joint() {
     // Add shaft base node
     let shaft_base_node_id = model
         .add_node()
-        .position(0., -1., 0., 1., 0., 0., 0.)
+        .position(0., 0., 0., 1., 0., 0., 0.)
         .build();
 
     // Add revolute joint along axis from shaft base to hub
-    model.add_revolute_joint(shaft_base_node_id, hub_node_id);
+    model.add_revolute_joint(shaft_base_node_id, hub_node_id, col![0., 1., 0.]);
 
     // Fix shaft base node
     model.add_prescribed_constraint(shaft_base_node_id);
@@ -347,6 +347,70 @@ fn test_revolute_joint() {
     for i in 0..n_steps {
         beams_nodes_as_vtk(&solver.elements.beams)
             .export_ascii(format!("{OUT_DIR}/revolute_{i:0>3}.vtk"))
+            .unwrap();
+
+        // Take step and get convergence result
+        let res = solver.step(&mut state);
+
+        n_iter_sum += res.iter;
+        err_sum += res.err;
+
+        assert_eq!(res.converged, true);
+    }
+
+    println!("Total iterations: {}", n_iter_sum);
+    println!("Average iterations: {}", n_iter_sum as f64 / n_steps as f64);
+    println!("Average error: {}", err_sum as f64 / n_steps as f64);
+}
+
+#[test]
+fn test_rotating_spinning_beam() {
+    fs::create_dir_all(OUT_DIR).unwrap();
+
+    // Initial rotational velocity
+    let omega = col![0., 1., 0.];
+    let time_step = 0.1;
+    let n_steps = 100;
+
+    let (mut model, hub_node_id) = create_model(omega.rb());
+    model.set_time_step(time_step);
+
+    // Give hub node a mass
+    model.add_mass_element(hub_node_id, 10. * Mat::<f64>::identity(6, 6));
+
+    // Add shaft base node
+    let shaft_base_node_id = model
+        .add_node()
+        .position(0., 0., 0., 1., 0., 0., 0.)
+        .build();
+
+    // Add revolute joint along axis from shaft base to hub
+    model.add_revolute_joint(shaft_base_node_id, hub_node_id, col![0., 1., 0.]);
+
+    // Fix shaft base node
+    model.add_prescribed_constraint(shaft_base_node_id);
+
+    // Create solver
+    let mut solver = model.create_solver();
+
+    //--------------------------------------------------------------------------
+    // Run simulation
+    //--------------------------------------------------------------------------
+
+    // Create state
+    let mut state = model.create_state();
+
+    let mut n_iter_sum = 0;
+    let mut err_sum = 0.0;
+
+    for i in 0..n_steps {
+        // current time
+        let t = (i as f64) * time_step;
+
+        solver.constraints.constraints[0].set_rotation(t * 1.);
+
+        beams_nodes_as_vtk(&solver.elements.beams)
+            .export_ascii(format!("{OUT_DIR}/spinning_{i:0>3}.vtk"))
             .unwrap();
 
         // Take step and get convergence result

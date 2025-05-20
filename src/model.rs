@@ -173,8 +173,13 @@ impl Model {
         self.constraints.last().unwrap().id
     }
 
-    /// Add prescribed constraint
-    pub fn add_revolute_joint(&mut self, base_node_id: usize, target_node_id: usize) -> usize {
+    /// Add revolute joint constraint
+    pub fn add_revolute_joint(
+        &mut self,
+        base_node_id: usize,
+        target_node_id: usize,
+        axis: Col<f64>,
+    ) -> usize {
         let base_node = &self.nodes[base_node_id];
         let target_node = &self.nodes[target_node_id];
         self.constraints.push(ConstraintInput {
@@ -183,7 +188,27 @@ impl Model {
             node_id_base: base_node_id,
             node_id_target: target_node_id,
             x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
-            vec: Col::zeros(3),
+            vec: axis,
+        });
+        self.constraints.last().unwrap().id
+    }
+
+    // Add prescribed rotation constraint
+    pub fn add_prescribed_rotation(
+        &mut self,
+        base_node_id: usize,
+        target_node_id: usize,
+        axis: Col<f64>,
+    ) -> usize {
+        let base_node = &self.nodes[base_node_id];
+        let target_node = &self.nodes[target_node_id];
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::Rotation,
+            node_id_base: base_node_id,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            vec: &axis / axis.norm_l2(),
         });
         self.constraints.last().unwrap().id
     }

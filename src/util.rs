@@ -43,6 +43,13 @@ pub fn quat_inverse(q_in: ColRef<f64>, mut q_out: ColMut<f64>) {
     q_out[3] = -q_in[3] / length;
 }
 
+#[inline]
+pub fn quat_inverse_alloc(q_in: ColRef<f64>) -> Col<f64> {
+    let mut q_out = Col::<f64>::zeros(4);
+    quat_inverse(q_in, q_out.as_mut());
+    q_out
+}
+
 pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
     let norm = q.norm_l2();
     let (w, x, y, z) = (q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm);
@@ -181,6 +188,13 @@ pub fn quat_from_rotation_vector(rv: ColRef<f64>, mut q: ColMut<f64>) {
     }
 }
 
+#[inline]
+pub fn quat_from_rotation_vector_alloc(rv: ColRef<f64>) -> Col<f64> {
+    let mut q = Col::<f64>::zeros(4);
+    quat_from_rotation_vector(rv, q.as_mut());
+    q
+}
+
 /// Populates Quaternion from rotation vector
 ///
 /// # Panics
@@ -286,6 +300,13 @@ pub fn quat_compose(q1: ColRef<f64>, q2: ColRef<f64>, mut q_out: ColMut<f64>) {
     q_out[1] /= m;
     q_out[2] /= m;
     q_out[3] /= m;
+}
+
+#[inline]
+pub fn quat_compose_alloc(q1: ColRef<f64>, q2: ColRef<f64>) -> Col<f64> {
+    let mut q_out = Col::<f64>::zeros(4);
+    quat_compose(q1, q2, q_out.as_mut());
+    q_out
 }
 
 /// Populates Quaternion from tangent vector and twist angle.

@@ -3,8 +3,9 @@ use crate::{
     state::State,
     util::{
         axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2,
-        quat_as_matrix_alloc, quat_compose, quat_from_rotation_vector, quat_inverse,
-        quat_rotate_vector, quat_rotate_vector_alloc, vec_tilde_alloc,
+        quat_as_matrix_alloc, quat_compose_alloc, quat_from_rotation_vector,
+        quat_from_rotation_vector_alloc, quat_inverse_alloc, quat_rotate_vector,
+        quat_rotate_vector_alloc, vec_tilde_alloc,
     },
 };
 use faer::{linalg::matmul::matmul, prelude::*, Accum, Par};
@@ -16,6 +17,7 @@ pub enum ConstraintKind {
     Prescribed,
     Rigid,
     Revolute,
+    Rotation,
 }
 
 pub struct ConstraintInput {
@@ -70,7 +72,7 @@ impl Constraints {
             // Switch calculation based on constraint type
             match c.kind {
                 ConstraintKind::Prescribed => c.calculate_prescribed(u_target, r_target, lambda),
-                ConstraintKind::Rigid => {
+                ConstraintKind::Rigid | ConstraintKind::Rotation => {
                     c.calculate_rigid(u_base, r_base, u_target, r_target, lambda)
                 }
                 ConstraintKind::Revolute => {
@@ -189,8 +191,6 @@ pub struct Constraint {
     b_base: Mat<f64>,
     b_target: Mat<f64>,
     input: Col<f64>,
-    rbinv: Col<f64>,
-    rt_rbinv: Col<f64>,
     /// Stiffness matrix for base node `[12,12]`
     k: Mat<f64>,
     /// Rotation matrix `[3,3]`
@@ -205,19 +205,17 @@ impl Constraint {
         // Get number of constraint DOFs (rows of phi vector or B matrix)
         let n_rows = match input.kind {
             ConstraintKind::Prescribed => n_dofs_target,
-            ConstraintKind::Rigid => cmp::min(n_dofs_base, n_dofs_target),
+            ConstraintKind::Rigid | ConstraintKind::Rotation => {
+                cmp::min(n_dofs_base, n_dofs_target)
+            }
             ConstraintKind::Revolute => 5,
         };
 
         // Calculate constraint axes
         let axes = match input.kind {
-            ConstraintKind::Revolute => {
+            ConstraintKind::Revolute | ConstraintKind::Rotation => {
                 let x = col![1., 0., 0.];
-                let x_hat = if input.vec.rb().norm_l2() != 0. {
-                    &input.vec / input.vec.norm_l2()
-                } else {
-                    &input.x0 / input.x0.norm_l2()
-                };
+                let x_hat = &input.vec / input.vec.norm_l2();
 
                 // Create rotation matrix to rotate x to match vector
                 let mut cp = Col::<f64>::zeros(3);
@@ -246,9 +244,8 @@ impl Constraint {
                 ]
             }
             _ => {
-                let mut axes = Mat::<f64>::zeros(3, 3);
-                axes.col_mut(0).copy_from(&input.vec);
-                axes
+                let vec = &input.vec / input.vec.norm_l2();
+                Mat::<f64>::from_fn(3, 3, |i, j| if j == 0 { vec[i] } else { 0. })
             }
         };
 
@@ -263,13 +260,12 @@ impl Constraint {
             phi: Col::<f64>::zeros(n_rows),
             b_base: -1. * Mat::<f64>::identity(n_rows, n_dofs_base),
             b_target: Mat::<f64>::identity(n_rows, n_dofs_target),
-            rbinv: Col::<f64>::zeros(4),
-            rt_rbinv: Col::<f64>::zeros(4),
             k: Mat::<f64>::zeros(12, 12),
             axes,
         }
     }
 
+    // Set displacement for prescribed displacement constraint
     pub fn set_displacement(&mut self, x: f64, y: f64, z: f64, rx: f64, ry: f64, rz: f64) {
         let mut q = col![0., 0., 0., 0.];
         quat_from_rotation_vector(col![rx, ry, rz].as_ref(), q.as_mut());
@@ -280,6 +276,11 @@ impl Constraint {
         self.input[4] = q[1];
         self.input[5] = q[2];
         self.input[6] = q[3];
+    }
+
+    // Set rotation angle for prescribed rotation constraint
+    pub fn set_rotation(&mut self, angle: f64) {
+        self.input[0] = angle;
     }
 
     fn calculate_prescribed(
@@ -301,14 +302,11 @@ impl Constraint {
             return;
         }
 
+        // Combination of all rotations
+        let rc = quat_compose_alloc(r_target.rb(), quat_inverse_alloc(r_base.rb()).rb());
+
         // Angular residual:  Phi(3:6) = axial(Rt*inv(Rb))
-        quat_inverse(r_base, self.rbinv.as_mut());
-        quat_compose(
-            r_target.as_ref(),
-            self.rbinv.as_ref(),
-            self.rt_rbinv.as_mut(),
-        );
-        let c = quat_as_matrix_alloc(self.rt_rbinv.as_ref());
+        let c = quat_as_matrix_alloc(rc.rb());
         axial_vector_of_matrix(c.as_ref(), self.phi.subrows_mut(3, 3));
 
         // Constraint Gradient
@@ -339,7 +337,6 @@ impl Constraint {
 
         // Phi(0:3) = ut + X0 - ub - Rb*X0
         let rb_x0 = quat_rotate_vector_alloc(r_base.as_ref(), self.x0.as_ref());
-        let rb_x0_tilde = vec_tilde_alloc(rb_x0.as_ref());
         zip!(
             &mut self.phi.subrows_mut(0, 3),
             &u_base,
@@ -358,6 +355,7 @@ impl Constraint {
         let lambda_1_tilde = vec_tilde_alloc(lambda_1);
 
         self.k.fill(0.);
+        let rb_x0_tilde = vec_tilde_alloc(rb_x0.as_ref());
         matmul(
             self.k.submatrix_mut(9, 9, 3, 3),
             Accum::Replace,
@@ -388,14 +386,21 @@ impl Constraint {
             return;
         }
 
+        // Calculate control rotation quaternion
+        let r_control = quat_from_rotation_vector_alloc((&self.axes.col(0) * &self.input[0]).rb());
+
+        // Combination of all rotations
+        let rc = quat_compose_alloc(
+            quat_compose_alloc(r_target.rb(), quat_inverse_alloc(r_control.rb()).rb()).rb(),
+            quat_inverse_alloc(r_base.rb()).rb(),
+        );
+
         //----------------------------------------------------------------------
         // Angular residual
         //----------------------------------------------------------------------
 
         // Phi(3:6) = axial(Rt*inv(rb))
-        quat_inverse(r_base, self.rbinv.as_mut());
-        quat_compose(r_target, self.rbinv.rb(), self.rt_rbinv.as_mut());
-        let c = quat_as_matrix_alloc(self.rt_rbinv.rb());
+        let c = quat_as_matrix_alloc(rc.rb());
         axial_vector_of_matrix(c.rb(), self.phi.subrows_mut(3, 3));
 
         //----------------------------------------------------------------------
@@ -421,23 +426,20 @@ impl Constraint {
         //----------------------------------------------------------------------
 
         // Rotation matrix of rt_rbinv
-        let m_rt_rbinv = quat_as_matrix_alloc(self.rt_rbinv.as_ref());
+        let m_rc = quat_as_matrix_alloc(rc.rb());
 
         // lambda_tilde from rotational lambda terms
         let lambda_2 = lambda.subrows(3, 3);
         let lambda_2_tilde = vec_tilde_alloc(lambda_2);
 
         // Stiffness matrix components
-        matrix_ax((&m_rt_rbinv * &lambda_2_tilde).rb(), ax.as_mut());
+        matrix_ax((&m_rc * &lambda_2_tilde).rb(), ax.as_mut());
         zip!(&mut self.k.submatrix_mut(3, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rt_rbinv.transpose(), lambda_2, ax.as_mut());
+        matrix_ax2(m_rc.transpose(), lambda_2, ax.as_mut());
         zip!(&mut self.k.submatrix_mut(3, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rt_rbinv.rb(), lambda_2, ax.as_mut());
+        matrix_ax2(m_rc.rb(), lambda_2, ax.as_mut());
         zip!(&mut self.k.submatrix_mut(9, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
-        matrix_ax(
-            (&m_rt_rbinv.transpose() * &lambda_2_tilde).rb(),
-            ax.as_mut(),
-        );
+        matrix_ax((&m_rc.transpose() * &lambda_2_tilde).rb(), ax.as_mut());
         zip!(&mut self.k.submatrix_mut(9, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
     }
 
