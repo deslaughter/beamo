@@ -2,9 +2,9 @@ use crate::{
     node::NodeFreedomMap,
     state::State,
     util::{
-        axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2, quat_as_matrix,
+        axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2,
         quat_as_matrix_alloc, quat_compose, quat_from_rotation_vector, quat_inverse,
-        quat_rotate_vector, vec_tilde, vec_tilde_alloc,
+        quat_rotate_vector, quat_rotate_vector_alloc, vec_tilde_alloc,
     },
 };
 use faer::{linalg::matmul::matmul, prelude::*, Accum, Par};
@@ -191,9 +191,6 @@ pub struct Constraint {
     input: Col<f64>,
     rbinv: Col<f64>,
     rt_rbinv: Col<f64>,
-    rb_x0: Col<f64>,
-    /// Axial vector of rotation matrix
-    ax: Mat<f64>,
     /// Stiffness matrix for base node `[12,12]`
     k: Mat<f64>,
     /// Rotation matrix `[3,3]`
@@ -266,10 +263,8 @@ impl Constraint {
             phi: Col::<f64>::zeros(n_rows),
             b_base: -1. * Mat::<f64>::identity(n_rows, n_dofs_base),
             b_target: Mat::<f64>::identity(n_rows, n_dofs_target),
-            rb_x0: Col::<f64>::zeros(3),
             rbinv: Col::<f64>::zeros(4),
             rt_rbinv: Col::<f64>::zeros(4),
-            ax: Mat::zeros(3, 3),
             k: Mat::<f64>::zeros(12, 12),
             axes,
         }
@@ -327,15 +322,7 @@ impl Constraint {
         // Rotational stiffness matrix for target node
         let lambda_tilde = vec_tilde_alloc(lambda.subrows(3, 3));
         let c = quat_as_matrix_alloc(r_target);
-        matmul(
-            self.ax.as_mut(),
-            Accum::Replace,
-            &c,
-            &lambda_tilde,
-            -1.,
-            Par::Seq,
-        );
-        matrix_ax(self.ax.as_ref(), self.k.submatrix_mut(3, 3, 3, 3));
+        matrix_ax((-&c * &lambda_tilde).rb(), self.k.submatrix_mut(3, 3, 3, 3));
     }
 
     fn calculate_rigid(
@@ -351,14 +338,14 @@ impl Constraint {
         //----------------------------------------------------------------------
 
         // Phi(0:3) = ut + X0 - ub - Rb*X0
-        quat_rotate_vector(r_base.as_ref(), self.x0.as_ref(), self.rb_x0.as_mut());
-        let rb_x0_tilde = vec_tilde_alloc(self.rb_x0.as_ref());
+        let rb_x0 = quat_rotate_vector_alloc(r_base.as_ref(), self.x0.as_ref());
+        let rb_x0_tilde = vec_tilde_alloc(rb_x0.as_ref());
         zip!(
             &mut self.phi.subrows_mut(0, 3),
             &u_base,
             &u_target,
             &self.x0,
-            &self.rb_x0
+            &rb_x0
         )
         .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
@@ -416,18 +403,18 @@ impl Constraint {
         //----------------------------------------------------------------------
 
         // B(3:6,3:6) = transpose(AX(Rt*inv(Rb)))
-        matrix_ax(c.rb(), self.ax.as_mut());
+        let mut ax = Mat::<f64>::zeros(3, 3);
+        matrix_ax(c.rb(), ax.as_mut());
         self.b_target
             .submatrix_mut(3, 3, 3, 3)
-            .copy_from(self.ax.transpose());
+            .copy_from(ax.transpose());
 
         //----------------------------------------------------------------------
         // Base constraint gradient
         //----------------------------------------------------------------------
 
         // B(3:6,3:6) = -AX(Rt*inv(Rb))
-        matrix_ax(c.rb(), self.ax.as_mut());
-        self.b_base.submatrix_mut(3, 3, 3, 3).copy_from(-&self.ax);
+        self.b_base.submatrix_mut(3, 3, 3, 3).copy_from(-&ax);
 
         //----------------------------------------------------------------------
         // Stiffness matrix
@@ -441,17 +428,17 @@ impl Constraint {
         let lambda_2_tilde = vec_tilde_alloc(lambda_2);
 
         // Stiffness matrix components
-        matrix_ax((&m_rt_rbinv * &lambda_2_tilde).rb(), self.ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(3, 3, 3, 3), &self.ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rt_rbinv.transpose(), lambda_2, self.ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(3, 9, 3, 3), &self.ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rt_rbinv.rb(), lambda_2, self.ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(9, 3, 3, 3), &self.ax).for_each(|unzip!(k, ax)| *k -= *ax);
+        matrix_ax((&m_rt_rbinv * &lambda_2_tilde).rb(), ax.as_mut());
+        zip!(&mut self.k.submatrix_mut(3, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
+        matrix_ax2(m_rt_rbinv.transpose(), lambda_2, ax.as_mut());
+        zip!(&mut self.k.submatrix_mut(3, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
+        matrix_ax2(m_rt_rbinv.rb(), lambda_2, ax.as_mut());
+        zip!(&mut self.k.submatrix_mut(9, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
         matrix_ax(
             (&m_rt_rbinv.transpose() * &lambda_2_tilde).rb(),
-            self.ax.as_mut(),
+            ax.as_mut(),
         );
-        zip!(&mut self.k.submatrix_mut(9, 9, 3, 3), &self.ax).for_each(|unzip!(k, ax)| *k -= *ax);
+        zip!(&mut self.k.submatrix_mut(9, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
     }
 
     fn calculate_revolute(
@@ -462,7 +449,7 @@ impl Constraint {
         r_target: ColRef<f64>,
         lambda: ColRef<f64>,
     ) {
-        quat_rotate_vector(r_base, self.x0.rb(), self.rb_x0.as_mut());
+        let rb_x0 = quat_rotate_vector_alloc(r_base, self.x0.rb());
         let mut x = Col::<f64>::zeros(3);
         let mut y = Col::<f64>::zeros(3);
         let mut z = Col::<f64>::zeros(3);
@@ -475,9 +462,9 @@ impl Constraint {
         cross_product(x.rb(), y.rb(), xcy.as_mut());
 
         // Position residual: Phi[0:2] = u2 + X0 - u1 - Rb*X0
-        self.phi[0] = u_target[0] + self.x0[0] - u_base[0] - self.rb_x0[0];
-        self.phi[1] = u_target[1] + self.x0[1] - u_base[1] - self.rb_x0[1];
-        self.phi[2] = u_target[2] + self.x0[2] - u_base[2] - self.rb_x0[2];
+        self.phi[0] = u_target[0] + self.x0[0] - u_base[0] - rb_x0[0];
+        self.phi[1] = u_target[1] + self.x0[1] - u_base[1] - rb_x0[1];
+        self.phi[2] = u_target[2] + self.x0[2] - u_base[2] - rb_x0[2];
 
         // Phi[3] = dot(Rt * z0_hat, Rb * x0_hat)
         self.phi[3] = dot_product(z.rb(), x.rb());

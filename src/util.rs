@@ -134,6 +134,13 @@ pub fn quat_rotate_vector(q: ColRef<f64>, v_in: ColRef<f64>, mut v_out: ColMut<f
         + (q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3]) * v_in[2];
 }
 
+#[inline]
+pub fn quat_rotate_vector_alloc(q: ColRef<f64>, v_in: ColRef<f64>) -> Col<f64> {
+    let mut v_out = Col::<f64>::zeros(3);
+    quat_rotate_vector(q, v_in, v_out.as_mut());
+    v_out
+}
+
 /// Populates matrix with quaternion derivative
 ///
 /// # Panics
