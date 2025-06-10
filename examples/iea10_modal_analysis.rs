@@ -846,7 +846,7 @@ fn setup_test() -> Model {
 
     model.set_gravity(0., 0., -9.81);
 
-    model.add_beam_element(&node_ids, &quadrature, &sections, Damping::Mu(mu));
+    model.add_beam_element(&node_ids, &quadrature, &sections, &Damping::Mu(mu));
 
     model
 }

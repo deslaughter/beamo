@@ -690,8 +690,7 @@ impl Beams {
             });
 
             // Get first node dof index of each element
-            let elem_first_dof_indices = self
-                .node_ids
+            let elem_first_dof_indices = node_ids
                 .iter()
                 .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
                 .collect_vec();
@@ -1485,7 +1484,7 @@ mod tests {
                     c_star: c_star.clone(),
                 },
             ],
-            Damping::None,
+            &Damping::None,
         );
 
         let mut beams = model.create_beams();
@@ -2317,7 +2316,7 @@ mod tests {
                     c_star: c_star.clone(),
                 },
             ],
-            Damping::None,
+            &Damping::None,
         );
 
         let mut beams = model.create_beams();

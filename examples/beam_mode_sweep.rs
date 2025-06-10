@@ -266,7 +266,7 @@ fn setup_model(damping: Damping) -> Model {
     // Add beam element
     //--------------------------------------------------------------------------
 
-    model.add_beam_element(&node_ids, &gq, &sections, damping);
+    model.add_beam_element(&node_ids, &gq, &sections, &damping);
 
     //--------------------------------------------------------------------------
     // Add constraint element

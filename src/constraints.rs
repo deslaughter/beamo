@@ -61,7 +61,7 @@ impl Constraints {
         mut kt: MatMut<f64>,
     ) {
         // Loop through constraints and calculate residual and gradient
-        self.constraints.iter_mut().for_each(|c| {
+        self.constraints.iter_mut().enumerate().for_each(|(i, c)| {
             // Get base and target node
             let u_base = state.u.col(c.node_id_base).subrows(0, 3);
             let r_base = state.u.col(c.node_id_base).subrows(3, 4);
@@ -78,6 +78,9 @@ impl Constraints {
                 ConstraintKind::Revolute => {
                     c.calculate_revolute(u_base, r_base, u_target, r_target, lambda);
                 }
+            }
+            if c.phi.has_nan() {
+                println!("Constraint {} has NaN in phi: {:?}", i, c.phi);
             }
         });
 
@@ -243,10 +246,7 @@ impl Constraint {
                     ]
                 ]
             }
-            _ => {
-                let vec = &input.vec / input.vec.norm_l2();
-                Mat::<f64>::from_fn(3, 3, |i, j| if j == 0 { vec[i] } else { 0. })
-            }
+            _ => Mat::<f64>::identity(3, 3),
         };
 
         Self {
@@ -292,10 +292,16 @@ impl Constraint {
         let u_base = self.input.subrows(0, 3);
         let r_base = self.input.subrows(3, 4);
 
-        // Position residual: Phi(0:3) = u2 - u1
-        self.phi[0] = u_target[0] - u_base[0];
-        self.phi[1] = u_target[1] - u_base[1];
-        self.phi[2] = u_target[2] - u_base[2];
+        // Phi(0:3) = ut + X0 - ub - Rb*X0
+        let rb_x0 = quat_rotate_vector_alloc(r_base.as_ref(), self.x0.as_ref());
+        zip!(
+            &mut self.phi.subrows_mut(0, 3),
+            &u_base,
+            &u_target,
+            &self.x0,
+            &rb_x0
+        )
+        .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
         // If only position is prescribed, return
         if self.n_rows == 3 {
@@ -303,7 +309,8 @@ impl Constraint {
         }
 
         // Combination of all rotations
-        let rc = quat_compose_alloc(r_target.rb(), quat_inverse_alloc(r_base.rb()).rb());
+        let r_base_inv = quat_inverse_alloc(r_base.rb());
+        let rc = quat_compose_alloc(r_target.rb(), r_base_inv.rb());
 
         // Angular residual:  Phi(3:6) = axial(Rt*inv(Rb))
         let c = quat_as_matrix_alloc(rc.rb());
@@ -529,5 +536,165 @@ impl Constraint {
         self.k
             .submatrix_mut(9, 9, 3, 3)
             .copy_from(lambda_2 * &z_tilde * &x_tilde + lambda_3 * &y_tilde * &x_tilde);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use crate::node::{ActiveDOFs, Node};
+    use equator::assert;
+    use faer::utils::approx::{ApproxEq, CwiseMat};
+
+    fn create_nfm() -> NodeFreedomMap {
+        NodeFreedomMap::new(&[
+            Node {
+                id: 0,
+                s: 0.,
+                x: [0.; 7],
+                u: [0.; 7],
+                v: [0.; 6],
+                vd: [0.; 6],
+                active_dofs: ActiveDOFs::All,
+            },
+            Node {
+                id: 1,
+                s: 0.,
+                x: [0.; 7],
+                u: [0.; 7],
+                v: [0.; 6],
+                vd: [0.; 6],
+                active_dofs: ActiveDOFs::All,
+            },
+        ])
+    }
+
+    #[test]
+    fn test_rigid_constraint() {
+        let nfm = create_nfm();
+
+        let mut c = Constraint::new(
+            0,
+            &ConstraintInput {
+                id: 0,
+                kind: ConstraintKind::Rigid,
+                node_id_base: 0,
+                node_id_target: 1,
+                x0: col![1., 2., 3.],
+                vec: col![0., 0., 0.],
+            },
+            &nfm,
+        );
+
+        c.calculate_rigid(
+            col![18., 19., 20.,].as_ref(),
+            col![21., 22., 23., 24.].as_ref(),
+            col![11., 12., 13.].as_ref(),
+            col![14., 15., 16., 17.].as_ref(),
+            col![0., 0., 0., 0., 0., 0.].as_ref(),
+        );
+
+        let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
+
+        assert!(c.phi ~ col![-5900., -2385., -4162., 19.310344827586249, -6.5558669604115494e-14, 38.620689655172455]);
+        assert!(c.b_base ~ mat![
+            [-1., 0., 0., 0., -4158., 2380.],
+            [0., -1., 0., 4158., 0., -5894.],
+            [0., 0., -1., -2380., 5894., 0.],
+            [0., 0., 0., -965.42068965517251, -19.310344827586228, 0.1931034482758299],
+            [0., 0., 0., 19.310344827586228, -965.51724137931046, -9.6551724137931245],
+            [0., 0., 0., 0.19310344827589546, 9.6551724137931245, -965.13103448275876],
+        ]);
+        assert!(c.b_target ~ mat![
+            [1., 0., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 0., 0.],
+            [0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 965.42068965517251, -19.310344827586228, -0.19310344827589564],
+            [0., 0., 0., 19.310344827586228, 965.51724137931046, -9.6551724137931245],
+            [0., 0., 0., -0.1931034482758299, 9.6551724137931245, 965.13103448275876],
+        ]);
+    }
+
+    #[test]
+    fn test_revolute_joint() {
+        let nfm = create_nfm();
+
+        let mut c = Constraint::new(
+            0,
+            &ConstraintInput {
+                id: 0,
+                kind: ConstraintKind::Revolute,
+                node_id_base: 0,
+                node_id_target: 1,
+                x0: col![1., 2., 3.],
+                vec: col![0., 0., 0.],
+            },
+            &nfm,
+        );
+        c.axes = mat![[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]]
+            .transpose()
+            .cloned();
+
+        c.calculate_revolute(
+            col![18., 19., 20.,].as_ref(),
+            col![21., 22., 23., 24.].as_ref(),
+            col![11., 12., 13.].as_ref(),
+            col![14., 15., 16., 17.].as_ref(),
+            col![0., 0., 0., 0., 0., 0.].as_ref(),
+        );
+
+        let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
+        println!("c.phi: {:?}", c.phi);
+        assert!(c.phi ~ col![-5900., -2385., -4162., 97314000., 62379744.]);
+        let b_base_exp = mat![
+            [-1., 0., 0., 0., 0., 0.],
+            [0., -1., 0., 0., 0., 0.],
+            [0., 0., -1., 0., 0., 0.],
+            [0., 0., 0., -10930136., -15850520., 24566248.],
+            [0., 0., 0., -5585804., -8091272., 12549292.],
+        ];
+        assert!(c.b_base ~ b_base_exp);
+        assert!(c.b_target ~ -b_base_exp);
+    }
+
+    #[test]
+    fn test_prescribed() {
+        let nfm = create_nfm();
+
+        let mut c = Constraint::new(
+            0,
+            &ConstraintInput {
+                id: 0,
+                kind: ConstraintKind::Prescribed,
+                node_id_base: 0,
+                node_id_target: 1,
+                x0: col![1., 2., 3.],
+                vec: col![0., 0., 0.],
+            },
+            &nfm,
+        );
+
+        // Set prescribed displacement
+        c.input = col![4., 5., 6., 7., 8., 9., 10.];
+
+        // Calculate prescribed constraint
+        c.calculate_prescribed(
+            col![11., 12., 13.].as_ref(),
+            col![14., 15., 16., 17.].as_ref(),
+            col![0., 0., 0., 0., 0., 0.].as_ref(),
+        );
+
+        let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
+        println!("c.phi: {:?}", c.phi);
+        assert!(c.phi ~ col![-790., -411., -620., -50.666666666666657, -7.1054273576010019e-15, -101.33333333333343]);
+        assert!(c.b_target ~ mat![
+            [1., 0., 0., 0., 0., 0.],
+            [0., 1., 0., 0., 0., 0.],
+            [0., 0., 1., 0., 0., 0.],
+            [0., 0., 0., 961.99999999999977, 50.666666666666714, -1.3333333333333379],
+            [0., 0., 0., -50.666666666666714, 962.6666666666664, 25.333333333333329],
+            [0., 0., 0., -1.3333333333333308, -25.333333333333329, 959.99999999999977],
+        ]);
     }
 }

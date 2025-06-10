@@ -73,7 +73,7 @@ fn setup_test(max_iter: usize) -> (Solver, State) {
                 c_star: c_star.clone(),
             },
         ],
-        Damping::None,
+        &Damping::None,
     );
 
     //--------------------------------------------------------------------------
@@ -93,8 +93,7 @@ fn setup_test(max_iter: usize) -> (Solver, State) {
     model.set_max_iter(max_iter);
     let mut solver = model.create_solver();
 
-    let tip_z_dof = solver.nfm.get_dof(state.n_nodes - 1, Direction::Z).unwrap();
-    solver.fx[tip_z_dof] = 100. * (10.0 * 0.005 as f64).sin();
+    state.fx[(Direction::Z as usize, state.n_nodes - 1)] = 100. * (10.0 * 0.005 as f64).sin();
 
     solver.step(&mut state);
 
@@ -984,7 +983,8 @@ fn test_steps() {
     let tip_z_dof = solver.nfm.get_dof(state.n_nodes - 1, Direction::Z).unwrap();
 
     for i in 2..100 {
-        solver.fx[tip_z_dof] = 100. * (10.0 * (i as f64) * 0.005).sin();
+        state.fx[(Direction::Z as usize, state.n_nodes - 1)] =
+            100. * (10.0 * (i as f64) * 0.005).sin();
         let res = solver.step(&mut state);
         assert_eq!(res.converged, true)
     }

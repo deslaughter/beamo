@@ -68,7 +68,6 @@ pub struct Solver {
     pub t: Mat<f64>,       // T
     pub st: Mat<f64>,      // St
     pub x: Col<f64>,       // x solution vector
-    pub fx: Col<f64>,      // nodal forces
     pub r: Col<f64>,       // R residual vector
     pub phi: Col<f64>,     // R residual vector
     pub b: Mat<f64>,       // B constraint gradient matrix
@@ -107,7 +106,6 @@ impl Solver {
             ct: Mat::zeros(n_system_dofs, n_system_dofs),
             m: Mat::zeros(n_system_dofs, n_system_dofs),
             t: Mat::zeros(n_system_dofs, n_system_dofs),
-            fx: Col::zeros(n_system_dofs),
             st: Mat::zeros(n_dofs, n_dofs),
             r: Col::zeros(n_system_dofs),
             b: Mat::zeros(n_constraint_dofs, n_system_dofs),
@@ -158,7 +156,25 @@ impl Solver {
             self.r.fill(0.);
 
             // Subtract direct nodal loads
-            zip!(&mut self.r, &self.fx).for_each(|unzip!(r, fx)| *r -= *fx);
+            self.nfm
+                .node_dofs
+                .iter()
+                .enumerate()
+                .for_each(|(node_id, dofs)| {
+                    let mut r = self.r.subrows_mut(dofs.first_dof_index, dofs.n_dofs);
+                    match dofs.active {
+                        ActiveDOFs::Translation => {
+                            r.copy_from(&state.fx.col(node_id).subrows(0, 3))
+                        }
+                        ActiveDOFs::Rotation => r.copy_from(&state.fx.col(node_id).subrows(3, 3)),
+                        ActiveDOFs::All => r.copy_from(&state.fx.col(node_id)),
+                        ActiveDOFs::None => unreachable!(),
+                    };
+                });
+
+            zip!(&mut self.r).for_each(|unzip!(r)| *r *= -1.);
+
+            // println!("Residual: {:?}", self.r);
 
             // Add elements to system
             self.elements.assemble_system(
@@ -170,6 +186,8 @@ impl Solver {
                 self.kt.as_mut(),
                 self.r.as_mut(),
             );
+
+            // println!("Residual after elements: {:?}", self.r);
 
             // Calculate constraints
             self.constraints.assemble_constraints(
@@ -231,14 +249,36 @@ impl Solver {
                 Par::Seq,
             );
 
-            // println!("St = {:?}", self.st);
+            if self.r.has_nan() {
+                println!("R has NaN values: {:?}", self.r);
+            }
+            if self.phi.has_nan() {
+                println!("Phi has NaN values: {:?}", self.phi);
+            }
+            if self.b.has_nan() {
+                println!("B has NaN values: {:?}", self.b);
+            }
+            if self.kt.has_nan() {
+                println!("Kt has NaN values: {:?}", self.kt);
+            }
+            if self.m.has_nan() {
+                println!("M has NaN values: {:?}", self.m);
+            }
+            if self.ct.has_nan() {
+                println!("Ct has NaN values: {:?}", self.ct);
+            }
+            if self.t.has_nan() {
+                println!("T has NaN values: {:?}", self.t);
+            }
+            if self.st.has_nan() {
+                println!("St has NaN values: {:?}", self.st);
+            }
 
             //------------------------------------------------------------------
             // Solve System
             //------------------------------------------------------------------
 
             // Make copies of St and R for solving system
-            let mut st_c = self.st.clone();
             self.rhs.subrows_mut(0, self.n_system).copy_from(&self.r);
             self.rhs
                 .subrows_mut(self.n_system, self.n_lambda)
@@ -252,20 +292,30 @@ impl Solver {
                 .for_each(|unzip!(v)| *v *= self.p.conditioner);
 
             // Condition system
-            zip!(&mut st_c.subrows_mut(0, self.n_system))
+            zip!(&mut self.st.subrows_mut(0, self.n_system))
                 .for_each(|unzip!(v)| *v *= self.p.conditioner);
-            zip!(&mut st_c.subcols_mut(self.n_system, self.n_lambda))
+            zip!(&mut self.st.subcols_mut(self.n_system, self.n_lambda))
                 .for_each(|unzip!(v)| *v /= self.p.conditioner);
 
             // println!("rhs = {:?}", self.rhs);
-            // println!("st_c = {:?}", st_c.submatrix(0, 0, 6, 6));
+            // println!("st = {:?}", self.st.submatrix(0, 0, 6, 6));
+
+            // if self.st.has_nan() {
+            //     println!("st has NaN values: {:?}", self.st);
+            // }
+            // if self.rhs.has_nan() {
+            //     println!("RHS has NaN values: {:?}", self.rhs);
+            // }
 
             // Solve system
-            let lu = st_c.partial_piv_lu();
+            let lu = self.st.partial_piv_lu();
             let x = lu.solve(&self.rhs);
             self.x.copy_from(&x);
 
             // println!("x = {:?}", self.x);
+            if self.x.has_nan() {
+                println!("X has NaN values: {:?}", self.x);
+            }
 
             // De-condition solution vector
             zip!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
@@ -312,7 +362,8 @@ impl Solver {
                     })
                     .sum();
 
-            res.err = ((sys_sum_err_squared + const_sum_err_squared) / (self.n_dofs as f64)).sqrt();
+            let sum_err_squared = sys_sum_err_squared + const_sum_err_squared;
+            res.err = sum_err_squared.sqrt() / (self.n_dofs as f64).sqrt();
 
             //------------------------------------------------------------------
             // Update state and lambda predictions

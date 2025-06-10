@@ -91,7 +91,7 @@ pub fn add_beamdyn_blade(
     let gq = Quadrature::trapezoidal(&sections.iter().map(|s| s.s).collect_vec());
 
     // Add beam element
-    let beam_elem_id = model.add_beam_element(&node_ids, &gq, &sections, damping);
+    let beam_elem_id = model.add_beam_element(&node_ids, &gq, &sections, &damping);
 
     (node_ids, beam_elem_id)
 }

@@ -1070,7 +1070,7 @@ fn setup_model_custom(damping: Damping, m_star: Mat<f64>, c_star: Mat<f64>) -> M
                 c_star: c_star.clone(),
             },
         ],
-        damping,
+        &damping,
     );
 
     //--------------------------------------------------------------------------

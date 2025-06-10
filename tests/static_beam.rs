@@ -77,7 +77,7 @@ fn test_static_beam_curl() {
                 c_star: c_star.clone(),
             },
         ],
-        Damping::None,
+        &Damping::None,
     );
 
     //--------------------------------------------------------------------------
@@ -105,9 +105,6 @@ fn test_static_beam_curl() {
 
     let tip_node_id = *node_ids.last().unwrap();
 
-    // Get DOF index for beam tip node Z direction
-    let tip_ry_dof = solver.nfm.get_dof(tip_node_id, Direction::RY).unwrap();
-
     //--------------------------------------------------------------------------
     // Loop through moments
     //--------------------------------------------------------------------------
@@ -116,7 +113,7 @@ fn test_static_beam_curl() {
 
     for (i, &m) in my.iter().enumerate() {
         // Apply moment to tip node about y axis
-        solver.fx[tip_ry_dof] = -m;
+        state.fx[(Direction::RY as usize, tip_node_id)] = -m;
 
         // Take step and get convergence result
         let res = solver.step(&mut state);

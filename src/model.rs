@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use faer::{Col, Mat};
 use itertools::Itertools;
 
@@ -218,7 +220,7 @@ impl Model {
         node_ids: &[usize],
         quadrature: &Quadrature,
         sections: &[BeamSection],
-        damping: Damping,
+        damping: &Damping,
     ) -> usize {
         let id = self.beam_elements.len();
         self.beam_elements.push(BeamElement {
@@ -233,7 +235,7 @@ impl Model {
                     c_star: s.c_star.clone(),
                 })
                 .collect_vec(),
-            damping,
+            damping: damping.clone(),
         });
         id
     }
@@ -277,10 +279,56 @@ impl Model {
         self.nodes.len()
     }
 
-    pub fn set_solver_tolerance(&mut self, x_tol: f64, phi_tol: f64) {
-        self.solver_abs_tol = x_tol;
-        self.solver_rel_tol = phi_tol;
+    pub fn set_solver_tolerance(&mut self, abs_tol: f64, rel_tol: f64) {
+        self.solver_abs_tol = abs_tol;
+        self.solver_rel_tol = rel_tol;
     }
+
+    pub fn write_mesh_connectivity_file(&self, dir: &str) {
+        // Populate MeshConnectivity struct
+        let mesh_connectivity = MeshConnectivity {
+            beams: self
+                .beam_elements
+                .iter()
+                .map(|beam| (beam.id, beam.node_ids.to_vec()))
+                .collect(),
+            masses: self
+                .mass_elements
+                .iter()
+                .map(|mass| (mass.id, vec![mass.node_id]))
+                .collect(),
+            springs: self
+                .spring_elements
+                .iter()
+                .map(|spring| (spring.id, spring.node_ids.to_vec()))
+                .collect(),
+            constraints: self
+                .constraints
+                .iter()
+                .map(|constraint| {
+                    (
+                        constraint.id,
+                        match constraint.kind {
+                            ConstraintKind::Prescribed => vec![constraint.node_id_target],
+                            _ => vec![constraint.node_id_base, constraint.node_id_target],
+                        },
+                    )
+                })
+                .collect(),
+        };
+
+        let file_path = format!("{}/mesh_connectivity.yaml", dir);
+        let file = std::fs::File::create(file_path).unwrap();
+        serde_yaml::to_writer(file, &mesh_connectivity).unwrap();
+    }
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct MeshConnectivity {
+    beams: HashMap<usize, Vec<usize>>,
+    masses: HashMap<usize, Vec<usize>>,
+    springs: HashMap<usize, Vec<usize>>,
+    constraints: HashMap<usize, Vec<usize>>,
 }
 
 //------------------------------------------------------------------------------
@@ -369,6 +417,15 @@ impl<'a> NodeBuilder<'a> {
         self.node.x[4] = x;
         self.node.x[5] = y;
         self.node.x[6] = z;
+        self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
+        self
+    }
+
+    pub fn default_orientation(self) -> Self {
+        self.node.x[3] = 1.;
+        self.node.x[4] = 0.;
+        self.node.x[5] = 0.;
+        self.node.x[6] = 0.;
         self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }

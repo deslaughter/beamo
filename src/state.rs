@@ -25,6 +25,8 @@ pub struct State {
     pub vd: Mat<f64>,
     /// Algorithmic acceleration `[6][n_nodes]`
     pub a: Mat<f64>,
+    /// External forces and moments applied to nodes `[6][n_nodes]`
+    pub fx: Mat<f64>,
     /// Viscoelastic history states `[6*n_terms][n_quadrature]`
     pub visco_hist: Mat<f64>,
     /// Viscoelastic history states contributions from
@@ -46,6 +48,7 @@ impl State {
             v: Mat::from_fn(6, n_nodes, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
             a: Mat::from_fn(6, n_nodes, |i, j| nodes[j].vd[i]),
+            fx: Mat::zeros(6, n_nodes),
             visco_hist: Mat::zeros(6 * n_prony, nqp),
             strain_dot_n: Mat::zeros(6, nqp),
         };

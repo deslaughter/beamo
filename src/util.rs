@@ -1,6 +1,56 @@
 use faer::prelude::*;
 use std::f64::consts::PI;
 
+// Calculate the mass and stiffness matrices for an annular section
+#[allow(non_snake_case)]
+pub fn annular_section(
+    outer_diameter: f64,
+    wall_thickness: f64,
+    elastic_modulus: f64,
+    shear_modulus: f64,
+    poisson_ratio: f64,
+    density: f64,
+) -> (Mat<f64>, Mat<f64>) {
+    // Geometry
+    let outer_radius = outer_diameter / 2.0;
+    let inner_radius = outer_radius - wall_thickness;
+    let area = PI * (outer_radius.powi(2) - inner_radius.powi(2));
+    let I = PI * (outer_radius.powi(4) - inner_radius.powi(4)) / 4.;
+    let J = PI * (outer_radius.powi(4) - inner_radius.powi(4)) / 2.;
+
+    // Shear correction factor for circular sections
+    let k = (6. * (1. + poisson_ratio)) / (7. + 6. * poisson_ratio);
+
+    // Calculate mass properties
+    let m = density * area; // Mass per unit length
+    let rhoI = density * I; // Mass moment of inertia
+
+    // Calculate stiffness properties
+    let EA = elastic_modulus * area;
+    let EI = elastic_modulus * I;
+    let GKt = shear_modulus * J;
+    let GAk = shear_modulus * area * k;
+
+    let m = mat![
+        [m, 0., 0., 0., 0., 0.],
+        [0., m, 0., 0., 0., 0.],
+        [0., 0., m, 0., 0., 0.],
+        [0., 0., 0., rhoI, 0., 0.],
+        [0., 0., 0., 0., rhoI, 0.],
+        [0., 0., 0., 0., 0., 2. * rhoI],
+    ];
+
+    let k = mat![
+        [GAk, 0., 0., 0., 0., 0.],
+        [0., GAk, 0., 0., 0., 0.],
+        [0., 0., EA, 0., 0., 0.],
+        [0., 0., 0., EI, 0., 0.],
+        [0., 0., 0., 0., EI, 0.],
+        [0., 0., 0., 0., 0., GKt],
+    ];
+    (m, k)
+}
+
 #[inline]
 pub fn axial_vector_of_matrix(m: MatRef<f64>, mut v: ColMut<f64>) {
     v[0] = (m[(2, 1)] - m[(1, 2)]) / 2.;
@@ -295,11 +345,6 @@ pub fn quat_compose(q1: ColRef<f64>, q2: ColRef<f64>, mut q_out: ColMut<f64>) {
     q_out[1] = q1[0] * q2[1] + q1[1] * q2[0] + q1[2] * q2[3] - q1[3] * q2[2];
     q_out[2] = q1[0] * q2[2] - q1[1] * q2[3] + q1[2] * q2[0] + q1[3] * q2[1];
     q_out[3] = q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1] + q1[3] * q2[0];
-    let m = q_out.norm_l2();
-    q_out[0] /= m;
-    q_out[1] /= m;
-    q_out[2] /= m;
-    q_out[3] /= m;
 }
 
 #[inline]
@@ -375,6 +420,31 @@ pub fn vec_tilde_alloc(v: ColRef<f64>) -> Mat<f64> {
     let mut m = Mat::<f64>::zeros(3, 3);
     vec_tilde(v, m.as_mut());
     m
+}
+
+pub fn rotate_section_matrix(matrix: &Mat<f64>, rotation_vector: &Col<f64>) -> Mat<f64> {
+    let m =
+        quat_as_matrix_alloc(quat_from_rotation_vector_alloc(rotation_vector.as_ref()).as_ref());
+    let mut r = Mat::<f64>::zeros(6, 6);
+    r.submatrix_mut(0, 0, 3, 3).copy_from(&m);
+    r.submatrix_mut(3, 3, 3, 3).copy_from(&m);
+    &r * matrix * &r.transpose()
+}
+
+pub fn write_matrix(m: MatRef<f64>, file_path: &str) -> std::io::Result<()> {
+    use std::fs::File;
+    use std::io::Write;
+    let mut file = File::create(file_path)?;
+    for i in 0..m.nrows() {
+        for j in 0..m.ncols() {
+            if j > 0 {
+                write!(file, ",")?;
+            }
+            write!(file, "{}", m[(i, j)])?;
+        }
+        writeln!(file)?;
+    }
+    Ok(())
 }
 
 pub trait ColRefReshape<'a, T> {

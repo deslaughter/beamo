@@ -613,18 +613,13 @@ fn test_rigid_platform() {
     // Create state
     let mut state = model.create_state();
 
-    // Get DOFs for applying force
-    let platform_z_dof = solver.nfm.get_dof(platform.node_id, Direction::Z).unwrap();
-    let platform_rx_dof = solver.nfm.get_dof(platform.node_id, Direction::RX).unwrap();
-    let platform_ry_dof = solver.nfm.get_dof(platform.node_id, Direction::RY).unwrap();
-    let platform_rz_dof = solver.nfm.get_dof(platform.node_id, Direction::RZ).unwrap();
-
     // Calculate buoyancy force to balance gravity and mooring lines
     solver.elements.springs.calculate(&state);
     let fm = solver.elements.springs.f.row(2).sum();
     let fp = -gravity * platform_mass;
     let fb = 1.01 * (fm + fp);
-    solver.fx[platform_z_dof] = fb;
+
+    state.fx[(Direction::Z as usize, platform.node_id)] = fb;
 
     // Open output file
     let mut file = File::create(format!("{OUT_DIR}/platform_motion.csv")).unwrap();
@@ -671,9 +666,9 @@ fn test_rigid_platform() {
         }
 
         // Apply moments to platform node
-        solver.fx[platform_rx_dof] = 5.0e5 * (2. * PI / 15. * t).sin();
-        solver.fx[platform_ry_dof] = 1.0e6 * (2. * PI / 30. * t).sin();
-        solver.fx[platform_rz_dof] = 2.0e7 * (2. * PI / 60. * t).sin();
+        state.fx[(Direction::RX as usize, platform.node_id)] = 5.0e5 * (2. * PI / 15. * t).sin();
+        state.fx[(Direction::RY as usize, platform.node_id)] = 1.0e6 * (2. * PI / 30. * t).sin();
+        state.fx[(Direction::RZ as usize, platform.node_id)] = 2.0e7 * (2. * PI / 60. * t).sin();
 
         // Step
         let res = solver.step(&mut state);

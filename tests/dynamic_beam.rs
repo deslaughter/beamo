@@ -77,7 +77,7 @@ fn create_model(omega: ColRef<f64>) -> (Model, usize) {
                 c_star: c_star.clone(),
             },
         ],
-        Damping::None,
+        &Damping::None,
     );
 
     //--------------------------------------------------------------------------
@@ -142,7 +142,7 @@ fn test_cantilever_beam() {
                 .unwrap()
         }
 
-        solver.fx[1] = 1000.0;
+        state.fx[(0, 1)] = 1000.0;
 
         // Take step and get convergence result
         let res = solver.step(&mut state);

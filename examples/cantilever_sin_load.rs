@@ -81,7 +81,7 @@ fn main() {
                 c_star: c_star.clone(),
             },
         ],
-        damping.clone(),
+        &damping,
     );
 
     //--------------------------------------------------------------------------
@@ -105,7 +105,7 @@ fn main() {
         Damping::None => format!("{out_dir}/damping-0.csv"),
         Damping::Mu(_) => format!("{out_dir}/damping-mu.csv"),
         Damping::ModalElement(_) => format!("{out_dir}/damping-me.csv"),
-        Damping::Viscoelastic(_,_) => format!("{out_dir}/damping-viscoelastic.csv"),
+        Damping::Viscoelastic(_, _) => format!("{out_dir}/damping-viscoelastic.csv"),
     };
     let mut file = File::create(file_path).unwrap();
 
@@ -118,15 +118,12 @@ fn main() {
 
     let tip_node_id = *node_ids.last().unwrap();
 
-    // Get DOF index for beam tip node Z direction
-    let tip_z_dof = solver.nfm.get_dof(tip_node_id, Direction::Z).unwrap();
-
     for i in 0..10000 {
         // current time
         let t = (i as f64) * time_step;
 
         // Apply sine force on z direction of last node
-        solver.fx[tip_z_dof] = 100. * (10.0 * t).sin();
+        state.fx[(Direction::Z as usize, tip_node_id)] = 100. * (10.0 * t).sin();
 
         // Take step and get convergence result
         let res = solver.step(&mut state);

@@ -1,5 +1,9 @@
+use faer::prelude::*;
 use itertools::Itertools;
 
+use crate::util::{quat_compose_alloc, quat_from_rotation_vector_alloc, quat_rotate_vector_alloc};
+
+#[derive(Debug)]
 pub struct Node {
     /// Node identifier
     pub id: usize,
@@ -15,6 +19,40 @@ pub struct Node {
     pub vd: [f64; 6],
     /// Packed active degrees of freedom
     pub active_dofs: ActiveDOFs,
+}
+
+impl Node {
+    pub fn translate(&mut self, xyz: [f64; 3]) -> &mut Self {
+        self.x[0] += xyz[0];
+        self.x[1] += xyz[1];
+        self.x[2] += xyz[2];
+        self
+    }
+
+    pub fn rotate(&mut self, rv: ColRef<f64>, rotation_center: ColRef<f64>) -> &mut Self {
+        let dq = quat_from_rotation_vector_alloc(rv);
+        let dx = quat_rotate_vector_alloc(
+            dq.as_ref(),
+            col![
+                self.x[0] - rotation_center[0],
+                self.x[1] - rotation_center[1],
+                self.x[2] - rotation_center[2]
+            ]
+            .as_ref(),
+        );
+
+        let q = col![self.x[3], self.x[4], self.x[5], self.x[6]];
+        let q_new = quat_compose_alloc(dq.as_ref(), q.as_ref());
+
+        self.x[0] = rotation_center[0] + dx[0];
+        self.x[1] = rotation_center[1] + dx[1];
+        self.x[2] = rotation_center[2] + dx[2];
+        self.x[3] = q_new[0];
+        self.x[4] = q_new[1];
+        self.x[5] = q_new[2];
+        self.x[6] = q_new[3];
+        self
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
