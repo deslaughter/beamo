@@ -5,10 +5,10 @@ use crate::{
         axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2,
         quat_as_matrix_alloc, quat_compose_alloc, quat_from_rotation_vector,
         quat_from_rotation_vector_alloc, quat_inverse_alloc, quat_rotate_vector,
-        quat_rotate_vector_alloc, vec_tilde_alloc,
+        quat_rotate_vector_alloc, sparse_matrix_from_triplets, vec_tilde_alloc,
     },
 };
-use faer::{linalg::matmul::matmul, prelude::*, Accum, Par};
+use faer::{linalg::matmul::matmul, prelude::*, sparse::*, Accum, Par};
 use itertools::Itertools;
 use std::cmp;
 
@@ -31,37 +31,92 @@ pub struct ConstraintInput {
 
 pub struct Constraints {
     pub n_rows: usize,
+    pub phi: Col<f64>,
+    pub b_sp: SparseColMat<usize, f64>,
+    b_order: Vec<usize>,
     pub constraints: Vec<Constraint>,
 }
 
 impl Constraints {
     pub fn new(inputs: &[ConstraintInput], nfm: &NodeFreedomMap) -> Self {
-        let mut n_dofs = 0;
-        let constraints = inputs
+        let mut n_rows = 0;
+
+        //----------------------------------------------------------------------
+        // Create vector of constraints
+        //----------------------------------------------------------------------
+
+        let mut constraints = inputs
             .iter()
             .map(|inp| {
-                let c = Constraint::new(n_dofs, inp, nfm);
-                n_dofs += c.n_rows;
+                let c = Constraint::new(n_rows, inp, nfm);
+                n_rows += c.n_rows;
                 c
             })
             .collect_vec();
+
+        //----------------------------------------------------------------------
+        // Build constraint stiffness matrices
+        //----------------------------------------------------------------------
+
+        constraints.iter_mut().for_each(|c| {
+            (c.k_sp, c.k_order) = {
+                sparse_matrix_from_triplets(
+                    nfm.n_system_dofs + n_rows,
+                    nfm.n_system_dofs + n_rows,
+                    &c.get_k_triplets(),
+                )
+            }
+        });
+
+        //----------------------------------------------------------------------
+        // Create constraint gradient sparse matrix
+        //----------------------------------------------------------------------
+
+        // Create a vector of triplets for the b sparse matrix
+        let mut b_triplets = Vec::new();
+        constraints.iter().for_each(|c| {
+            (0..c.b_base.ncols())
+                .cartesian_product(0..c.b_base.nrows())
+                .for_each(|(j, i)| {
+                    b_triplets.push(Triplet::new(
+                        c.first_row_index + nfm.n_system_dofs + i,
+                        c.base_col_index + j,
+                        0.,
+                    ))
+                });
+            (0..c.b_target.ncols())
+                .cartesian_product(0..c.b_target.nrows())
+                .for_each(|(j, i)| {
+                    b_triplets.push(Triplet::new(
+                        c.first_row_index + nfm.n_system_dofs + i,
+                        c.target_col_index + j,
+                        0.,
+                    ))
+                });
+        });
+
+        let (b_sp, b_order) = sparse_matrix_from_triplets(
+            nfm.n_system_dofs + n_rows,
+            nfm.n_system_dofs + n_rows,
+            &b_triplets,
+        );
+
+        //----------------------------------------------------------------------
+        // Return Constraints struct
+        //----------------------------------------------------------------------
+
         Self {
-            n_rows: n_dofs,
+            n_rows,
+            phi: Col::<f64>::zeros(n_rows),
+            b_sp,
+            b_order,
             constraints,
         }
     }
 
-    pub fn assemble_constraints(
-        &mut self,
-        nfm: &NodeFreedomMap,
-        state: &State,
-        lambda: ColRef<f64>,
-        mut phi: ColMut<f64>,
-        mut b: MatMut<f64>,
-        mut kt: MatMut<f64>,
-    ) {
+    pub fn assemble_constraints(&mut self, state: &State, lambda: ColRef<f64>) {
         // Loop through constraints and calculate residual and gradient
-        self.constraints.iter_mut().enumerate().for_each(|(i, c)| {
+        self.constraints.iter_mut().for_each(|c| {
             // Get base and target node
             let u_base = state.u.col(c.node_id_base).subrows(0, 3);
             let r_base = state.u.col(c.node_id_base).subrows(3, 4);
@@ -79,106 +134,38 @@ impl Constraints {
                     c.calculate_revolute(u_base, r_base, u_target, r_target, lambda);
                 }
             }
-            if c.phi.has_nan() {
-                println!("Constraint {} has NaN in phi: {:?}", i, c.phi);
-            }
+
+            // Populate k sparse matrix values
+            c.update_k_values();
+
+            // Add constraint residual to phi vector
+            self.phi
+                .subrows_mut(c.first_row_index, c.n_rows)
+                .copy_from(&c.phi);
         });
 
-        // Assemble residual and gradient into global matrix and array
-        self.constraints.iter_mut().for_each(|c| {
-            // Subsection of residual for this constraint
-            let mut phi_c = phi.as_mut().subrows_mut(c.first_row_index, c.phi.nrows());
+        // Populate b sparse matrix values
+        self.update_b_values();
+    }
 
-            // Assemble residual and gradient based on type
-            let dofs_target = &nfm.node_dofs[c.node_id_target];
-            let mut b_target = b.as_mut().submatrix_mut(
-                c.first_row_index,
-                dofs_target.first_dof_index,
-                c.b_target.nrows(),
-                c.b_target.ncols(),
-            );
-
-            // c.k.fill(0.);
-
-            match c.kind {
-                ConstraintKind::Prescribed => {
-                    phi_c.copy_from(&c.phi);
-                    b_target.copy_from(&c.b_target);
-                    if dofs_target.n_dofs == 6 {
-                        let mut kt_sub = kt.as_mut().submatrix_mut(
-                            dofs_target.first_dof_index,
-                            dofs_target.first_dof_index,
-                            6,
-                            6,
-                        );
-                        zip!(&mut kt_sub, &c.k.submatrix(0, 0, 6, 6))
-                            .for_each(|unzip!(kt_sub, k_const)| *kt_sub += *k_const);
-                    }
-                }
-                _ => {
-                    phi_c.copy_from(&c.phi);
-                    b_target.copy_from(&c.b_target);
-                    let dofs_base = &nfm.node_dofs[c.node_id_base];
-                    let mut b_base = b.rb_mut().submatrix_mut(
-                        c.first_row_index,
-                        dofs_base.first_dof_index,
-                        c.n_rows,
-                        c.b_base.ncols(),
-                    );
-                    b_base.copy_from(&c.b_base);
-
-                    // Base node stiffness matrix
-                    zip!(
-                        &mut kt.rb_mut().submatrix_mut(
-                            dofs_base.first_dof_index,
-                            dofs_base.first_dof_index,
-                            6,
-                            6,
-                        ),
-                        &c.k.submatrix(6, 6, 6, 6)
-                    )
-                    .for_each(|unzip!(kt, kc)| *kt += *kc);
-
-                    // If target node has 6 DOFs, add remainder of the stiffness matrix
-                    if dofs_target.n_dofs == 6 {
-                        // Upper right corner of stiffness matrix
-                        zip!(
-                            &mut kt.rb_mut().submatrix_mut(
-                                dofs_target.first_dof_index,
-                                dofs_base.first_dof_index,
-                                6,
-                                6,
-                            ),
-                            &c.k.submatrix(0, 6, 6, 6)
-                        )
-                        .for_each(|unzip!(kt, kc)| *kt += *kc);
-
-                        // Lower left corner of stiffness matrix
-                        zip!(
-                            &mut kt.rb_mut().submatrix_mut(
-                                dofs_base.first_dof_index,
-                                dofs_target.first_dof_index,
-                                6,
-                                6,
-                            ),
-                            &c.k.submatrix(6, 0, 6, 6)
-                        )
-                        .for_each(|unzip!(kt, kc)| *kt += *kc);
-
-                        // Target node stiffness matrix
-                        zip!(
-                            &mut kt.as_mut().submatrix_mut(
-                                dofs_target.first_dof_index,
-                                dofs_target.first_dof_index,
-                                6,
-                                6,
-                            ),
-                            &c.k.submatrix(0, 0, 6, 6)
-                        )
-                        .for_each(|unzip!(kt, kc)| *kt += *kc);
-                    }
-                }
-            }
+    // Update b values based on constraints
+    // order of values must indices produced by b_pairs
+    fn update_b_values(&mut self) {
+        let values = self.b_sp.val_mut();
+        let mut k = 0;
+        self.constraints.iter().for_each(|c| {
+            (0..c.b_base.ncols())
+                .cartesian_product(0..c.b_base.nrows())
+                .for_each(|(j, i)| {
+                    values[self.b_order[k]] = c.b_base[(i, j)];
+                    k += 1;
+                });
+            (0..c.b_target.ncols())
+                .cartesian_product(0..c.b_target.nrows())
+                .for_each(|(j, i)| {
+                    values[self.b_order[k]] = c.b_target[(i, j)];
+                    k += 1;
+                });
         });
     }
 }
@@ -186,6 +173,8 @@ impl Constraints {
 pub struct Constraint {
     kind: ConstraintKind,
     first_row_index: usize,
+    base_col_index: usize,
+    target_col_index: usize,
     n_rows: usize,
     node_id_base: usize,
     node_id_target: usize,
@@ -195,15 +184,26 @@ pub struct Constraint {
     b_target: Mat<f64>,
     input: Col<f64>,
     /// Stiffness matrix for base node `[12,12]`
-    k: Mat<f64>,
+    k_b: Mat<f64>,
+    k_t: Mat<f64>,
+    k_bt: Mat<f64>,
+    k_tb: Mat<f64>,
     /// Rotation matrix `[3,3]`
     axes: Mat<f64>,
+    pub k_sp: SparseColMat<usize, f64>,
+    k_order: Vec<usize>,
 }
 
 impl Constraint {
     fn new(first_dof_index: usize, input: &ConstraintInput, nfm: &NodeFreedomMap) -> Self {
-        let n_dofs_base = nfm.node_dofs[input.node_id_base].n_dofs;
+        let n_dofs_base = match input.kind {
+            ConstraintKind::Prescribed => 0,
+            _ => nfm.node_dofs[input.node_id_base].n_dofs,
+        };
+
         let n_dofs_target = nfm.node_dofs[input.node_id_target].n_dofs;
+        let base_col_index = nfm.node_dofs[input.node_id_base].first_dof_index;
+        let target_col_index = nfm.node_dofs[input.node_id_target].first_dof_index;
 
         // Get number of constraint DOFs (rows of phi vector or B matrix)
         let n_rows = match input.kind {
@@ -249,9 +249,37 @@ impl Constraint {
             _ => Mat::<f64>::identity(3, 3),
         };
 
+        let k_t = match input.kind {
+            ConstraintKind::Rigid => {
+                if n_dofs_target == 6 {
+                    Mat::<f64>::zeros(3, 3)
+                } else {
+                    Mat::<f64>::new()
+                }
+            }
+            _ => Mat::<f64>::zeros(3, 3),
+        };
+
+        let k_b = match input.kind {
+            ConstraintKind::Prescribed => Mat::<f64>::new(),
+            _ => Mat::<f64>::zeros(3, 3),
+        };
+
+        let k_bt = if k_t.ncols() == 0 || k_b.ncols() == 0 {
+            Mat::<f64>::new()
+        } else {
+            Mat::<f64>::zeros(3, 3)
+        };
+
+        //----------------------------------------------------------------------
+        // Constraint structure
+        //----------------------------------------------------------------------
+
         Self {
             kind: input.kind,
             first_row_index: first_dof_index,
+            base_col_index,
+            target_col_index,
             n_rows,
             node_id_base: input.node_id_base,
             node_id_target: input.node_id_target,
@@ -260,9 +288,58 @@ impl Constraint {
             phi: Col::<f64>::zeros(n_rows),
             b_base: -1. * Mat::<f64>::identity(n_rows, n_dofs_base),
             b_target: Mat::<f64>::identity(n_rows, n_dofs_target),
-            k: Mat::<f64>::zeros(12, 12),
+            k_b,
+            k_t,
+            k_tb: k_bt.clone(),
+            k_bt,
             axes,
+            k_sp: SparseColMat::try_new_from_triplets(0, 0, &[]).unwrap(),
+            k_order: Vec::new(),
         }
+    }
+
+    pub fn get_k_triplets(&self) -> Vec<Triplet<usize, usize, f64>> {
+        let indices = (0..3usize).cartesian_product(0..3usize).collect_vec();
+
+        let mut k_triplets = Vec::new();
+
+        if self.k_b.ncols() > 0 {
+            indices.iter().for_each(|&(j, i)| {
+                k_triplets.push(Triplet::new(
+                    self.base_col_index + 3 + i,
+                    self.base_col_index + 3 + j,
+                    0.,
+                ));
+            });
+        }
+        if self.k_bt.ncols() > 0 {
+            // k_bt
+            indices.iter().for_each(|&(j, i)| {
+                k_triplets.push(Triplet::new(
+                    self.base_col_index + 3 + i,
+                    self.target_col_index + 3 + j,
+                    0.,
+                ));
+            });
+            // k_tb
+            indices.iter().for_each(|&(j, i)| {
+                k_triplets.push(Triplet::new(
+                    self.target_col_index + 3 + i,
+                    self.base_col_index + 3 + j,
+                    0.,
+                ));
+            });
+        }
+        if self.k_t.ncols() > 0 {
+            indices.iter().for_each(|&(j, i)| {
+                k_triplets.push(Triplet::new(
+                    self.target_col_index + 3 + i,
+                    self.target_col_index + 3 + j,
+                    0.,
+                ));
+            });
+        }
+        k_triplets
     }
 
     // Set displacement for prescribed displacement constraint
@@ -327,7 +404,37 @@ impl Constraint {
         // Rotational stiffness matrix for target node
         let lambda_tilde = vec_tilde_alloc(lambda.subrows(3, 3));
         let c = quat_as_matrix_alloc(r_target);
-        matrix_ax((-&c * &lambda_tilde).rb(), self.k.submatrix_mut(3, 3, 3, 3));
+        matrix_ax((-&c * &lambda_tilde).rb(), self.k_t.as_mut());
+    }
+
+    fn update_k_values(&mut self) {
+        let values = self.k_sp.val_mut();
+        let mut k = 0;
+
+        self.k_b.col_iter().for_each(|col| {
+            col.iter().for_each(|&v| {
+                values[self.k_order[k]] = v;
+                k += 1;
+            });
+        });
+        self.k_bt.col_iter().for_each(|col| {
+            col.iter().for_each(|&v| {
+                values[self.k_order[k]] = v;
+                k += 1;
+            });
+        });
+        self.k_tb.col_iter().for_each(|col| {
+            col.iter().for_each(|&v| {
+                values[self.k_order[k]] = v;
+                k += 1;
+            });
+        });
+        self.k_t.col_iter().for_each(|col| {
+            col.iter().for_each(|&v| {
+                values[self.k_order[k]] = v;
+                k += 1;
+            });
+        });
     }
 
     fn calculate_rigid(
@@ -361,10 +468,9 @@ impl Constraint {
         let lambda_1 = lambda.subrows(0, 3);
         let lambda_1_tilde = vec_tilde_alloc(lambda_1);
 
-        self.k.fill(0.);
         let rb_x0_tilde = vec_tilde_alloc(rb_x0.as_ref());
         matmul(
-            self.k.submatrix_mut(9, 9, 3, 3),
+            self.k_b.rb_mut(),
             Accum::Replace,
             &lambda_1_tilde,
             &rb_x0_tilde,
@@ -441,13 +547,13 @@ impl Constraint {
 
         // Stiffness matrix components
         matrix_ax((&m_rc * &lambda_2_tilde).rb(), ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(3, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
+        zip!(&mut self.k_t, &ax).for_each(|unzip!(k, ax)| *k += *ax);
         matrix_ax2(m_rc.transpose(), lambda_2, ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(3, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k += *ax);
+        zip!(&mut self.k_tb, &ax).for_each(|unzip!(k, ax)| *k += *ax);
         matrix_ax2(m_rc.rb(), lambda_2, ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(9, 3, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
+        zip!(&mut self.k_bt, &ax).for_each(|unzip!(k, ax)| *k -= *ax);
         matrix_ax((&m_rc.transpose() * &lambda_2_tilde).rb(), ax.as_mut());
-        zip!(&mut self.k.submatrix_mut(9, 9, 3, 3), &ax).for_each(|unzip!(k, ax)| *k -= *ax);
+        zip!(&mut self.k_b, &ax).for_each(|unzip!(k, ax)| *k -= *ax);
     }
 
     fn calculate_revolute(
@@ -524,17 +630,13 @@ impl Constraint {
         let y_tilde = vec_tilde_alloc(y.rb());
         let z_tilde = vec_tilde_alloc(z.rb());
 
-        self.k
-            .submatrix_mut(3, 3, 3, 3)
+        self.k_t
             .copy_from(lambda_2 * &x_tilde * &z_tilde + lambda_3 * &x_tilde * &y_tilde);
-        self.k
-            .submatrix_mut(3, 9, 3, 3)
+        self.k_tb
             .copy_from(-lambda_2 * &z_tilde * &x_tilde - lambda_3 * &y_tilde * &x_tilde);
-        self.k
-            .submatrix_mut(9, 3, 3, 3)
+        self.k_bt
             .copy_from(-lambda_2 * &x_tilde * &z_tilde - lambda_3 * &x_tilde * &y_tilde);
-        self.k
-            .submatrix_mut(9, 9, 3, 3)
+        self.k_b
             .copy_from(lambda_2 * &z_tilde * &x_tilde + lambda_3 * &y_tilde * &x_tilde);
     }
 }
@@ -545,7 +647,14 @@ mod tests {
     use super::*;
     use crate::node::{ActiveDOFs, Node};
     use equator::assert;
-    use faer::utils::approx::{ApproxEq, CwiseMat};
+    use faer::{
+        dyn_stack::{MemBuffer, MemStack},
+        sparse::linalg::matmul::{
+            sparse_sparse_matmul_numeric, sparse_sparse_matmul_numeric_scratch,
+            sparse_sparse_matmul_symbolic,
+        },
+        utils::approx::{ApproxEq, CwiseMat},
+    };
 
     fn create_nfm() -> NodeFreedomMap {
         NodeFreedomMap::new(&[
@@ -696,5 +805,97 @@ mod tests {
             [0., 0., 0., -50.666666666666714, 962.6666666666664, 25.333333333333329],
             [0., 0., 0., -1.3333333333333308, -25.333333333333329, 959.99999999999977],
         ]);
+    }
+
+    #[test]
+    fn test_sparse_order() {
+        let triplets: Vec<Triplet<usize, usize, f64>> = vec![
+            Triplet::new(0, 0, 1.),
+            Triplet::new(0, 2, 2.),
+            Triplet::new(2, 0, 3.),
+        ];
+
+        let m_sp = SparseColMat::try_new_from_triplets(3, 3, &triplets).unwrap();
+
+        let approx_eq = CwiseMat(ApproxEq::eps());
+
+        assert!(m_sp.to_dense() ~ mat![
+            [1., 0., 2.],
+            [0., 0., 0.],
+            [3., 0., 0.]
+        ]);
+
+        assert!(Col::from_iter(m_sp.val().iter().cloned()) ~ col![1., 3., 2.]);
+    }
+
+    #[test]
+    fn test_sparse_merge() {
+        let a = SparseColMat::<usize, f64>::try_new_from_triplets(
+            5,
+            5,
+            &vec![
+                Triplet::new(0, 0, 2.),
+                Triplet::new(1, 1, 1.),
+                Triplet::new(2, 2, 1.),
+                Triplet::new(3, 3, 1.),
+                Triplet::new(4, 4, 1.),
+            ],
+        )
+        .unwrap();
+
+        let b = SparseColMat::<usize, f64>::try_new_from_triplets(
+            5,
+            5,
+            &vec![
+                Triplet::new(3, 0, 1.),
+                Triplet::new(4, 2, 2.),
+                Triplet::new(4, 1, 3.),
+            ],
+        )
+        .unwrap();
+
+        // Get symbolic multiplication of a and b sparse matrices
+        let (c_sym, mminfo) = sparse_sparse_matmul_symbolic(b.symbolic(), a.symbolic()).unwrap();
+
+        let c_sym = ops::union_symbolic(
+            c_sym.as_ref(),
+            b.symbolic().transpose().to_col_major().unwrap().as_ref(),
+        )
+        .unwrap();
+
+        let c_data = vec![0.; c_sym.compute_nnz()];
+        let mut c = SparseColMat::<usize, f64>::new(c_sym, c_data);
+
+        let mut mem_buffer = MemBuffer::try_new(
+            sparse_sparse_matmul_numeric_scratch::<usize, f64>(c.symbolic(), Par::Seq),
+        )
+        .unwrap();
+        sparse_sparse_matmul_numeric(
+            c.as_shape_mut(5, 5),
+            Accum::Add,
+            b.as_ref(),
+            a.as_ref(),
+            1.,
+            &mminfo,
+            Par::Seq,
+            MemStack::new(&mut mem_buffer),
+        );
+
+        ops::add_assign(
+            c.as_shape_mut(5, 5),
+            b.transpose().to_col_major().unwrap().as_ref(),
+        );
+
+        let approx_eq = CwiseMat(ApproxEq::eps());
+
+        assert!(c.to_dense() ~ mat![
+            [0., 0., 0., 1., 0.],
+            [0., 0., 0., 0., 3.],
+            [0., 0., 0., 0., 2.],
+            [2., 0., 0., 0., 0.],
+            [0., 3., 2., 0., 0.],
+        ]);
+
+        assert!(Col::from_iter(c.val().iter().cloned()) ~ col![2., 3., 2., 1., 3., 2.]);
     }
 }

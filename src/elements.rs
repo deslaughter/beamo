@@ -6,6 +6,7 @@ pub mod springs;
 
 use crate::{node::NodeFreedomMap, state::State};
 use beams::Beams;
+
 use faer::{ColMut, MatMut};
 use masses::Masses;
 use springs::Springs;
@@ -17,27 +18,27 @@ pub struct Elements {
 }
 
 impl Elements {
+    pub fn new(beams: Beams, masses: Masses, springs: Springs) -> Self {
+        Self {
+            beams,
+            masses,
+            springs,
+        }
+    }
     pub fn assemble_system(
         &mut self,
         state: &State,
-        nfm: &NodeFreedomMap,
         h: f64,
-        mut m: MatMut<f64>, // Mass
-        mut g: MatMut<f64>, // Damping
-        mut k: MatMut<f64>, // Stiffness
         mut r: ColMut<f64>, // Residual
     ) {
         // Add beams to system
         self.beams.calculate_system(state, h);
-        self.beams
-            .assemble_system(nfm, m.as_mut(), g.as_mut(), k.as_mut(), r.as_mut());
+        self.beams.assemble_system(r.as_mut());
 
         // Add mass elements to system
-        self.masses
-            .assemble_system(nfm, state, m.as_mut(), g.as_mut(), k.as_mut(), r.as_mut());
+        self.masses.assemble_system(state, r.as_mut());
 
         // Add spring elements to system
-        self.springs
-            .assemble_system(nfm, state, k.as_mut(), r.as_mut());
+        self.springs.assemble_system(state, r.as_mut());
     }
 }

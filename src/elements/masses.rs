@@ -1,8 +1,9 @@
 use crate::node::Node;
 use crate::node::NodeFreedomMap;
 use crate::state::State;
-use crate::util::ColRefReshape;
+use crate::util::sparse_matrix_from_triplets;
 use faer::prelude::*;
+use faer::sparse::*;
 use itertools::{izip, Itertools};
 use std::ops::Rem;
 
@@ -20,6 +21,8 @@ pub struct Masses {
     n_elem: usize,
     /// Node ID for each element
     node_ids: Vec<usize>,
+    /// Element first dof indices
+    elem_first_dof_indices: Vec<usize>,
     /// Gravity vector
     gravity: Col<f64>,
     /// Initial position/rotation `[7][n_nodes]`
@@ -52,16 +55,61 @@ pub struct Masses {
     pub gi: Mat<f64>,
     /// stiff matrices `[6][6][n_nodes]`
     pub ki: Mat<f64>,
+
+    /// Sparse mass matrix
+    pub m_sp: SparseColMat<usize, f64>,
+    /// Sparse gyroscopic matrix
+    pub g_sp: SparseColMat<usize, f64>,
+    /// Sparse stiffness matrix
+    pub k_sp: SparseColMat<usize, f64>,
+    /// Order of data in sparse matrices
+    order_sp: Vec<usize>,
 }
 
 impl Masses {
-    pub fn new(elements: &[MassElement], gravity: &[f64; 3], nodes: &[Node]) -> Self {
+    pub fn new(
+        elements: &[MassElement],
+        gravity: &[f64; 3],
+        nodes: &[Node],
+        nfm: &NodeFreedomMap,
+    ) -> Self {
         // Total number of elements
         let n_elem = elements.len();
 
+        let node_ids = elements.iter().map(|e| e.node_id).collect_vec();
+
+        //----------------------------------------------------------------------
+        // Initialize sparse matrices
+        //----------------------------------------------------------------------
+
+        // Get first node dof index of each element
+        let elem_first_dof_indices = node_ids
+            .iter()
+            .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
+            .collect_vec();
+
+        // Sparsity pattern for mass, gyroscopic, and stiffness matrices
+        let sp_triplets = elem_first_dof_indices
+            .iter()
+            .flat_map(|&i| {
+                (0..6)
+                    .cartesian_product(0..6)
+                    .map(|(k, j)| Triplet::new(i + j, i + k, 0.))
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        // Create sparse matrices from triplets and get data order
+        let (sp, sp_order) = sparse_matrix_from_triplets(nfm.n_dofs(), nfm.n_dofs(), &sp_triplets);
+
+        //----------------------------------------------------------------------
+        // Populate structure
+        //----------------------------------------------------------------------
+
         Self {
             n_elem,
-            node_ids: elements.iter().map(|e| e.node_id).collect_vec(),
+            node_ids,
+            elem_first_dof_indices,
             x: Mat::zeros(7, n_elem),
             x0: Mat::from_fn(7, n_elem, |i, j| nodes[j].x[i]),
             u: Mat::from_fn(7, n_elem, |i, j| nodes[j].u[i]),
@@ -78,17 +126,17 @@ impl Masses {
             muu: Mat::zeros(6 * 6, n_elem),
             gi: Mat::zeros(6 * 6, n_elem),
             ki: Mat::zeros(6 * 6, n_elem),
+            m_sp: sp.clone(),
+            g_sp: sp.clone(),
+            k_sp: sp.clone(),
+            order_sp: sp_order,
         }
     }
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
     pub fn assemble_system(
         &mut self,
-        nfm: &NodeFreedomMap,
         state: &State,
-        mut m: MatMut<f64>, // Mass
-        mut g: MatMut<f64>, // Damping
-        mut k: MatMut<f64>, // Stiffness
         mut r: ColMut<f64>, // Residual
     ) {
         if self.n_elem == 0 {
@@ -168,52 +216,52 @@ impl Masses {
         );
 
         //----------------------------------------------------------------------
-        // Assemble elements into global matrices and vectors
+        // Populate the residual vector
         //----------------------------------------------------------------------
 
-        // Get first node dof index of each element
-        let elem_first_dof_indices = self
-            .node_ids
-            .iter()
-            .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
-            .collect_vec();
-
-        // Mass matrix
-        izip!(elem_first_dof_indices.iter(), self.muu.col_iter()).for_each(|(&i, me_col)| {
-            zip!(
-                &mut m.as_mut().submatrix_mut(i, i, 6, 6),
-                me_col.reshape(6, 6)
-            )
-            .for_each(|unzip!(m, me)| *m += *me);
-        });
-
-        // Gyroscopic matrix
-        izip!(elem_first_dof_indices.iter(), self.gi.col_iter()).for_each(|(&i, ge_col)| {
-            zip!(
-                &mut g.as_mut().submatrix_mut(i, i, 6, 6),
-                ge_col.reshape(6, 6)
-            )
-            .for_each(|unzip!(g, ge)| *g += *ge);
-        });
-
-        // Stiffness matrix
-        izip!(elem_first_dof_indices.iter(), self.ki.col_iter()).for_each(|(&i, ke_col)| {
-            zip!(
-                &mut k.as_mut().submatrix_mut(i, i, 6, 6),
-                ke_col.reshape(6, 6)
-            )
-            .for_each(|unzip!(k, ke)| *k += *ke);
-        });
-
-        // Residual vector
         izip!(
-            elem_first_dof_indices.iter(),
+            self.elem_first_dof_indices.iter(),
             self.fi.col_iter(),
             self.fg.col_iter()
         )
         .for_each(|(&i, fi, fg)| {
             zip!(&mut r.as_mut().subrows_mut(i, 6), fi, fg)
                 .for_each(|unzip!(r, fi, fg)| *r += *fi - *fg);
+        });
+
+        //----------------------------------------------------------------------
+        // Update values in sparse matrices
+        // Order of data in sparse matrices is given by `sp_order`
+        //----------------------------------------------------------------------
+
+        // Mass matrix
+        let mut i = 0;
+        let m_values = self.m_sp.val_mut();
+        self.muu.col_iter().for_each(|m_col| {
+            m_col.iter().for_each(|&v| {
+                m_values[self.order_sp[i]] = v;
+                i += 1;
+            })
+        });
+
+        // Gyroscopic matrix
+        let mut i = 0;
+        let g_values = self.g_sp.val_mut();
+        self.gi.col_iter().for_each(|g_col| {
+            g_col.iter().for_each(|&v| {
+                g_values[self.order_sp[i]] = v;
+                i += 1;
+            })
+        });
+
+        // Stiffness matrix
+        let mut i = 0;
+        let k_values = self.k_sp.val_mut();
+        self.ki.col_iter().for_each(|ke_col| {
+            ke_col.iter().for_each(|&v| {
+                k_values[self.order_sp[i]] = v;
+                i += 1;
+            })
         });
     }
 }

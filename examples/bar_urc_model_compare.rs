@@ -170,17 +170,24 @@ fn modal_analysis(out_dir: &str, model: &Model) -> (Col<f64>, Mat<f64>) {
     solver.elements.beams.calculate_system(&state, h);
 
     // Get matrices
-    solver.elements.beams.assemble_system(
-        &solver.nfm,
-        solver.m.as_mut(),
-        solver.ct.as_mut(),
-        solver.kt.as_mut(),
-        solver.r.as_mut(),
-    );
+    solver.elements.beams.assemble_system(solver.r.as_mut());
 
     let ndof_bc = solver.n_system - 6;
-    let lu = solver.m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();
-    let a = lu.solve(solver.kt.submatrix(6, 6, ndof_bc, ndof_bc));
+    let lu = solver
+        .elements
+        .beams
+        .m_sp
+        .to_dense()
+        .submatrix(6, 6, ndof_bc, ndof_bc)
+        .partial_piv_lu();
+    let a = lu.solve(
+        solver
+            .elements
+            .beams
+            .k_sp
+            .to_dense()
+            .submatrix(6, 6, ndof_bc, ndof_bc),
+    );
 
     let eig = a.eigen().unwrap();
     let eig_val_raw = eig.S().column_vector();

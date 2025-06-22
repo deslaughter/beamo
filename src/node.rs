@@ -109,39 +109,46 @@ pub enum Direction {
 }
 
 pub struct NodeFreedomMap {
-    pub total_dofs: usize,
+    pub n_system_dofs: usize,
+    pub n_constraint_dofs: usize,
     pub node_dofs: Vec<NodeDOFs>,
 }
 
 impl NodeFreedomMap {
+    pub fn n_dofs(&self) -> usize {
+        self.n_system_dofs + self.n_constraint_dofs
+    }
     pub fn new(nodes: &[Node]) -> Self {
         let mut first_dof = 0;
 
+        let node_dofs = nodes
+            .iter()
+            .map(|n| {
+                let ndofs = NodeDOFs {
+                    first_dof_index: first_dof,
+                    n_dofs: match n.active_dofs {
+                        ActiveDOFs::None => 0,
+                        ActiveDOFs::Translation => 3,
+                        ActiveDOFs::Rotation => 3,
+                        ActiveDOFs::All => 6,
+                    },
+                    active: n.active_dofs,
+                };
+
+                // Increment next DOF index for node
+                first_dof += ndofs.n_dofs;
+
+                ndofs
+            })
+            .collect_vec();
+
         let mut nfm = Self {
-            node_dofs: nodes
-                .iter()
-                .map(|n| {
-                    let ndofs = NodeDOFs {
-                        first_dof_index: first_dof,
-                        n_dofs: match n.active_dofs {
-                            ActiveDOFs::None => 0,
-                            ActiveDOFs::Translation => 3,
-                            ActiveDOFs::Rotation => 3,
-                            ActiveDOFs::All => 6,
-                        },
-                        active: n.active_dofs,
-                    };
-
-                    // Increment next DOF index for node
-                    first_dof += ndofs.n_dofs;
-
-                    ndofs
-                })
-                .collect_vec(),
-            total_dofs: 0,
+            node_dofs,
+            n_system_dofs: 0,
+            n_constraint_dofs: 0,
         };
 
-        nfm.total_dofs = first_dof;
+        nfm.n_system_dofs = first_dof;
 
         nfm
     }

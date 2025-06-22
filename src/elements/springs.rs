@@ -1,8 +1,10 @@
 use faer::prelude::*;
+use faer::sparse::*;
 use faer::{linalg::matmul::matmul, Accum};
 
 use itertools::{izip, Itertools};
 
+use crate::util::sparse_matrix_from_triplets;
 use crate::{
     node::{Node, NodeFreedomMap},
     state::State,
@@ -20,8 +22,10 @@ pub struct SpringElement {
 pub struct Springs {
     /// Number of spring elements
     pub n_elem: usize,
-    /// Node ID for each element
+    /// Node IDs for each element
     pub elem_node_ids: Vec<[usize; 2]>,
+    /// First DOF index for each element node
+    pub elem_dofs_start: Vec<[usize; 2]>,
     /// Initial difference in node locations `[3][n_nodes]`
     pub x0: Mat<f64>,
     /// State: node 1 translational displacement `[3][n_nodes]`
@@ -43,10 +47,15 @@ pub struct Springs {
     /// force components `[3][n_nodes]`
     pub f: Mat<f64>,
     r_tilde: Mat<f64>,
+
+    /// Sparse stiffness matrix
+    pub k_sp: SparseColMat<usize, f64>,
+    /// Order of data in sparse matrices
+    order_sp: Vec<usize>,
 }
 
 impl Springs {
-    pub fn new(elements: &[SpringElement], nodes: &[Node]) -> Self {
+    pub fn new(elements: &[SpringElement], nodes: &[Node], nfm: &NodeFreedomMap) -> Self {
         // Total number of elements
         let n_elem = elements.len();
 
@@ -61,10 +70,51 @@ impl Springs {
             None => x0.as_ref().col(i).norm_l2(),
         });
 
+        // Element node IDs
+        let elem_node_ids = elements.iter().map(|e| e.node_ids.clone()).collect_vec();
+
+        // Element DOF start indices
+        let elem_dofs_start = elem_node_ids
+            .iter()
+            .map(|ids| {
+                [
+                    nfm.node_dofs[ids[0]].first_dof_index,
+                    nfm.node_dofs[ids[1]].first_dof_index,
+                ]
+            })
+            .collect_vec();
+
+        // Sparse matrix triplets
+        let triplets = elem_dofs_start
+            .iter()
+            .flat_map(|dofs_start| {
+                dofs_start
+                    .iter()
+                    .cartesian_product(dofs_start.iter())
+                    .flat_map(|(&i, &j)| {
+                        vec![
+                            Triplet::new(i + 0, j + 0, 0.),
+                            Triplet::new(i + 1, j + 0, 0.),
+                            Triplet::new(i + 2, j + 0, 0.),
+                            Triplet::new(i + 0, j + 1, 0.),
+                            Triplet::new(i + 1, j + 1, 0.),
+                            Triplet::new(i + 2, j + 1, 0.),
+                            Triplet::new(i + 0, j + 2, 0.),
+                            Triplet::new(i + 1, j + 2, 0.),
+                            Triplet::new(i + 2, j + 2, 0.),
+                        ]
+                    })
+            })
+            .collect_vec();
+
+        // Create sparse stiffness matrix from triplets and get data order
+        let (k_sp, order_sp) = sparse_matrix_from_triplets(nfm.n_dofs(), nfm.n_dofs(), &triplets);
+
         // Return initialized struct
         Self {
             n_elem,
-            elem_node_ids: elements.iter().map(|e| e.node_ids.clone()).collect_vec(),
+            elem_node_ids,
+            elem_dofs_start: elem_dofs_start,
             x0,
             u1: Mat::zeros(3, n_elem),
             u2: Mat::zeros(3, n_elem),
@@ -77,6 +127,8 @@ impl Springs {
             f: Mat::zeros(3, n_elem),
             a: Mat::zeros(3 * 3, n_elem),
             r_tilde: Mat::zeros(3, 3),
+            k_sp,
+            order_sp,
         }
     }
 
@@ -129,9 +181,7 @@ impl Springs {
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
     pub fn assemble_system(
         &mut self,
-        nfm: &NodeFreedomMap,
         state: &State,
-        mut k: MatMut<f64>, // Stiffness
         mut r: ColMut<f64>, // Residual
     ) {
         // If no elements, return
@@ -146,39 +196,35 @@ impl Springs {
         // Assemble elements into global matrices and vectors
         //----------------------------------------------------------------------
 
-        izip!(
-            self.elem_node_ids.iter(),
-            self.a.col_iter(),
-            self.f.col_iter()
-        )
-        .for_each(|(node_ids, a_col, f)| {
-            // Get index of first dof in each element node
-            let elem_dofs_start = [
-                nfm.node_dofs[node_ids[0]].first_dof_index,
-                nfm.node_dofs[node_ids[1]].first_dof_index,
-            ];
-
-            // Residual vector
-            elem_dofs_start
-                .iter()
-                .zip([1., -1.])
-                .for_each(|(&i, sign)| {
-                    zip!(&mut r.as_mut().subrows_mut(i, 3), f)
+        // Add element force vector to residual vector
+        self.elem_dofs_start
+            .iter()
+            .zip(self.f.col_iter())
+            .for_each(|(dofs_start, f)| {
+                dofs_start.iter().zip([1., -1.]).for_each(|(&i_dof, sign)| {
+                    zip!(&mut r.as_mut().subrows_mut(i_dof, 3), f)
                         .for_each(|unzip!(r, f)| *r += sign * *f);
                 });
+            });
 
-            // Get start DOFs for each node
-            let elem_dof_start_pairs = elem_dofs_start
-                .iter()
-                .cartesian_product(elem_dofs_start.iter())
-                .collect_vec();
-
-            // Stiffness matrix
-            let a = a_col.reshape(3, 3);
-            elem_dof_start_pairs.iter().for_each(|(&i, &j)| {
-                let sign = if i == j { 1. } else { -1. };
-                zip!(&mut k.as_mut().submatrix_mut(i, j, 3, 3), a)
-                    .for_each(|unzip!(k, a)| *k += sign * *a);
+        let k_values = self.k_sp.val_mut();
+        let mut i = 0;
+        self.a.col_iter().for_each(|a_col| {
+            a_col.iter().for_each(|&v| {
+                k_values[self.order_sp[i]] += v;
+                i += 1;
+            });
+            a_col.iter().for_each(|&v| {
+                k_values[self.order_sp[i]] -= v;
+                i += 1;
+            });
+            a_col.iter().for_each(|&v| {
+                k_values[self.order_sp[i]] -= v;
+                i += 1;
+            });
+            a_col.iter().for_each(|&v| {
+                k_values[self.order_sp[i]] += v;
+                i += 1;
             });
         });
     }
@@ -281,7 +327,9 @@ mod tests {
         model.add_spring_element(n1, n2, 10., None);
 
         let mut state = model.create_state();
-        let mut springs = model.create_springs();
+        let nfm = model.create_node_freedom_map();
+        let mut elements = model.create_elements(&nfm);
+        let mut springs = elements.springs;
 
         // Zero displacement
         springs.calculate(&state);

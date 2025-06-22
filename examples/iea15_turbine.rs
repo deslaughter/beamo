@@ -14,8 +14,10 @@ use ottr::{
 
 fn main() {
     let time_step = 0.01;
-    let duration = 10.0;
+    let duration = 100.0;
     let n_steps = (duration / time_step) as usize;
+
+    faer::set_global_parallelism(Par::Seq);
 
     let mut model = Model::new();
     model.set_time_step(time_step);
@@ -53,17 +55,26 @@ fn main() {
         let t = (i as f64) * time_step;
 
         // Calculate torque and apply to the azimuth node
-        quat_rotate_vector(
-            turbine.azimuth_node.displacement.subrows(3, 4),
-            col![turbine.torque, 0., 0.].as_ref(),
-            torque_vector.as_mut(),
-        );
-        // println!("t={}, torque_vector={:?}", t, torque_vector);
-        turbine
-            .azimuth_node
-            .loads
-            .subrows_mut(3, 3)
-            .copy_from(&torque_vector);
+        if i < 500 {
+            quat_rotate_vector(
+                turbine.azimuth_node.displacement.subrows(3, 4),
+                col![turbine.torque, 0., 0.].as_ref(),
+                torque_vector.as_mut(),
+            );
+            // println!("t={}, torque_vector={:?}", t, torque_vector);
+            turbine
+                .azimuth_node
+                .loads
+                .subrows_mut(3, 3)
+                .copy_from(&torque_vector);
+        } else if i == 500 {
+            torque_vector.fill(0.);
+            turbine
+                .azimuth_node
+                .loads
+                .subrows_mut(3, 3)
+                .copy_from(&torque_vector);
+        }
 
         // Set blade 3 pitch constraint rotation
         solver.constraints.constraints[turbine.pitch_constraint_ids[2]].set_rotation(t * 0.5);

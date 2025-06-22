@@ -1,4 +1,5 @@
-use faer::prelude::*;
+use faer::{prelude::*, sparse::*};
+use itertools::Itertools;
 use std::f64::consts::PI;
 
 // Calculate the mass and stiffness matrices for an annular section
@@ -471,6 +472,32 @@ impl<'a, T> ColMutReshape<'a, T> for ColMut<'a, T> {
     fn reshape_mut(self, rows: usize, cols: usize) -> MatMut<'a, T> {
         unsafe { MatMut::from_raw_parts_mut(self.as_ptr() as *mut T, rows, cols, 1, rows as isize) }
     }
+}
+
+#[inline]
+pub fn sparse_matrix_from_triplets(
+    nrows: usize,
+    ncols: usize,
+    triplets: &[Triplet<usize, usize, f64>],
+) -> (SparseColMat<usize, f64>, Vec<usize>) {
+    // Get argsort order for column major sparse matrix
+    let mut sort: Vec<usize> = (0..triplets.len()).collect();
+    sort.sort_by_key(|&i| (triplets[i].col, triplets[i].row));
+
+    // Get sort order for updating the sparse matrix values in place
+    let mut order = sort.clone();
+    sort.iter().enumerate().for_each(|(i, &j)| {
+        order[j] = i;
+    });
+
+    // Reorder triplets according to sort
+    let triplets = sort.iter().map(|&i| triplets[i]).collect_vec();
+
+    // Create sparse matrix from triplets
+    let m = SparseColMat::try_new_from_triplets(nrows, ncols, &triplets)
+        .expect("Failed to create sparse matrix from triplets");
+
+    (m, order)
 }
 
 #[cfg(test)]

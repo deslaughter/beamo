@@ -41,11 +41,11 @@ fn main() {
     let model = setup_test();
 
     let nfm = model.create_node_freedom_map();
-    let mut beams = model.create_beams();
+    let mut elements = model.create_elements(&nfm);
     let mut state = model.create_state();
 
     // Perform modal analysis
-    let (eig_val, eig_vec) = modal_analysis(&nfm, &mut beams, &state, state.u.ncols() * 6);
+    let (eig_val, eig_vec) = modal_analysis(&nfm, &mut elements.beams, &state, state.u.ncols() * 6);
     let mut file = File::create(format!("{OUT_DIR}/shapes.csv")).unwrap();
     izip!(eig_val.iter(), eig_vec.col_iter()).for_each(|(&lambda, c)| {
         file.write_fmt(format_args!("{}", lambda.sqrt() / (2. * PI)))
@@ -84,16 +84,16 @@ fn main() {
         vd.copy_from(eig_vec.col(i_mode) * Scale(-a_tip * omega_n.powi(2) * (omega_n * t).sin()));
     });
 
-    let mut m = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
-    let mut c = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
-    let mut k = Mat::<f64>::zeros(nfm.total_dofs, nfm.total_dofs);
-    let mut r = Col::<f64>::zeros(nfm.total_dofs);
+    let mut m = Mat::<f64>::zeros(nfm.n_system_dofs, nfm.n_system_dofs);
+    let mut c = Mat::<f64>::zeros(nfm.n_system_dofs, nfm.n_system_dofs);
+    let mut k = Mat::<f64>::zeros(nfm.n_system_dofs, nfm.n_system_dofs);
+    let mut r = Col::<f64>::zeros(nfm.n_system_dofs);
 
     //Only matters for viscoelastic material, but needs to be passed to create_beams
     let h = 0.001;
 
-    beams.calculate_system(&state, h);
-    beams.assemble_system(&nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+    elements.beams.calculate_system(&state, h);
+    elements.beams.assemble_system(r.as_mut());
 
     dump_matrix(&format!("{OUT_DIR}/m.csv"), m.as_ref());
     dump_matrix(&format!("{OUT_DIR}/c.csv"), c.as_ref());
@@ -102,7 +102,7 @@ fn main() {
     dump_matrix(&format!("{OUT_DIR}/v.csv"), v.transpose());
     dump_matrix(&format!("{OUT_DIR}/vd.csv"), vd.transpose());
 
-    let mut force = Col::<f64>::zeros(nfm.total_dofs);
+    let mut force = Col::<f64>::zeros(nfm.n_system_dofs);
 
     (0..n).for_each(|i| {
         let mut q = col![0., 0., 0., 0.];
@@ -139,8 +139,8 @@ fn main() {
         //Only matters for viscoelastic material, but needs to be passed to create_beams
         let h = 0.001;
 
-        beams.calculate_system(&state, h);
-        beams.assemble_system(&nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+        elements.beams.calculate_system(&state, h);
+        elements.beams.assemble_system(r.as_mut());
 
         // Calculate energy dissipation
         matmul(
@@ -242,7 +242,7 @@ fn modal_analysis(
     let mut r = Col::<f64>::zeros(n_dofs);
 
     // Get matrices
-    beams.assemble_system(nfm, m.as_mut(), c.as_mut(), k.as_mut(), r.as_mut());
+    beams.assemble_system(r.as_mut());
 
     let ndof_bc = n_dofs - 6;
     let lu = m.submatrix(6, 6, ndof_bc, ndof_bc).partial_piv_lu();

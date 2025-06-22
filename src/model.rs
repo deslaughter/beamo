@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
-use faer::{Col, Mat};
+use faer::sparse::SparseColMat;
+use faer::{sparse, Col, Mat};
 use itertools::Itertools;
 
 use crate::constraints::{ConstraintInput, ConstraintKind, Constraints};
-use crate::elements::beams::{BeamElement, BeamSection, Beams, Damping};
+use crate::elements::beams::{self, BeamElement, BeamSection, Beams, Damping};
 use crate::elements::masses::{MassElement, Masses};
 use crate::elements::springs::{SpringElement, Springs};
 use crate::elements::Elements;
@@ -80,9 +81,10 @@ impl Model {
 
     /// Create solver
     pub fn create_solver(&self) -> Solver {
-        let nfm = self.create_node_freedom_map();
+        let mut nfm = self.create_node_freedom_map();
         let constraints = Constraints::new(&self.constraints, &nfm);
-        let elements = self.create_elements();
+        nfm.n_constraint_dofs = constraints.n_rows;
+        let elements = self.create_elements(&nfm);
         let step_parameters = StepParameters::new(
             self.h,
             self.rho_inf,
@@ -95,16 +97,12 @@ impl Model {
     }
 
     /// Create elements
-    pub fn create_elements(&self) -> Elements {
+    pub fn create_elements(&self, nfm: &NodeFreedomMap) -> Elements {
         Elements {
-            beams: self.create_beams(),
-            masses: self.create_masses(),
-            springs: self.create_springs(),
+            beams: Beams::new(&self.beam_elements, &self.gravity, &self.nodes, nfm),
+            masses: Masses::new(&self.mass_elements, &self.gravity, &self.nodes, nfm),
+            springs: Springs::new(&self.spring_elements, &self.nodes, nfm),
         }
-    }
-
-    pub fn create_masses(&self) -> Masses {
-        Masses::new(&self.mass_elements, &self.gravity, &self.nodes)
     }
 
     /// Creates and returns a node builder for adding a new node to the model
@@ -248,14 +246,6 @@ impl Model {
             m: mass_matrix,
         });
         id
-    }
-
-    pub fn create_beams(&self) -> Beams {
-        Beams::new(&self.beam_elements, &self.gravity, &self.nodes)
-    }
-
-    pub fn create_springs(&self) -> Springs {
-        Springs::new(&self.spring_elements, &self.nodes)
     }
 
     pub fn add_spring_element(

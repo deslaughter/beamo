@@ -5,8 +5,9 @@ use crate::interp::{shape_deriv_matrix, shape_interp_matrix};
 use crate::node::{Node, NodeFreedomMap};
 use crate::quadrature::Quadrature;
 use crate::state::State;
-use crate::util::{ColMutReshape, ColRefReshape};
+use crate::util::{sparse_matrix_from_triplets, ColMutReshape, ColRefReshape};
 use faer::linalg::matmul::matmul;
+use faer::sparse::{Pair, Triplet};
 use faer::{prelude::*, Accum};
 use itertools::{izip, multiunzip, Itertools};
 
@@ -55,6 +56,7 @@ pub struct ElemIndex {
 pub struct Beams {
     elem_index: Vec<ElemIndex>,
     pub node_ids: Vec<usize>,
+    pub node_first_dof: Vec<usize>,
     pub gravity: Col<f64>, // Gravity components `[3]`
     /// Initial position/rotation `[7][n_nodes]`
     pub node_x0: Mat<f64>,
@@ -89,10 +91,20 @@ pub struct Beams {
     pub shape_deriv: Mat<f64>,
 
     pub qp: BeamQPs,
+
+    pub m_sp: SparseColMat<usize, f64>, // Mass triplets
+    pub g_sp: SparseColMat<usize, f64>, // Gyro triplets
+    pub k_sp: SparseColMat<usize, f64>, // Stiffness triplets
+    order_sp: Vec<usize>,               // Sparse matrix order
 }
 
 impl Beams {
-    pub fn new(elements: &[BeamElement], gravity: &[f64; 3], nodes: &[Node]) -> Self {
+    pub fn new(
+        elements: &[BeamElement],
+        gravity: &[f64; 3],
+        nodes: &[Node],
+        nfm: &NodeFreedomMap,
+    ) -> Self {
         // Total number of nodes to allocate (multiple of 8)
         let total_nodes = elements.iter().map(|e| (e.node_ids.len())).sum::<usize>();
         let alloc_nodes = total_nodes;
@@ -112,14 +124,14 @@ impl Beams {
             .unwrap_or(0);
 
         // Build element index
-        let mut index: Vec<ElemIndex> = vec![];
+        let mut elem_index: Vec<ElemIndex> = vec![];
         let mut start_node = 0;
         let mut start_qp = 0;
         let mut start_mat = 0;
         for (i, e) in elements.iter().enumerate() {
             let n_nodes = e.node_ids.len();
             let n_qps = e.quadrature.points.len();
-            index.push(ElemIndex {
+            elem_index.push(ElemIndex {
                 elem_id: i,
                 n_nodes,
                 i_node_start: start_node,
@@ -154,12 +166,51 @@ impl Beams {
             .flat_map(|e| e.quadrature.weights.clone())
             .collect_vec();
 
+        let node_ids = elements
+            .iter()
+            .flat_map(|e| e.node_ids.to_owned())
+            .collect_vec();
+
+        // First degree of freedom for each node
+        let node_first_dof = node_ids
+            .iter()
+            .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
+            .collect_vec();
+
+        //----------------------------------------------------------------------
+        // Sparse matrices
+        //----------------------------------------------------------------------
+
+        let node_indices: Vec<(usize, usize)> = (0..6).cartesian_product(0..6).collect_vec();
+
+        // Get element node data triplets for sparse matrices
+        let sp_triplets = elem_index
+            .iter()
+            .flat_map(|ei| {
+                // Get starting degree of freedom for each node
+                let ids = &node_ids[ei.i_node_start..ei.i_node_start + ei.n_nodes];
+                ids.iter().cartesian_product(ids).flat_map(|(&i, &j)| {
+                    let i_dof = nfm.node_dofs[i].first_dof_index;
+                    let j_dof = nfm.node_dofs[j].first_dof_index;
+                    node_indices
+                        .iter()
+                        .cloned()
+                        .map(|(n, m)| Triplet::new(i_dof + m, j_dof + n, 0.))
+                        .collect_vec()
+                })
+            })
+            .collect_vec();
+
+        let (sp, order_sp) = sparse_matrix_from_triplets(nfm.n_dofs(), nfm.n_dofs(), &sp_triplets);
+
+        //----------------------------------------------------------------------
+        // Create beams structure
+        //----------------------------------------------------------------------
+
         let mut beams = Self {
-            elem_index: index,
-            node_ids: elements
-                .iter()
-                .flat_map(|e| e.node_ids.to_owned())
-                .collect_vec(),
+            elem_index,
+            node_ids,
+            node_first_dof,
             gravity: Col::from_fn(3, |i| gravity[i]),
 
             // Nodes
@@ -181,6 +232,11 @@ impl Beams {
 
             shape_interp: Mat::zeros(alloc_qps, max_elem_nodes),
             shape_deriv: Mat::zeros(alloc_qps, max_elem_nodes),
+
+            m_sp: sp.clone(), // Mass triplets
+            g_sp: sp.clone(), // Gyro triplets
+            k_sp: sp.clone(), // Stiffness triplets
+            order_sp,         // Sparse matrix order
         };
 
         //----------------------------------------------------------------------
@@ -629,75 +685,62 @@ impl Beams {
 
     /// Adds beam elements to mass, damping, and stiffness matrices; and residual vector
     pub fn assemble_system(
-        &self,
-        nfm: &NodeFreedomMap,
-        mut m: MatMut<f64>, // Mass
-        mut g: MatMut<f64>, // Damping
-        mut k: MatMut<f64>, // Stiffness
+        &mut self,
         mut r: ColMut<f64>, // Residual
     ) {
+        let mut m_k = 0;
+        let mut g_k = 0;
+        let mut k_k = 0;
+        let m_vals = self.m_sp.val_mut();
+        let g_vals = self.g_sp.val_mut();
+        let k_vals = self.k_sp.val_mut();
+
         // Loop through elements
         self.elem_index.iter().for_each(|ei| {
-            // Get slice of node ids for this element
-            let node_ids = &self.node_ids[ei.i_node_start..ei.i_node_start + ei.n_nodes];
+            //------------------------------------------------------------------
+            // Sparse matrices (order must match)
+            //------------------------------------------------------------------
 
-            // Get starting degree of freedom for each node
-            let elem_dof_start_pairs = node_ids
-                .iter()
-                .cartesian_product(node_ids)
-                .map(|(&i, &j)| {
-                    (
-                        nfm.node_dofs[i].first_dof_index,
-                        nfm.node_dofs[j].first_dof_index,
-                    )
-                })
-                .collect_vec();
+            // Mass
+            self.node_muu
+                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                .col_iter()
+                .for_each(|muu| {
+                    muu.iter().for_each(|&v| {
+                        m_vals[self.order_sp[m_k]] = v;
+                        m_k += 1;
+                    });
+                });
 
-            // Mass matrix
-            izip!(
-                elem_dof_start_pairs.iter(),
-                self.node_muu
-                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
-                    .col_iter()
-            )
-            .for_each(|(&(i, j), muu)| {
-                let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
-                zip!(&mut me, &muu.reshape(6, 6)).for_each(|unzip!(me, muu)| *me += *muu);
-            });
+            // Gyro
+            self.node_guu
+                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                .col_iter()
+                .for_each(|guu| {
+                    guu.iter().for_each(|&v| {
+                        g_vals[self.order_sp[g_k]] = v;
+                        g_k += 1;
+                    });
+                });
 
-            // Damping matrix
-            izip!(
-                elem_dof_start_pairs.iter(),
-                self.node_guu
-                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
-                    .col_iter(),
-            )
-            .for_each(|(&(i, j), guu)| {
-                let mut ge = g.as_mut().submatrix_mut(i, j, 6, 6);
-                zip!(&mut ge, &guu.reshape(6, 6)).for_each(|unzip!(ge, guu)| *ge += *guu);
-            });
+            // Stiffness
+            self.node_kuu
+                .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
+                .col_iter()
+                .for_each(|kuu| {
+                    kuu.iter().for_each(|&v| {
+                        k_vals[self.order_sp[k_k]] = v;
+                        k_k += 1;
+                    });
+                });
 
-            // Stiffness matrix
-            izip!(
-                elem_dof_start_pairs.iter(),
-                self.node_kuu
-                    .subcols(ei.i_mat_start, ei.n_nodes * ei.n_nodes)
-                    .col_iter()
-            )
-            .for_each(|(&(i, j), kuu)| {
-                let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
-                zip!(&mut ke, &kuu.reshape(6, 6)).for_each(|unzip!(ke, kuu)| *ke += *kuu);
-            });
-
-            // Get first node dof index of each element
-            let elem_first_dof_indices = node_ids
-                .iter()
-                .map(|&node_id| nfm.node_dofs[node_id].first_dof_index)
-                .collect_vec();
+            //------------------------------------------------------------------
+            // Residual vector
+            //------------------------------------------------------------------
 
             // Residual vector
             izip!(
-                elem_first_dof_indices.iter(),
+                self.node_first_dof[ei.i_node_start..ei.i_node_start + ei.n_nodes].iter(),
                 self.node_f.subcols(ei.i_node_start, ei.n_nodes).col_iter()
             )
             .for_each(|(&i, f)| {
@@ -811,9 +854,9 @@ impl Beams {
     fn integrate_forces(&mut self) {
         // Zero node matrices
         self.node_fe.fill(0.);
-        self.node_fd.fill(0.);
+        // self.node_fd.fill(0.);
         self.node_fi.fill(0.);
-        self.node_fx.fill(0.);
+        // self.node_fx.fill(0.);
         self.node_fg.fill(0.);
 
         // Loop through elements
@@ -827,6 +870,8 @@ impl Beams {
             let qp_w = self.qp.weight.subrows(ei.i_qp_start, ei.n_qps);
             let qp_j = self.qp.jacobian.subrows(ei.i_qp_start, ei.n_qps);
 
+            let mut c = Col::<f64>::zeros(qp_w.nrows());
+
             // Elastic forces
             integrate_fe(
                 self.node_fe.subcols_mut(ei.i_node_start, ei.n_nodes),
@@ -836,18 +881,20 @@ impl Beams {
                 shape_deriv,
                 qp_w,
                 qp_j,
+                c.as_mut(),
             );
 
             // Dissipative forces
-            integrate_fe(
-                self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
-                self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
-                shape_interp,
-                shape_deriv,
-                qp_w,
-                qp_j,
-            );
+            // integrate_fe(
+            //     self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
+            //     self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
+            //     self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
+            //     shape_interp,
+            //     shape_deriv,
+            //     qp_w,
+            //     qp_j,
+            //     c.as_mut(),
+            // );
 
             // Inertial forces
             integrate_f(
@@ -856,16 +903,18 @@ impl Beams {
                 shape_interp,
                 qp_w,
                 qp_j,
+                c.as_mut(),
             );
 
             // External (distributed) forces
-            integrate_f(
-                self.node_fx.subcols_mut(ei.i_node_start, ei.n_nodes),
-                self.qp.fx.subcols(ei.i_qp_start, ei.n_qps),
-                shape_interp,
-                qp_w,
-                qp_j,
-            );
+            // integrate_f(
+            //     self.node_fx.subcols_mut(ei.i_node_start, ei.n_nodes),
+            //     self.qp.fx.subcols(ei.i_qp_start, ei.n_qps),
+            //     shape_interp,
+            //     qp_w,
+            //     qp_j,
+            //     c.as_mut(),
+            // );
 
             // Gravity forces
             integrate_f(
@@ -874,6 +923,7 @@ impl Beams {
                 shape_interp,
                 qp_w,
                 qp_j,
+                c.as_mut(),
             );
         }
     }
@@ -925,6 +975,21 @@ impl Beams {
 }
 
 #[inline]
+fn integrate_f(
+    node_f: MatMut<f64>,
+    qp_f: MatRef<f64>,
+    shape_interp: MatRef<f64>,
+    qp_w: ColRef<f64>,
+    qp_j: ColRef<f64>,
+    mut c: ColMut<f64>,
+) {
+    izip!(node_f.col_iter_mut(), shape_interp.col_iter()).for_each(|(mut node_f, phi)| {
+        zip!(&mut c, &qp_w, &qp_j, &phi).for_each(|unzip!(c, w, j, phi)| *c = *w * *j * *phi);
+        matmul(node_f.rb_mut(), Accum::Add, &qp_f, &c, 1., Par::Seq);
+    });
+}
+
+#[inline]
 fn integrate_fe(
     node_fe: MatMut<f64>,
     qp_fc: MatRef<f64>,
@@ -933,30 +998,18 @@ fn integrate_fe(
     shape_deriv: MatRef<f64>,
     qp_w: ColRef<f64>,
     qp_j: ColRef<f64>,
+    mut c: ColMut<f64>,
 ) {
-    let mut acc = Col::<f64>::zeros(6);
     izip!(
         node_fe.col_iter_mut(),
         shape_interp.col_iter(),
         shape_deriv.col_iter()
     )
     .for_each(|(mut fe, phi, phi_prime)| {
-        acc.fill(0.);
-        izip!(
-            qp_w.iter(),
-            qp_j.iter(),
-            phi.iter(),
-            phi_prime.iter(),
-            qp_fc.col_iter(),
-            qp_fd.col_iter()
-        )
-        .for_each(|(&w, &j, &phi, &phi_prime, fc, fd)| {
-            zip!(&mut acc, &fc, &fd)
-                .for_each(|unzip!(acc, fc, fd)| *acc += w * (*fc * phi_prime + *fd * phi * j));
-        });
-
-        // Add values to node matrix
-        zip!(&mut fe, &acc).for_each(|unzip!(fe, acc)| *fe += *acc);
+        zip!(&mut c, &qp_w, &qp_j, &phi).for_each(|unzip!(c, w, j, phi)| *c = *w * *phi * *j);
+        matmul(fe.rb_mut(), Accum::Add, &qp_fd, &c, 1., Par::Seq);
+        zip!(&mut c, &qp_w, &phi_prime).for_each(|unzip!(c, w, phi_prime)| *c = *w * *phi_prime);
+        matmul(fe.rb_mut(), Accum::Add, &qp_fc, &c, 1., Par::Seq);
     });
 }
 
@@ -1105,24 +1158,12 @@ pub fn calculate_viscoelastic_force(
 }
 
 #[inline]
-fn integrate_f(
-    node_f: MatMut<f64>,
-    qp_f: MatRef<f64>,
-    shape_interp: MatRef<f64>,
-    qp_w: ColRef<f64>,
-    qp_j: ColRef<f64>,
-) {
-    let mut acc = Col::<f64>::zeros(6);
-    izip!(node_f.col_iter_mut(), shape_interp.col_iter()).for_each(|(mut node_f, phi)| {
-        acc.fill(0.);
-        izip!(qp_w.iter(), qp_j.iter(), phi.iter(), qp_f.col_iter(),).for_each(
-            |(&w, &j, &phi, qp_f)| {
-                zip!(&mut acc, &qp_f).for_each(|unzip!(acc, f)| *acc += *f * phi * j * w);
-            },
-        );
+fn integrate_m(mut acc: ColMut<f64>, mat: MatRef<f64>, c: ColRef<f64>) {
+    // Alternative that should be faster
+    // matmul(acc.rb_mut(), Accum::Add, &mat, &c, 1., Par::Seq);
 
-        // Add values to node matrix
-        zip!(&mut node_f, &acc).for_each(|unzip!(f, acc)| *f += *acc);
+    mat.col_iter().zip(c.iter()).for_each(|(mat_col, &c_val)| {
+        zip!(&mut acc, &mat_col).for_each(|unzip!(acc, mat_col)| *acc += *mat_col * c_val);
     });
 }
 
@@ -1151,117 +1192,72 @@ fn integrate_element_matrices(
     qp_yd: MatRef<f64>,
     qp_mu_cuu: MatRef<f64>,
 ) {
-    let mut acc = Col::<f64>::zeros(6 * 6);
     let mut c = Col::<f64>::zeros(weight.nrows());
 
-    // Mass
-    node_ij
-        .iter()
-        .zip(node_m.col_iter_mut())
-        .for_each(|(&(i, j), mut m_col)| {
-            // Reset accumulator
-            acc.fill(0.);
+    izip!(
+        node_ij.iter(),
+        node_m.col_iter_mut(),
+        node_g.col_iter_mut(),
+        node_k.col_iter_mut()
+    )
+    .for_each(|(&(i, j), mut m_col, mut g_col, mut k_col)| {
+        let phi_i = phi.col(i);
+        let phi_j = phi.col(j);
+        let phi_prime_i = phi_prime.col(i);
+        let phi_prime_j = phi_prime.col(j);
 
-            // c = w * j * phi_i * phi_j
-            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_muu);
+        //------------------------------------------
+        // c = w * j * phi_i * phi_j
+        //------------------------------------------
 
-            // Copy accumulator to node
-            m_col.copy_from(&acc);
-        });
+        zip!(&mut c, &weight, &jacobian, &phi_i, &phi_j)
+            .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
 
-    // Gyroscopic
-    node_ij
-        .iter()
-        .zip(node_g.col_iter_mut())
-        .for_each(|(&(i, j), mut g_col)| {
-            // Reset accumulator
-            acc.fill(0.);
+        integrate_m(m_col.rb_mut(), qp_muu, c.as_ref());
 
-            // c = w * j * phi_i * phi_j
-            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_gi);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_xd);
+        integrate_m(g_col.rb_mut(), qp_gi, c.as_ref());
+        // integrate_m(g_col.rb_mut(), qp_xd, c.as_ref());
 
-            // c = w * phi_i * phi_prime_j
-            zip!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
-                .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_yd);
+        integrate_m(k_col.rb_mut(), qp_ki, c.as_ref());
+        integrate_m(k_col.rb_mut(), qp_qe, c.as_ref());
+        // integrate_m(k_col.rb_mut(), qp_qd, c.as_ref());
 
-            // c = w * phi_prime_i * phi_j
-            zip!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
-                .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_gd);
+        //------------------------------------------
+        // c = w * phi_i * phi_prime_j
+        //------------------------------------------
 
-            // c = w * phi_prime_i * phi_prime_j / j
-            zip!(
-                &mut c,
-                &weight,
-                &jacobian,
-                &phi_prime.col(i),
-                &phi_prime.col(j)
-            )
-            .for_each(|unzip!(c, w, j, phi_prime_i, phi_prime_j)| {
-                *c = *w * *phi_prime_i * *phi_prime_j / *j
-            });
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_mu_cuu);
+        zip!(&mut c, &weight, &phi_i, &phi_prime_j)
+            .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
 
-            // Copy accumulator to node
-            g_col.copy_from(&acc);
-        });
+        // integrate_m(g_col.rb_mut(), qp_yd, c.as_ref());
 
-    // Stiffness
-    node_ij
-        .iter()
-        .zip(node_k.col_iter_mut())
-        .for_each(|(&(i, j), mut k_col)| {
-            // Reset accumulator
-            acc.fill(0.);
+        integrate_m(k_col.rb_mut(), qp_pe, c.as_ref());
+        // integrate_m(k_col.rb_mut(), qp_pd, c.as_ref());
 
-            // c = w * j * phi_i * phi_j
-            zip!(&mut c, &weight, &jacobian, &phi.col(i), &phi.col(j))
-                .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_ki);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_qe);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_qd);
+        //------------------------------------------
+        // c = w * phi_prime_i * phi_j
+        //------------------------------------------
 
-            // c = w * phi_i * phi_prime_j
-            zip!(&mut c, &weight, &phi.col(i), &phi_prime.col(j))
-                .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_pe);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_pd);
+        zip!(&mut c, &weight, &phi_prime_i, &phi_j)
+            .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
 
-            // c = w * phi_prime_i * phi_j
-            zip!(&mut c, &weight, &phi_prime.col(i), &phi.col(j))
-                .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_oe);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_od);
+        // integrate_m(g_col.rb_mut(), qp_gd, c.as_ref());
 
-            // c = w * phi_prime_i * phi_prime_j / j
-            zip!(
-                &mut c,
-                &weight,
-                &jacobian,
-                &phi_prime.col(i),
-                &phi_prime.col(j)
-            )
-            .for_each(|unzip!(c, w, j, phi_prime_i, phi_prime_j)| {
-                *c = *w * *phi_prime_i * *phi_prime_j / *j
-            });
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_cuu);
-            integrate_mat(acc.as_mut(), c.as_ref(), qp_sd);
+        integrate_m(k_col.rb_mut(), qp_oe, c.as_ref());
+        // integrate_m(k_col.rb_mut(), qp_od, c.as_ref());
 
-            // Copy accumulator to node
-            k_col.copy_from(&acc);
-        });
-}
+        //------------------------------------------
+        // c = w * phi_prime_i * phi_prime_j / j
+        //------------------------------------------
 
-#[inline]
-fn integrate_mat(mut node_mat: ColMut<f64>, c: ColRef<f64>, qp_mat: MatRef<f64>) {
-    izip!(qp_mat.col_iter(), c.iter()).for_each(|(qp_mat, &c)| {
-        zip!(&mut node_mat, &qp_mat).for_each(|unzip!(node_mat, qp_mat)| *node_mat += *qp_mat * c)
+        zip!(&mut c, &weight, &jacobian, &phi_prime_i, &phi_prime_j).for_each(
+            |unzip!(c, w, j, phi_prime_i, phi_prime_j)| *c = *w * *phi_prime_i * *phi_prime_j / *j,
+        );
+
+        // integrate_m(g_col.rb_mut(), qp_mu_cuu, c.as_ref());
+
+        integrate_m(k_col.rb_mut(), qp_cuu, c.as_ref());
+        // integrate_m(k_col.rb_mut(), qp_sd, c.as_ref());
     });
 }
 
@@ -1487,11 +1483,12 @@ mod tests {
             &Damping::None,
         );
 
-        let mut beams = model.create_beams();
+        let nfm = model.create_node_freedom_map();
+        let mut elements = model.create_elements(&nfm);
         let state = model.create_state();
-        beams.calculate_system(&state, h);
+        elements.beams.calculate_system(&state, h);
 
-        beams
+        elements.beams
     }
 
     #[test]
@@ -2318,14 +2315,12 @@ mod tests {
             ],
             &Damping::None,
         );
-
-        let mut beams = model.create_beams();
-
+        let nfm = model.create_node_freedom_map();
+        let mut elements = model.create_elements(&nfm);
         let state = model.create_state();
+        elements.beams.calculate_system(&state, h);
 
-        beams.calculate_system(&state, h);
-
-        beams
+        elements.beams
     }
 
     #[test]
