@@ -61,9 +61,9 @@ pub fn axial_vector_of_matrix(m: MatRef<f64>, mut v: ColMut<f64>) {
 
 #[inline]
 /// AX(A) = tr(A)/2 * I - A/2, where I is the identity matrix
-pub fn matrix_ax(m: MatRef<f64>, mut ax: MatMut<f64>) {
+pub fn matrix_ax(m: MatRef<f64>, s: f64, mut ax: MatMut<f64>) {
     zip!(&mut ax, &m).for_each(|unzip!(ax, m)| *ax = -*m / 2.);
-    let trace_2 = m.diagonal().column_vector().sum() / 2.;
+    let trace_2 = m.diagonal().column_vector().sum() / 2. * s;
     ax[(0, 0)] += trace_2;
     ax[(1, 1)] += trace_2;
     ax[(2, 2)] += trace_2;
@@ -71,18 +71,18 @@ pub fn matrix_ax(m: MatRef<f64>, mut ax: MatMut<f64>) {
 
 #[inline]
 /// AX2(a,b)
-pub fn matrix_ax2(a: MatRef<f64>, b: ColRef<f64>, mut out: MatMut<f64>) {
-    out[(0, 0)] = ((a[(1, 2)] - a[(2, 1)]) * b[0]) / 2.;
-    out[(0, 1)] = (-a[(0, 2)] * b[0] - a[(2, 1)] * b[1] - a[(2, 2)] * b[2]) / 2.;
-    out[(0, 2)] = (a[(0, 1)] * b[0] + a[(1, 1)] * b[1] + a[(1, 2)] * b[2]) / 2.;
+pub fn matrix_ax2(a: MatRef<f64>, b: ColRef<f64>, s: f64, mut out: MatMut<f64>) {
+    out[(0, 0)] = ((a[(1, 2)] - a[(2, 1)]) * b[0]) / 2. * s;
+    out[(0, 1)] = (-a[(0, 2)] * b[0] - a[(2, 1)] * b[1] - a[(2, 2)] * b[2]) / 2. * s;
+    out[(0, 2)] = (a[(0, 1)] * b[0] + a[(1, 1)] * b[1] + a[(1, 2)] * b[2]) / 2. * s;
 
-    out[(1, 0)] = (a[(1, 2)] * b[1] + a[(2, 0)] * b[0] + a[(2, 2)] * b[2]) / 2.;
-    out[(1, 1)] = ((-a[(0, 2)] + a[(2, 0)]) * b[1]) / 2.;
-    out[(1, 2)] = (-a[(0, 0)] * b[0] - a[(0, 2)] * b[2] - a[(1, 0)] * b[1]) / 2.;
+    out[(1, 0)] = (a[(1, 2)] * b[1] + a[(2, 0)] * b[0] + a[(2, 2)] * b[2]) / 2. * s;
+    out[(1, 1)] = ((-a[(0, 2)] + a[(2, 0)]) * b[1]) / 2. * s;
+    out[(1, 2)] = (-a[(0, 0)] * b[0] - a[(0, 2)] * b[2] - a[(1, 0)] * b[1]) / 2. * s;
 
-    out[(2, 0)] = (-a[(1, 0)] * b[0] - a[(1, 1)] * b[1] - a[(2, 1)] * b[2]) / 2.;
-    out[(2, 1)] = (a[(0, 0)] * b[0] + a[(0, 1)] * b[1] + a[(2, 0)] * b[2]) / 2.;
-    out[(2, 2)] = ((a[(0, 1)] - a[(1, 0)]) * b[2]) / 2.;
+    out[(2, 0)] = (-a[(1, 0)] * b[0] - a[(1, 1)] * b[1] - a[(2, 1)] * b[2]) / 2. * s;
+    out[(2, 1)] = (a[(0, 0)] * b[0] + a[(0, 1)] * b[1] + a[(2, 0)] * b[2]) / 2. * s;
+    out[(2, 2)] = ((a[(0, 1)] - a[(1, 0)]) * b[2]) / 2. * s;
 }
 
 #[inline]
@@ -533,7 +533,7 @@ mod tests {
         let a = mat![[0., 1., 2.], [3., 4., 5.], [6., 7., 8.]];
         let b = col![1., 2., 3.];
         let mut out = Mat::<f64>::zeros(3, 3);
-        matrix_ax2(a.as_ref(), b.as_ref(), out.as_mut());
+        matrix_ax2(a.as_ref(), b.as_ref(), 1., out.as_mut());
         assert!(out ~ mat![[-1., -20., 12.], [20., 4., -6.], [-16., 10., -3.]]);
     }
 }

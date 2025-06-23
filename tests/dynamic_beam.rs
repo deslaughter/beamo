@@ -308,7 +308,7 @@ fn test_revolute_joint() {
 
     // Initial rotational velocity
     let omega = col![0., 2., 0.];
-    let time_step = 0.1;
+    let time_step = 0.01;
     let n_steps = 100;
 
     let (mut model, hub_node_id) = create_model(omega.rb());
@@ -320,7 +320,7 @@ fn test_revolute_joint() {
     // Add shaft base node
     let shaft_base_node_id = model
         .add_node()
-        .position(0., 0., 0., 1., 0., 0., 0.)
+        .position(0., 1., 0., 1., 0., 0., 0.)
         .build();
 
     // Add revolute joint along axis from shaft base to hub
@@ -338,8 +338,6 @@ fn test_revolute_joint() {
 
     // Create state
     let mut state = model.create_state();
-
-    // let tip_node_id = *beam_node_ids.last().unwrap();
 
     let mut n_iter_sum = 0;
     let mut err_sum = 0.0;

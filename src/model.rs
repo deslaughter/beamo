@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use faer::sparse::SparseColMat;
-use faer::{sparse, Col, Mat};
+use faer::{Col, Mat};
 use itertools::Itertools;
 
 use crate::constraints::{ConstraintInput, ConstraintKind, Constraints};
-use crate::elements::beams::{self, BeamElement, BeamSection, Beams, Damping};
+use crate::elements::beams::{BeamElement, BeamSection, Beams, Damping};
 use crate::elements::masses::{MassElement, Masses};
 use crate::elements::springs::{SpringElement, Springs};
 use crate::elements::Elements;

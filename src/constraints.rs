@@ -313,19 +313,19 @@ impl Constraint {
             });
         }
         if self.k_bt.ncols() > 0 {
-            // k_bt
-            indices.iter().for_each(|&(j, i)| {
-                k_triplets.push(Triplet::new(
-                    self.base_col_index + 3 + i,
-                    self.target_col_index + 3 + j,
-                    0.,
-                ));
-            });
             // k_tb
             indices.iter().for_each(|&(j, i)| {
                 k_triplets.push(Triplet::new(
                     self.target_col_index + 3 + i,
                     self.base_col_index + 3 + j,
+                    0.,
+                ));
+            });
+            // k_bt
+            indices.iter().for_each(|&(j, i)| {
+                k_triplets.push(Triplet::new(
+                    self.base_col_index + 3 + i,
+                    self.target_col_index + 3 + j,
                     0.,
                 ));
             });
@@ -398,41 +398,42 @@ impl Constraint {
         // B(3:6,3:6) = AX(Rb*inv(Rt)) = transpose(AX(Rt*inv(Rb)))
         matrix_ax(
             c.as_ref(),
+            1.,
             self.b_target.submatrix_mut(3, 3, 3, 3).transpose_mut(),
         );
 
         // Rotational stiffness matrix for target node
         let lambda_tilde = vec_tilde_alloc(lambda.subrows(3, 3));
         let c = quat_as_matrix_alloc(r_target);
-        matrix_ax((-&c * &lambda_tilde).rb(), self.k_t.as_mut());
+        matrix_ax((&c * &lambda_tilde).rb(), -1., self.k_t.as_mut());
     }
 
     fn update_k_values(&mut self) {
         let values = self.k_sp.val_mut();
-        let mut k = 0;
+        let mut i = 0;
 
         self.k_b.col_iter().for_each(|col| {
             col.iter().for_each(|&v| {
-                values[self.k_order[k]] = v;
-                k += 1;
-            });
-        });
-        self.k_bt.col_iter().for_each(|col| {
-            col.iter().for_each(|&v| {
-                values[self.k_order[k]] = v;
-                k += 1;
+                values[self.k_order[i]] = v;
+                i += 1;
             });
         });
         self.k_tb.col_iter().for_each(|col| {
             col.iter().for_each(|&v| {
-                values[self.k_order[k]] = v;
-                k += 1;
+                values[self.k_order[i]] = v;
+                i += 1;
+            });
+        });
+        self.k_bt.col_iter().for_each(|col| {
+            col.iter().for_each(|&v| {
+                values[self.k_order[i]] = v;
+                i += 1;
             });
         });
         self.k_t.col_iter().for_each(|col| {
             col.iter().for_each(|&v| {
-                values[self.k_order[k]] = v;
-                k += 1;
+                values[self.k_order[i]] = v;
+                i += 1;
             });
         });
     }
@@ -522,7 +523,7 @@ impl Constraint {
 
         // B(3:6,3:6) = transpose(AX(Rt*inv(Rb)))
         let mut ax = Mat::<f64>::zeros(3, 3);
-        matrix_ax(c.rb(), ax.as_mut());
+        matrix_ax(c.rb(), 1., ax.as_mut());
         self.b_target
             .submatrix_mut(3, 3, 3, 3)
             .copy_from(ax.transpose());
@@ -546,14 +547,14 @@ impl Constraint {
         let lambda_2_tilde = vec_tilde_alloc(lambda_2);
 
         // Stiffness matrix components
-        matrix_ax((&m_rc * &lambda_2_tilde).rb(), ax.as_mut());
-        zip!(&mut self.k_t, &ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rc.transpose(), lambda_2, ax.as_mut());
-        zip!(&mut self.k_tb, &ax).for_each(|unzip!(k, ax)| *k += *ax);
-        matrix_ax2(m_rc.rb(), lambda_2, ax.as_mut());
-        zip!(&mut self.k_bt, &ax).for_each(|unzip!(k, ax)| *k -= *ax);
-        matrix_ax((&m_rc.transpose() * &lambda_2_tilde).rb(), ax.as_mut());
-        zip!(&mut self.k_b, &ax).for_each(|unzip!(k, ax)| *k -= *ax);
+        matrix_ax((&m_rc * &lambda_2_tilde).rb(), 1., self.k_t.rb_mut());
+        matrix_ax2(m_rc.transpose(), lambda_2, 1., self.k_tb.as_mut());
+        matrix_ax2(m_rc.rb(), lambda_2, -1., self.k_bt.rb_mut());
+        matrix_ax(
+            (&m_rc.transpose() * &lambda_2_tilde).rb(),
+            -1.,
+            self.k_b.rb_mut(),
+        );
     }
 
     fn calculate_revolute(

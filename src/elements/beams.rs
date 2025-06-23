@@ -7,7 +7,7 @@ use crate::quadrature::Quadrature;
 use crate::state::State;
 use crate::util::{sparse_matrix_from_triplets, ColMutReshape, ColRefReshape};
 use faer::linalg::matmul::matmul;
-use faer::sparse::{Pair, Triplet};
+use faer::sparse::Triplet;
 use faer::{prelude::*, Accum};
 use itertools::{izip, multiunzip, Itertools};
 
@@ -228,11 +228,14 @@ impl Beams {
             node_guu: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
             node_kuu: Mat::zeros(6 * 6, alloc_nodes * max_elem_nodes),
 
+            // Quadrature points
             qp: BeamQPs::new(&qp_weights),
 
+            // Shape function matrices
             shape_interp: Mat::zeros(alloc_qps, max_elem_nodes),
             shape_deriv: Mat::zeros(alloc_qps, max_elem_nodes),
 
+            // Sparse matrices
             m_sp: sp.clone(), // Mass triplets
             g_sp: sp.clone(), // Gyro triplets
             k_sp: sp.clone(), // Stiffness triplets
@@ -861,69 +864,25 @@ impl Beams {
 
         // Loop through elements
         for ei in self.elem_index.iter() {
-            let shape_interp = self
-                .shape_interp
-                .submatrix(ei.i_qp_start, 0, ei.n_qps, ei.n_nodes);
-            let shape_deriv = self
-                .shape_deriv
-                .submatrix(ei.i_qp_start, 0, ei.n_qps, ei.n_nodes);
-            let qp_w = self.qp.weight.subrows(ei.i_qp_start, ei.n_qps);
-            let qp_j = self.qp.jacobian.subrows(ei.i_qp_start, ei.n_qps);
-
-            let mut c = Col::<f64>::zeros(qp_w.nrows());
-
-            // Elastic forces
-            integrate_fe(
+            integrate_element_forces(
                 self.node_fe.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.node_fi.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.node_fx.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.node_fg.subcols_mut(ei.i_node_start, ei.n_nodes),
                 self.qp.fe_c.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fe_d.subcols(ei.i_qp_start, ei.n_qps),
-                shape_interp,
-                shape_deriv,
-                qp_w,
-                qp_j,
-                c.as_mut(),
-            );
-
-            // Dissipative forces
-            // integrate_fe(
-            //     self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
-            //     self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
-            //     self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
-            //     shape_interp,
-            //     shape_deriv,
-            //     qp_w,
-            //     qp_j,
-            //     c.as_mut(),
-            // );
-
-            // Inertial forces
-            integrate_f(
-                self.node_fi.subcols_mut(ei.i_node_start, ei.n_nodes),
+                self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fi.subcols(ei.i_qp_start, ei.n_qps),
-                shape_interp,
-                qp_w,
-                qp_j,
-                c.as_mut(),
-            );
-
-            // External (distributed) forces
-            // integrate_f(
-            //     self.node_fx.subcols_mut(ei.i_node_start, ei.n_nodes),
-            //     self.qp.fx.subcols(ei.i_qp_start, ei.n_qps),
-            //     shape_interp,
-            //     qp_w,
-            //     qp_j,
-            //     c.as_mut(),
-            // );
-
-            // Gravity forces
-            integrate_f(
-                self.node_fg.subcols_mut(ei.i_node_start, ei.n_nodes),
                 self.qp.fg.subcols(ei.i_qp_start, ei.n_qps),
-                shape_interp,
-                qp_w,
-                qp_j,
-                c.as_mut(),
+                self.qp.fx.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.weight.subrows(ei.i_qp_start, ei.n_qps),
+                self.qp.jacobian.subrows(ei.i_qp_start, ei.n_qps),
+                self.shape_interp
+                    .submatrix(ei.i_qp_start, 0, ei.n_qps, ei.n_nodes),
+                self.shape_deriv
+                    .submatrix(ei.i_qp_start, 0, ei.n_qps, ei.n_nodes),
             );
         }
     }
@@ -936,12 +895,8 @@ impl Beams {
 
         // Loop through elements
         for ei in self.elem_index.iter() {
-            let node_ij = (0..ei.n_nodes)
-                .cartesian_product(0..ei.n_nodes)
-                .collect_vec();
-
             integrate_element_matrices(
-                &node_ij,
+                ei.n_nodes,
                 self.node_muu
                     .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes),
                 self.node_guu
@@ -975,42 +930,142 @@ impl Beams {
 }
 
 #[inline]
-fn integrate_f(
-    node_f: MatMut<f64>,
-    qp_f: MatRef<f64>,
-    shape_interp: MatRef<f64>,
-    qp_w: ColRef<f64>,
-    qp_j: ColRef<f64>,
-    mut c: ColMut<f64>,
+fn integrate_element_forces(
+    mut node_fe: MatMut<f64>,
+    mut node_fd: MatMut<f64>,
+    mut node_fi: MatMut<f64>,
+    mut node_fx: MatMut<f64>,
+    mut node_fg: MatMut<f64>,
+    qp_fe_c: MatRef<f64>,
+    qp_fe_d: MatRef<f64>,
+    qp_fd_c: MatRef<f64>,
+    qp_fd_d: MatRef<f64>,
+    qp_fi: MatRef<f64>,
+    qp_fg: MatRef<f64>,
+    qp_fx: MatRef<f64>,
+    weight: ColRef<f64>,
+    jacobian: ColRef<f64>,
+    phi: MatRef<f64>,
+    phi_prime: MatRef<f64>,
 ) {
-    izip!(node_f.col_iter_mut(), shape_interp.col_iter()).for_each(|(mut node_f, phi)| {
-        zip!(&mut c, &qp_w, &qp_j, &phi).for_each(|unzip!(c, w, j, phi)| *c = *w * *j * *phi);
-        matmul(node_f.rb_mut(), Accum::Add, &qp_f, &c, 1., Par::Seq);
+    let mut c = Mat::<f64>::zeros(phi.nrows(), phi.ncols());
+
+    // c = w * j * phi
+    c.col_iter_mut().enumerate().for_each(|(i, mut c_col)| {
+        zip!(&mut c_col, &weight, &jacobian, &phi.col(i),)
+            .for_each(|unzip!(cc, w, j, p)| *cc = *w * *j * *p);
     });
+
+    // Internal forces
+    matmul(node_fi.rb_mut(), Accum::Add, &qp_fi, &c, 1., Par::Seq);
+
+    // Gravity forces
+    matmul(node_fg.rb_mut(), Accum::Add, &qp_fg, &c, 1., Par::Seq);
+
+    // External distributed forces
+    // matmul(node_fx.rb_mut(), Accum::Add, &qp_fx, &c, 1., Par::Seq);
+
+    // Elastic forces part 1
+    matmul(node_fe.rb_mut(), Accum::Add, &qp_fe_d, &c, 1., Par::Seq);
+
+    // Dissipative forces part 1
+    // matmul(node_fd.rb_mut(), Accum::Add, &qp_fd_d, &c, 1., Par::Seq);
+
+    // c = w * phi_prime
+    c.col_iter_mut().enumerate().for_each(|(i, mut c_col)| {
+        zip!(&mut c_col, &weight, &phi_prime.col(i),).for_each(|unzip!(cc, w, p)| *cc = *w * *p);
+    });
+
+    // Elastic forces part 2
+    matmul(node_fe.rb_mut(), Accum::Add, &qp_fe_c, &c, 1., Par::Seq);
+
+    // Dissipative forces part 2
+    // matmul(node_fd.rb_mut(), Accum::Add, &qp_fd_c, &c, 1., Par::Seq);
 }
 
-#[inline]
-fn integrate_fe(
-    node_fe: MatMut<f64>,
-    qp_fc: MatRef<f64>,
-    qp_fd: MatRef<f64>,
-    shape_interp: MatRef<f64>,
-    shape_deriv: MatRef<f64>,
-    qp_w: ColRef<f64>,
-    qp_j: ColRef<f64>,
-    mut c: ColMut<f64>,
+fn integrate_element_matrices(
+    n_nodes: usize,
+    mut node_m: MatMut<f64>,
+    mut node_g: MatMut<f64>,
+    mut node_k: MatMut<f64>,
+    phi: MatRef<f64>,
+    phi_prime: MatRef<f64>,
+    weight: ColRef<f64>,
+    jacobian: ColRef<f64>,
+    qp_muu: MatRef<f64>,
+    qp_gi: MatRef<f64>,
+    qp_ki: MatRef<f64>,
+    qp_pe: MatRef<f64>,
+    qp_qe: MatRef<f64>,
+    qp_cuu: MatRef<f64>,
+    qp_oe: MatRef<f64>,
+    qp_sd: MatRef<f64>,
+    qp_pd: MatRef<f64>,
+    qp_od: MatRef<f64>,
+    qp_qd: MatRef<f64>,
+    qp_gd: MatRef<f64>,
+    qp_xd: MatRef<f64>,
+    qp_yd: MatRef<f64>,
+    qp_mu_cuu: MatRef<f64>,
 ) {
-    izip!(
-        node_fe.col_iter_mut(),
-        shape_interp.col_iter(),
-        shape_deriv.col_iter()
-    )
-    .for_each(|(mut fe, phi, phi_prime)| {
-        zip!(&mut c, &qp_w, &qp_j, &phi).for_each(|unzip!(c, w, j, phi)| *c = *w * *phi * *j);
-        matmul(fe.rb_mut(), Accum::Add, &qp_fd, &c, 1., Par::Seq);
-        zip!(&mut c, &qp_w, &phi_prime).for_each(|unzip!(c, w, phi_prime)| *c = *w * *phi_prime);
-        matmul(fe.rb_mut(), Accum::Add, &qp_fc, &c, 1., Par::Seq);
+    let node_ij = (0..n_nodes).cartesian_product(0..n_nodes).collect_vec();
+
+    let mut c = Mat::<f64>::zeros(phi.nrows(), node_ij.len());
+
+    // c = w * j * phi_i * phi_j
+    node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
+        zip!(
+            &mut c.col_mut(col),
+            &weight,
+            &jacobian,
+            &phi.col(i),
+            &phi.col(j)
+        )
+        .for_each(|unzip!(cc, w, j, p_i, p_j)| *cc = *w * *j * *p_i * *p_j);
     });
+
+    matmul(node_m.rb_mut(), Accum::Add, qp_muu, c.rb(), 1., Par::Seq);
+    matmul(node_g.rb_mut(), Accum::Add, qp_gi, c.rb(), 1., Par::Seq);
+    // matmul(node_g.rb_mut(), Accum::Add, qp_xd, c.rb(), 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_ki, c.rb(), 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_qe, c.rb(), 1., Par::Seq);
+    // matmul(node_k, Accum::Add, qp_qd, c.rb(), 1., Par::Seq);
+
+    // c = w * phi_i * phi_prime_j
+    node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
+        zip!(&mut c.col_mut(col), &weight, &phi.col(i), &phi_prime.col(j))
+            .for_each(|unzip!(cc, w, p_i, pp_j)| *cc = *w * *p_i * *pp_j);
+    });
+
+    // matmul(node_g.rb_mut(), Accum::Add, qp_yd, c.rb(), 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_pe, c.rb(), 1., Par::Seq);
+    // matmul(node_k.rb_mut(), Accum::Add, qp_pd, c.rb(), 1., Par::Seq);
+
+    // c = w * phi_prime_i * phi_j
+    node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
+        zip!(&mut c.col_mut(col), &weight, &phi_prime.col(i), &phi.col(j))
+            .for_each(|unzip!(cc, w, p_i, pp_j)| *cc = *w * *p_i * *pp_j);
+    });
+
+    // matmul(node_g.rb_mut(), Accum::Add, qp_gd, c.rb(), 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_oe, c.rb(), 1., Par::Seq);
+    // matmul(node_k.rb_mut(), Accum::Add, qp_od, c.rb(), 1., Par::Seq);
+
+    // c = w * phi_prime_i * phi_prime_j / j
+    node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
+        zip!(
+            &mut c.col_mut(col),
+            &weight,
+            &jacobian,
+            &phi_prime.col(i),
+            &phi_prime.col(j)
+        )
+        .for_each(|unzip!(cc, w, j, pp_i, pp_j)| *cc = *w * *pp_i * *pp_j / *j);
+    });
+
+    // matmul(node_g.rb_mut(), Accum::Add, qp_mu_cuu, c.rb(), 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_cuu, c.rb(), 1., Par::Seq);
+    // matmul(node_k.rb_mut(), Accum::Add, qp_sd, c.rb(), 1., Par::Seq);
 }
 
 pub fn calculate_mu_damping(
@@ -1154,110 +1209,6 @@ pub fn calculate_viscoelastic_force(
         gd += gd_tmp;
         xd += xd_tmp;
         yd += yd_tmp;
-    });
-}
-
-#[inline]
-fn integrate_m(mut acc: ColMut<f64>, mat: MatRef<f64>, c: ColRef<f64>) {
-    // Alternative that should be faster
-    // matmul(acc.rb_mut(), Accum::Add, &mat, &c, 1., Par::Seq);
-
-    mat.col_iter().zip(c.iter()).for_each(|(mat_col, &c_val)| {
-        zip!(&mut acc, &mat_col).for_each(|unzip!(acc, mat_col)| *acc += *mat_col * c_val);
-    });
-}
-
-fn integrate_element_matrices(
-    node_ij: &[(usize, usize)],
-    node_m: MatMut<f64>,
-    node_g: MatMut<f64>,
-    node_k: MatMut<f64>,
-    phi: MatRef<f64>,
-    phi_prime: MatRef<f64>,
-    weight: ColRef<f64>,
-    jacobian: ColRef<f64>,
-    qp_muu: MatRef<f64>,
-    qp_gi: MatRef<f64>,
-    qp_ki: MatRef<f64>,
-    qp_pe: MatRef<f64>,
-    qp_qe: MatRef<f64>,
-    qp_cuu: MatRef<f64>,
-    qp_oe: MatRef<f64>,
-    qp_sd: MatRef<f64>,
-    qp_pd: MatRef<f64>,
-    qp_od: MatRef<f64>,
-    qp_qd: MatRef<f64>,
-    qp_gd: MatRef<f64>,
-    qp_xd: MatRef<f64>,
-    qp_yd: MatRef<f64>,
-    qp_mu_cuu: MatRef<f64>,
-) {
-    let mut c = Col::<f64>::zeros(weight.nrows());
-
-    izip!(
-        node_ij.iter(),
-        node_m.col_iter_mut(),
-        node_g.col_iter_mut(),
-        node_k.col_iter_mut()
-    )
-    .for_each(|(&(i, j), mut m_col, mut g_col, mut k_col)| {
-        let phi_i = phi.col(i);
-        let phi_j = phi.col(j);
-        let phi_prime_i = phi_prime.col(i);
-        let phi_prime_j = phi_prime.col(j);
-
-        //------------------------------------------
-        // c = w * j * phi_i * phi_j
-        //------------------------------------------
-
-        zip!(&mut c, &weight, &jacobian, &phi_i, &phi_j)
-            .for_each(|unzip!(c, w, j, phi_i, phi_j)| *c = *w * *j * *phi_i * *phi_j);
-
-        integrate_m(m_col.rb_mut(), qp_muu, c.as_ref());
-
-        integrate_m(g_col.rb_mut(), qp_gi, c.as_ref());
-        // integrate_m(g_col.rb_mut(), qp_xd, c.as_ref());
-
-        integrate_m(k_col.rb_mut(), qp_ki, c.as_ref());
-        integrate_m(k_col.rb_mut(), qp_qe, c.as_ref());
-        // integrate_m(k_col.rb_mut(), qp_qd, c.as_ref());
-
-        //------------------------------------------
-        // c = w * phi_i * phi_prime_j
-        //------------------------------------------
-
-        zip!(&mut c, &weight, &phi_i, &phi_prime_j)
-            .for_each(|unzip!(c, w, phi_i, phi_prime_j)| *c = *w * *phi_i * *phi_prime_j);
-
-        // integrate_m(g_col.rb_mut(), qp_yd, c.as_ref());
-
-        integrate_m(k_col.rb_mut(), qp_pe, c.as_ref());
-        // integrate_m(k_col.rb_mut(), qp_pd, c.as_ref());
-
-        //------------------------------------------
-        // c = w * phi_prime_i * phi_j
-        //------------------------------------------
-
-        zip!(&mut c, &weight, &phi_prime_i, &phi_j)
-            .for_each(|unzip!(c, w, phi_prime_i, phi_j)| *c = *w * *phi_prime_i * *phi_j);
-
-        // integrate_m(g_col.rb_mut(), qp_gd, c.as_ref());
-
-        integrate_m(k_col.rb_mut(), qp_oe, c.as_ref());
-        // integrate_m(k_col.rb_mut(), qp_od, c.as_ref());
-
-        //------------------------------------------
-        // c = w * phi_prime_i * phi_prime_j / j
-        //------------------------------------------
-
-        zip!(&mut c, &weight, &jacobian, &phi_prime_i, &phi_prime_j).for_each(
-            |unzip!(c, w, j, phi_prime_i, phi_prime_j)| *c = *w * *phi_prime_i * *phi_prime_j / *j,
-        );
-
-        // integrate_m(g_col.rb_mut(), qp_mu_cuu, c.as_ref());
-
-        integrate_m(k_col.rb_mut(), qp_cuu, c.as_ref());
-        // integrate_m(k_col.rb_mut(), qp_sd, c.as_ref());
     });
 }
 

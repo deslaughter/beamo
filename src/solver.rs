@@ -182,9 +182,9 @@ impl Solver {
         .fold(st_sym, |acc, sp| {
             sparse::ops::union_symbolic(acc.as_ref(), sp.as_ref()).unwrap()
         });
-        // let st_sym = constraints.constraints.iter().fold(st_sym, |acc, c| {
-        //     sparse::ops::union_symbolic(acc.as_ref(), c.k_sp.symbolic()).unwrap()
-        // });
+        let st_sym = constraints.constraints.iter().fold(st_sym, |acc, c| {
+            sparse::ops::union_symbolic(acc.as_ref(), c.k_sp.symbolic()).unwrap()
+        });
 
         let data = vec![0.; st_sym.compute_nnz()];
         let tmp_sp = SparseColMat::<usize, f64>::new(st_sym, data);
@@ -357,10 +357,10 @@ impl Solver {
         sparse::ops::add_assign(self.tmp_sp.rb_mut(), self.elements.beams.k_sp.as_ref());
         sparse::ops::add_assign(self.tmp_sp.rb_mut(), self.elements.masses.k_sp.as_ref());
         sparse::ops::add_assign(self.tmp_sp.rb_mut(), self.elements.springs.k_sp.as_ref());
-        // self.constraints
-        //     .constraints
-        //     .iter()
-        //     .for_each(|c| sparse::ops::add_assign(self.tmp_sp.rb_mut(), c.k_sp.as_ref()));
+        self.constraints
+            .constraints
+            .iter()
+            .for_each(|c| sparse::ops::add_assign(self.tmp_sp.rb_mut(), c.k_sp.as_ref()));
 
         // Apply conditioning
         self.tmp_sp.val_mut().iter_mut().for_each(|v| {

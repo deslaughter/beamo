@@ -49,6 +49,8 @@ fn main() {
 
     turbine.azimuth_node.get_motion(&state);
 
+    let mut n_iter = 0;
+
     // Loop through steps
     for i in 1..n_steps {
         // Calculate time
@@ -88,6 +90,8 @@ fn main() {
         // Take step and get convergence result
         let res = solver.step(&mut state);
 
+        n_iter += res.iter;
+
         // Copy motion from nodes to state
         turbine.get_motion(&state);
 
@@ -102,6 +106,8 @@ fn main() {
 
         assert_eq!(res.converged, true);
     }
+
+    println!("num nonlinear iterations: {}", n_iter);
 }
 
 fn build_turbine(wio_path: &str, model: &mut Model) -> Turbine {
