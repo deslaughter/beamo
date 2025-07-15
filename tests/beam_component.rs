@@ -1,12 +1,11 @@
 use faer::prelude::*;
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use ottr::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::BeamSection,
     model::Model,
     output_writer::OutputWriter,
     util::write_matrix,
-    windio::read_windio_from_file,
 };
 
 #[test]

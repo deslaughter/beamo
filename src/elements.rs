@@ -4,10 +4,10 @@ pub mod kernels;
 pub mod masses;
 pub mod springs;
 
-use crate::{node::NodeFreedomMap, state::State};
+use crate::state::State;
 use beams::Beams;
 
-use faer::{ColMut, MatMut};
+use faer::ColMut;
 use masses::Masses;
 use springs::Springs;
 

@@ -969,8 +969,6 @@ fn test_iter_1_x_delta() {
 fn test_steps() {
     let (mut solver, mut state) = setup_test(5);
 
-    let tip_z_dof = solver.nfm.get_dof(state.n_nodes - 1, Direction::Z).unwrap();
-
     for i in 2..100 {
         state.fx[(Direction::Z as usize, state.n_nodes - 1)] =
             100. * (10.0 * (i as f64) * 0.005).sin();

@@ -1,14 +1,14 @@
 use core::panic;
-use faer::prelude::*;
+use faer::{prelude::*, traits::num_traits::Pow};
 use itertools::{izip, Itertools};
-use std::{f64::consts::PI, fs};
+use std::fs;
 
 use crate::{
     elements::beams::{BeamSection, Damping},
     interp::{gauss_legendre_lobotto_points, shape_deriv_matrix, shape_interp_matrix},
     model::Model,
     quadrature::Quadrature,
-    util::{quat_as_matrix, quat_from_rotation_vector, quat_from_tangent_twist},
+    util::quat_from_tangent_twist,
 };
 
 pub fn add_beamdyn_blade(
@@ -46,7 +46,7 @@ pub fn add_beamdyn_blade(
     for i in 0..n_nodes {
         for j in 0..n_nodes {
             for k in 0..n_kps {
-                a_matrix[(i, j)] += shape_interp[(k, i)] * shape_interp[(k, j)];
+                a_matrix[(i, j)] += shape_interp[(k, i)].powi(2);
             }
         }
     }
@@ -138,30 +138,20 @@ pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
                 .split_whitespace()
                 .map(|n| n.parse().unwrap())
                 .collect_vec();
-            [v[2], v[1], v[0], v[3]]
+            [v[0], v[1], v[2], v[3]]
         })
         .collect_vec()
 }
 
 pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
-    let mut m = Mat::<f64>::zeros(3, 3);
-    let mut q_rot = col![0., 0., 0., 0.];
-    quat_from_rotation_vector(col![0., -PI / 2., 0.].as_ref(), q_rot.as_mut());
-    quat_as_matrix(q_rot.as_ref(), m.as_mut());
-    let mut m_rot = Mat::<f64>::zeros(6, 6);
-    m_rot.submatrix_mut(0, 0, 3, 3).copy_from(&m);
-    m_rot.submatrix_mut(3, 3, 3, 3).copy_from(&m);
     let lines = file_data.lines().skip(10).collect_vec();
     lines
-        .iter()
-        .chunks(15)
-        .into_iter()
-        .map(|chunks| {
-            let ls = chunks.collect_vec();
-            let s = ls[0].trim().parse::<f64>().unwrap();
+        .chunks_exact(15)
+        .map(|chunk| {
+            let s = chunk[0].trim().parse::<f64>().unwrap();
             let c = (1..7)
                 .map(|i| {
-                    ls[i]
+                    chunk[i]
                         .split_ascii_whitespace()
                         .filter_map(|s| s.parse::<f64>().ok())
                         .collect_vec()
@@ -169,7 +159,7 @@ pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
                 .collect_vec();
             let m = (8..14)
                 .map(|i| {
-                    ls[i]
+                    chunk[i]
                         .split_ascii_whitespace()
                         .filter_map(|s| s.parse::<f64>().ok())
                         .collect_vec()
@@ -177,8 +167,8 @@ pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
                 .collect_vec();
             BeamSection {
                 s,
-                m_star: &m_rot * Mat::<f64>::from_fn(6, 6, |i, j| m[i][j]) * &m_rot.transpose(),
-                c_star: &m_rot * Mat::<f64>::from_fn(6, 6, |i, j| c[i][j]) * &m_rot.transpose(),
+                m_star: Mat::<f64>::from_fn(6, 6, |i, j| m[i][j]),
+                c_star: Mat::<f64>::from_fn(6, 6, |i, j| c[i][j]),
             }
         })
         .collect_vec()

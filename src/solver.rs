@@ -84,7 +84,7 @@ pub struct Solver {
     pub st_sp: SparseColMat<usize, f64>, // St sparse
     tmp_sp: SparseColMat<usize, f64>,    // Temporary sparse matrix for St
     lu_sym: sparse::linalg::solvers::SymbolicLu<usize>,
-    mminfo: sparse::linalg::matmul::SparseMatMulInfo,
+    matmul_info: sparse::linalg::matmul::SparseMatMulInfo,
 }
 
 #[derive(Debug)]
@@ -194,7 +194,7 @@ impl Solver {
         //----------------------------------------------------------------------
 
         // Calculate matrix multiplication information for St*T
-        let (_, mminfo) =
+        let (_, matmul_info) =
             sparse_sparse_matmul_symbolic(tmp_sp.symbolic(), t_sp.symbolic()).unwrap();
 
         //----------------------------------------------------------------------
@@ -225,7 +225,7 @@ impl Solver {
             st_sp: tmp_sp.clone(),
             tmp_sp,
             lu_sym,
-            mminfo,
+            matmul_info,
         }
     }
 
@@ -390,7 +390,7 @@ impl Solver {
             self.tmp_sp.as_ref(),
             self.t_sp.as_ref(),
             1.,
-            &self.mminfo,
+            &self.matmul_info,
             par,
             MemStack::new(&mut st_buffer),
         );
@@ -589,7 +589,7 @@ impl Solver {
         state: &mut State,
         xd: ColRef<f64>,
         mut res_vec: ColMut<f64>,
-        mut dres_mat: MatMut<f64>,
+        mut _dres_mat: MatMut<f64>,
     ) -> StepResults {
         //------------------------------------------------------------------
         // Setup Solution Point like step

@@ -8,7 +8,7 @@ use crate::util::sparse_matrix_from_triplets;
 use crate::{
     node::{Node, NodeFreedomMap},
     state::State,
-    util::{vec_tilde, ColMutReshape, ColRefReshape},
+    util::{vec_tilde, ColMutReshape},
 };
 
 /// Spring element definition
@@ -312,6 +312,7 @@ mod tests {
 
     use super::*;
     use crate::model::Model;
+    use crate::util::ColRefReshape;
     use equator::assert;
     use faer::utils::approx::*;
 
@@ -328,7 +329,7 @@ mod tests {
 
         let mut state = model.create_state();
         let nfm = model.create_node_freedom_map();
-        let mut elements = model.create_elements(&nfm);
+        let elements = model.create_elements(&nfm);
         let mut springs = elements.springs;
 
         // Zero displacement

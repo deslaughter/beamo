@@ -7,6 +7,7 @@ use crate::{
     },
     model::Model,
     state::State,
+    util::cross_product,
 };
 use faer::prelude::*;
 use itertools::Itertools;
@@ -187,8 +188,11 @@ impl Turbine {
             0.,
             input.shaft_tilt_angle.sin()
         ];
-        let shaft_base_azimuth_constraint_id =
-            model.add_revolute_joint(shaft_base_node_id, azimuth_node_id, shaft_axis);
+        let shaft_base_azimuth_constraint_id = if input.prescribed_azimuth {
+            model.add_revolute_joint(shaft_base_node_id, azimuth_node_id, shaft_axis)
+        } else {
+            model.add_prescribed_rotation(shaft_base_node_id, azimuth_node_id, shaft_axis)
+        };
 
         // Connect yaw bearing to shaft base node with a rigid constraint
         let yaw_bearing_shaft_base_constraint_id =
@@ -201,6 +205,59 @@ impl Turbine {
         // Add prescribed constraint for tower base node
         let tower_base_constraint_id =
             model.add_prescribed_constraint(tower.nodes.first().unwrap().id);
+
+        //----------------------------------------------------------------------
+        // Initial displacements
+        //----------------------------------------------------------------------
+
+        //----------------------------------------------------------------------
+        // Initial rotor velocity
+        //----------------------------------------------------------------------
+
+        let hub_node = &model.nodes[hub_node_id];
+        let hub_node_pos = col![
+            hub_node.x[0] + hub_node.u[0],
+            hub_node.x[1] + hub_node.u[1],
+            hub_node.x[2] + hub_node.u[2],
+        ];
+
+        let azimuth_node = &model.nodes[azimuth_node_id];
+        let azimuth_node_pos = col![
+            azimuth_node.x[0] + azimuth_node.u[0],
+            azimuth_node.x[1] + azimuth_node.u[1],
+            azimuth_node.x[2] + azimuth_node.u[2],
+        ];
+
+        // Get the shaft axis unit vector
+        let shaft_axis =
+            (&hub_node_pos - &azimuth_node_pos) / (&hub_node_pos - &azimuth_node_pos).norm_l2();
+
+        let omega = input.rotor_speed * shaft_axis;
+        let mut v = Col::<f64>::zeros(3);
+
+        rotor_node_ids.iter().for_each(|&node_id| {
+            let node = &model.nodes[node_id];
+            let node_pos = col![
+                node.x[0] + node.u[0],
+                node.x[1] + node.u[1],
+                node.x[2] + node.u[2],
+            ];
+
+            let r = node_pos - &hub_node_pos;
+            cross_product(omega.rb(), r.rb(), v.as_mut());
+
+            // Set initial velocities for rotor nodes
+            model.nodes[node_id].v[0] = v[0];
+            model.nodes[node_id].v[1] = v[1];
+            model.nodes[node_id].v[2] = v[2];
+            model.nodes[node_id].v[3] = omega[0];
+            model.nodes[node_id].v[4] = omega[1];
+            model.nodes[node_id].v[5] = omega[2];
+        });
+
+        //----------------------------------------------------------------------
+        // Populate and return the Turbine struct
+        //----------------------------------------------------------------------
 
         Turbine {
             blades,
@@ -275,6 +332,8 @@ pub struct TurbineInput {
     shaft_tilt_angle: f64,         // Shaft tilt angle (radians)
     hub_diameter: f64,             // Hub diameter (meters)
     cone_angle: f64,               // Define blade cone angle (radians)
+    rotor_speed: f64,              // Initial rotor speed (rad/s)
+    prescribed_azimuth: bool,      // Whether to prescribe azimuth angle
 }
 
 #[derive(Default)]
@@ -292,6 +351,7 @@ pub struct TurbineBuilder {
     rotor_speed: Option<f64>,
     hub_diameter: Option<f64>,
     cone_angle: Option<f64>,
+    prescribed_azimuth: Option<bool>,
 }
 
 impl TurbineBuilder {
@@ -310,6 +370,7 @@ impl TurbineBuilder {
             rotor_speed: None,
             hub_diameter: None,
             cone_angle: None,
+            prescribed_azimuth: None,
         }
     }
     pub fn set_blade_input(&mut self, blade: BeamInput) -> &mut Self {
@@ -366,7 +427,7 @@ impl TurbineBuilder {
         self
     }
 
-    /// Set the initial rotor speed (RPM).
+    /// Set the initial rotor speed (rad/s).
     pub fn set_rotor_speed(&mut self, speed: f64) -> &mut Self {
         self.rotor_speed = Some(speed);
         self
@@ -381,6 +442,11 @@ impl TurbineBuilder {
     /// Set the cone angle for the turbine blades (radians).
     pub fn set_cone_angle(&mut self, angle: f64) -> &mut Self {
         self.cone_angle = Some(angle);
+        self
+    }
+
+    pub fn set_prescribed_azimuth(&mut self, prescribed: bool) -> &mut Self {
+        self.prescribed_azimuth = Some(prescribed);
         self
     }
 
@@ -404,6 +470,8 @@ impl TurbineBuilder {
                     .ok_or("shaft_tilt_angle is required")?,
                 hub_diameter: self.hub_diameter.unwrap_or_default(),
                 cone_angle: self.cone_angle.unwrap_or_default(),
+                rotor_speed: self.rotor_speed.unwrap_or(0.0),
+                prescribed_azimuth: self.prescribed_azimuth.unwrap_or(false),
             },
             model,
         ))
