@@ -98,6 +98,25 @@ pub struct NodeDOFs {
     pub active: ActiveDOFs,
 }
 
+impl NodeDOFs {
+    pub fn node_dof_indices(&self) -> core::ops::Range<usize> {
+        match self.active {
+            ActiveDOFs::Translation => 0..3,
+            ActiveDOFs::Rotation => 3..6,
+            ActiveDOFs::All => 0..6,
+            ActiveDOFs::None => unreachable!(),
+        }
+    }
+    pub fn count(&self) -> usize {
+        match self.active {
+            ActiveDOFs::Translation => 3,
+            ActiveDOFs::Rotation => 3,
+            ActiveDOFs::All => 6,
+            ActiveDOFs::None => unreachable!(),
+        }
+    }
+}
+
 #[repr(usize)]
 pub enum Direction {
     X = 0,

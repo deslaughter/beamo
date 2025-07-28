@@ -29,6 +29,7 @@ pub struct ConstraintInput {
     pub vec: Col<f64>,
 }
 
+#[derive(Clone)]
 pub struct Constraints {
     pub n_rows: usize,
     pub phi: Col<f64>,
@@ -114,7 +115,7 @@ impl Constraints {
         }
     }
 
-    pub fn assemble_constraints(&mut self, state: &State, lambda: ColRef<f64>) {
+    pub fn assemble(&mut self, state: &State, lambda: ColRef<f64>) {
         // Loop through constraints and calculate residual and gradient
         self.constraints.iter_mut().for_each(|c| {
             // Get base and target node
@@ -170,9 +171,10 @@ impl Constraints {
     }
 }
 
+#[derive(Clone)]
 pub struct Constraint {
     kind: ConstraintKind,
-    first_row_index: usize,
+    pub first_row_index: usize,
     base_col_index: usize,
     target_col_index: usize,
     n_rows: usize,

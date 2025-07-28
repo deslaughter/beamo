@@ -267,8 +267,7 @@ impl Solver {
                 .assemble_system(state, self.p.h, self.r.as_mut());
 
             // Calculate constraints
-            self.constraints
-                .assemble_constraints(state, self.lambda.as_ref());
+            self.constraints.assemble(state, self.lambda.as_ref());
 
             self.populate_tangent_matrix(state);
 
@@ -323,6 +322,469 @@ impl Solver {
 
         res.converged = true;
         res
+    }
+
+    // Linearization based on s11071-020-06069-5
+    pub fn linearize(&mut self, state: &State) -> Mat<f64> {
+        //----------------------------------------------------------------------
+        // Get base state without acceleration
+        //----------------------------------------------------------------------
+
+        // Create base state for perturbation (no acceleration)
+        let mut base_state = state.clone();
+        base_state.calc_step_end(self.p.h);
+        base_state.u_prev.copy_from(&base_state.u);
+        base_state.u_delta.fill(0.);
+        base_state.vd.fill(0.);
+
+        self.elements
+            .assemble_system(&base_state, 1., self.r.as_mut());
+        self.constraints.assemble(&base_state, self.lambda.as_ref());
+
+        //----------------------------------------------------------------------
+        // Build A0 matrix
+        //----------------------------------------------------------------------
+
+        // Clear sparse matrix
+        self.st_sp.val_mut().iter_mut().for_each(|v| *v = 0.);
+
+        // Add mass matrices to St matrix
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.beams.m_sp.as_ref());
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.masses.m_sp.as_ref());
+
+        // Add B to St matrix
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.constraints.b_sp.as_ref());
+
+        // Add B^T to St matrix
+        let b_sp_t = self.constraints.b_sp.transpose().to_col_major().unwrap();
+        sparse::ops::add_assign(self.st_sp.rb_mut(), b_sp_t.as_ref());
+
+        // Convert to dense matrix
+        let a0 = self.st_sp.to_dense();
+
+        //----------------------------------------------------------------------
+        // Get dQdx matrix (K)
+        //----------------------------------------------------------------------
+
+        self.st_sp.val_mut().iter_mut().for_each(|v| *v = 0.);
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.beams.k_sp.as_ref());
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.masses.k_sp.as_ref());
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.springs.k_sp.as_ref());
+        let dq_dx = -self
+            .st_sp
+            .to_dense()
+            .submatrix(0, 0, self.n_system, self.n_system);
+
+        //----------------------------------------------------------------------
+        // Get dQdx_dot matrix (G)
+        //----------------------------------------------------------------------
+
+        self.st_sp.val_mut().iter_mut().for_each(|v| *v = 0.);
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.beams.g_sp.as_ref());
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.masses.g_sp.as_ref());
+        let dq_dx_dot = -self
+            .st_sp
+            .to_dense()
+            .submatrix(0, 0, self.n_system, self.n_system);
+
+        //----------------------------------------------------------------------
+        // Get vector of accelerations from state
+        //----------------------------------------------------------------------
+
+        let (mut acc, lambda0) = self.calc_acceleration(&state);
+        acc.resize_with(self.n_dofs, |_| 0.);
+
+        // Create lambda vector that can be multiplied by full sparse matrix
+        let mut lambda = Col::zeros(self.n_dofs);
+        lambda
+            .subrows_mut(self.n_system, self.n_lambda)
+            .copy_from(&lambda0);
+
+        //----------------------------------------------------------------------
+        // Finite difference initialization
+        //----------------------------------------------------------------------
+
+        // Position perturbation size (divided by time step as it is multiplied by h during application)
+        let x_perturbation = 1e-6;
+
+        // Velocity perturbation size
+        let v_perturbation = 1e-6;
+
+        // Create a vector of node identifiers and active dof indices
+        let perturb_node_indices = self
+            .nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .flat_map(|(node_id, dofs)| {
+                dofs.node_dof_indices()
+                    .map(|node_dof_index| (node_id, node_dof_index))
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        //----------------------------------------------------------------------
+        // Position finite difference
+        //----------------------------------------------------------------------
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Matrices to hold partial derivatives wrt position
+        let mut dmx_ddot_dx = Mat::<f64>::zeros(self.n_system, self.n_system);
+        let mut dbt_lambda_dx = Mat::<f64>::zeros(self.n_system, self.n_system);
+        let mut dbx_ddot_dx = Mat::<f64>::zeros(self.n_lambda, self.n_system);
+
+        // Loop through each node and dof
+        perturb_node_indices
+            .iter()
+            .enumerate()
+            .for_each(|(k, &(node_id, node_dof_index))| {
+                // Perturb position in positive direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] += x_perturbation;
+                state_perturb.calc_step_end(1.);
+
+                // Calculate constraints and extract B matrix
+                self.elements
+                    .assemble_system(&state_perturb, 1., self.r.as_mut());
+                self.constraints
+                    .assemble(&state_perturb, self.lambda.as_ref());
+                let ma_plus = (&self.elements.beams.m_sp + &self.elements.masses.m_sp) * &acc;
+                let btlambda_plus = &self.constraints.b_sp.transpose() * &lambda;
+                let bxddot_plus = &self.constraints.b_sp * &acc;
+
+                // Perturb position in negative direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] -= x_perturbation;
+                state_perturb.calc_step_end(1.);
+
+                // Calculate constraints and extract B matrix
+                self.elements
+                    .assemble_system(&state_perturb, 1., self.r.as_mut());
+                self.constraints
+                    .assemble(&state_perturb, self.lambda.as_ref());
+                let ma_minus = (&self.elements.beams.m_sp + &self.elements.masses.m_sp) * &acc;
+                let btlambda_minus = &self.constraints.b_sp.transpose() * &lambda;
+                let bxddot_minus = &self.constraints.b_sp * &acc;
+
+                //----------------------------------------------------------
+
+                // Compute change in mass matrix times acceleration for this dof
+                let d = (&ma_plus - &ma_minus).subrows(0, self.n_system) / (2. * x_perturbation);
+                dmx_ddot_dx.col_mut(k).copy_from(d);
+
+                // Compute change in constraint gradient transpose times lambda for this dof
+                let d = (&btlambda_plus - &btlambda_minus).subrows(0, self.n_system)
+                    / (2. * x_perturbation);
+                dbt_lambda_dx.col_mut(k).copy_from(d);
+
+                // Compute change in constraint gradient times acceleration for this dof
+                let d = (&bxddot_plus - &bxddot_minus).subrows(self.n_system, self.n_lambda)
+                    / (2. * x_perturbation);
+                dbx_ddot_dx.col_mut(k).copy_from(d);
+            });
+
+        //----------------------------------------------------------------------
+        // Calculate dd/dx and dd/dx_dot matrices
+        //----------------------------------------------------------------------
+
+        // Get vector of velocities
+        let mut vel = Col::zeros(self.n_dofs);
+        self.nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .for_each(|(node_id, dofs)| {
+                dofs.node_dof_indices().enumerate().for_each(|(i, i_node)| {
+                    vel[dofs.first_dof_index + i] = state.v[(i_node, node_id)];
+                });
+            });
+
+        let mut dd_dx = Mat::<f64>::zeros(self.n_lambda, self.n_system);
+        let mut dd_dx_dot = Mat::<f64>::zeros(self.n_lambda, self.n_system);
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Iterate through node perturbation indices and perturb position
+        perturb_node_indices
+            .iter()
+            .enumerate()
+            .for_each(|(k_col, &(node_id, node_dof_index))| {
+                // Perturb position in positive direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] += x_perturbation;
+                state_perturb.calc_step_end(1.);
+                let d_plus = self.calc_d(&state_perturb, x_perturbation);
+
+                // Perturb position in negative direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] -= x_perturbation;
+                state_perturb.calc_step_end(1.);
+                let d_minus = self.calc_d(&state_perturb, x_perturbation);
+
+                dd_dx
+                    .col_mut(k_col)
+                    .copy_from((d_plus - d_minus) / (2. * x_perturbation));
+            });
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Iterate through node perturbation indices and perturb velocity
+        perturb_node_indices
+            .iter()
+            .enumerate()
+            .for_each(|(k_col, &(node_id, node_dof_index))| {
+                // Perturb velocity in positive direction ------------------
+                state_perturb.v.copy_from(&state.v);
+                state_perturb.v[(node_dof_index, node_id)] += v_perturbation;
+                let d_plus = self.calc_d(&state_perturb, x_perturbation);
+
+                // Perturb velocity in negative direction ------------------
+                state_perturb.v.copy_from(&state.v);
+                state_perturb.v[(node_dof_index, node_id)] -= v_perturbation;
+                let d_minus = self.calc_d(&state_perturb, x_perturbation);
+
+                dd_dx_dot
+                    .col_mut(k_col)
+                    .copy_from((d_plus - d_minus) / (2. * v_perturbation));
+            });
+
+        //----------------------------------------------------------------------
+        // Construct B0 matrix
+        //----------------------------------------------------------------------
+
+        let mut b0 = Mat::<f64>::zeros(self.n_dofs, 2 * self.n_system);
+
+        // Quadrant (1,1)
+        b0.submatrix_mut(0, 0, self.n_system, self.n_system)
+            .copy_from(&dq_dx - &dmx_ddot_dx - &dbt_lambda_dx);
+
+        // Quadrant (1,2)
+        b0.submatrix_mut(0, self.n_system, self.n_system, self.n_system)
+            .copy_from(&dq_dx_dot);
+
+        // Quadrant (2,1)
+        b0.submatrix_mut(self.n_system, 0, self.n_lambda, self.n_system)
+            .copy_from(-&dd_dx - &dbx_ddot_dx);
+
+        // Quadrant (2,2)
+        b0.submatrix_mut(self.n_system, self.n_system, self.n_lambda, self.n_system)
+            .copy_from(-&dd_dx_dot);
+
+        //----------------------------------------------------------------------
+        // Solve for F0 = A0^-1 B0
+        //----------------------------------------------------------------------
+
+        let f0 = a0.partial_piv_lu().solve(b0);
+
+        // Create state space A matrix
+        let mut a_ss = Mat::<f64>::zeros(2 * self.n_system, 2 * self.n_system);
+
+        a_ss.submatrix_mut(0, self.n_system, self.n_system, self.n_system)
+            .copy_from(&Mat::<f64>::identity(self.n_system, self.n_system));
+
+        a_ss.submatrix_mut(self.n_system, 0, self.n_system, 2 * self.n_system)
+            .copy_from(&f0.submatrix(0, 0, self.n_system, 2 * self.n_system));
+
+        a_ss
+    }
+
+    pub fn linearize2(&mut self, state: &State) -> Mat<f64> {
+        // Create base state for perturbation (no acceleration)
+        let mut base_state = state.clone();
+        base_state.calc_step_end(self.p.h);
+        base_state.u_prev.copy_from(&base_state.u);
+        base_state.u_delta.fill(0.);
+        base_state.vd.fill(0.);
+
+        // Position perturbation size (divided by time step as it is multiplied by h during application)
+        let x_perturbation = 1e-5;
+
+        // Velocity perturbation size
+        let v_perturbation = 1e-5;
+
+        // Create a vector of node identifiers and active dof indices
+        let perturb_node_indices = self
+            .nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .flat_map(|(node_id, dofs)| {
+                dofs.node_dof_indices()
+                    .map(|node_dof_index| (node_id, node_dof_index))
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        // Matrices to hold partial derivatives wrt position
+        let mut a_ss = Mat::<f64>::zeros(2 * self.n_system, 2 * self.n_system);
+        a_ss.submatrix_mut(0, self.n_system, self.n_system, self.n_system)
+            .copy_from(&Mat::<f64>::identity(self.n_system, self.n_system));
+
+        //----------------------------------------------------------------------
+        // Position finite difference
+        //----------------------------------------------------------------------
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Loop through each node and dof
+        perturb_node_indices
+            .iter()
+            .enumerate()
+            .for_each(|(k_col, &(node_id, node_dof_index))| {
+                // Perturb position in positive direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] += x_perturbation;
+                state_perturb.calc_step_end(1.);
+                let (acc_plus, _) = self.calc_acceleration(&state_perturb);
+
+                // Perturb position in negative direction ------------------
+                state_perturb.u_delta.fill(0.);
+                state_perturb.u_delta[(node_dof_index, node_id)] -= x_perturbation;
+                state_perturb.calc_step_end(1.);
+                let (acc_minus, _) = self.calc_acceleration(&state_perturb);
+
+                // Compute change in acceleration for this dof
+                a_ss.col_mut(k_col)
+                    .subrows_mut(self.n_system, self.n_system)
+                    .copy_from((&acc_plus - &acc_minus) / (2. * x_perturbation));
+            });
+
+        //----------------------------------------------------------------------
+        // Velocity finite difference
+        //----------------------------------------------------------------------
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Loop through each node and dof
+        perturb_node_indices
+            .iter()
+            .enumerate()
+            .for_each(|(k_col, &(node_id, node_dof_index))| {
+                // Perturb position in positive direction ------------------
+                state_perturb.v.copy_from(&base_state.v);
+                state_perturb.v[(node_dof_index, node_id)] += v_perturbation;
+                let (acc_plus, _) = self.calc_acceleration(&state_perturb);
+
+                // Perturb position in negative direction ------------------
+                state_perturb.v.copy_from(&base_state.v);
+                state_perturb.v[(node_dof_index, node_id)] -= v_perturbation;
+                let (acc_minus, _) = self.calc_acceleration(&state_perturb);
+
+                // Compute change in acceleration for this dof
+                a_ss.col_mut(k_col + self.n_system)
+                    .subrows_mut(self.n_system, self.n_system)
+                    .copy_from((&acc_plus - &acc_minus) / (2. * x_perturbation));
+            });
+
+        a_ss
+    }
+
+    pub fn calc_acceleration(&mut self, state: &State) -> (Col<f64>, Col<f64>) {
+        let x_perturbation = 1e-6;
+
+        // Reset the matrices
+        self.r.fill(0.);
+        self.st_sp.val_mut().iter_mut().for_each(|v| *v = 0.);
+
+        // Add external loads to residual
+        self.add_external_loads_to_residual(&state);
+
+        // Add elements to system
+        self.elements.assemble_system(&state, 1., self.r.as_mut());
+
+        //------------------------------------------------------------------
+        // Build system matrix and residual vector
+        //------------------------------------------------------------------
+
+        // Add mass matrices to St matrix
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.beams.m_sp.as_ref());
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.elements.masses.m_sp.as_ref());
+
+        // Add B to St matrix
+        sparse::ops::add_assign(self.st_sp.rb_mut(), self.constraints.b_sp.as_ref());
+
+        // Add B^T to St matrix
+        let b_sp_t = self.constraints.b_sp.transpose().to_col_major().unwrap();
+        sparse::ops::add_assign(self.st_sp.rb_mut(), b_sp_t.as_ref());
+
+        // Populate right-hand side
+        let d = self.calc_d(&state, x_perturbation);
+        self.rhs.subrows_mut(0, self.n_system).copy_from(-&self.r);
+        self.rhs
+            .subrows_mut(self.n_system, self.n_lambda)
+            .copy_from(&-d);
+
+        let lu = sparse::linalg::solvers::Lu::try_new_with_symbolic(
+            self.lu_sym.clone(),
+            self.st_sp.as_ref(),
+        )
+        .unwrap();
+
+        let x = lu.solve(&self.rhs);
+
+        // Return the acceleration vector and lambda vector
+        (
+            x.subrows(0, self.n_system).to_owned(),
+            x.subrows(self.n_system, self.n_lambda).to_owned(),
+        )
+    }
+
+    fn calc_d(&mut self, state: &State, x_perturbation: f64) -> Col<f64> {
+        // Matrix to hold the partial derivative of dD(x)x_dot/dx
+        let mut ddx_dot_dx = Mat::<f64>::zeros(self.n_lambda, self.n_system);
+
+        // Extract vector of velocities
+        let mut vel = Col::zeros(self.n_dofs);
+        self.nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .for_each(|(node_id, dofs)| {
+                let mut vr = vel.subrows_mut(dofs.first_dof_index, dofs.n_dofs);
+                dofs.node_dof_indices().enumerate().for_each(|(i, idx)| {
+                    vr[i] = state.v[(idx, node_id)];
+                });
+            });
+
+        // State perturbation copy
+        let mut sp = state.clone();
+
+        // Iterate through node perturbation indices
+        let k_col = 0;
+        self.nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .for_each(|(node_id, dofs)| {
+                dofs.node_dof_indices().for_each(|i_dof| {
+                    // Perturb position in positive direction ------------------
+                    sp.u_delta.fill(0.);
+                    sp.u_delta[(i_dof, node_id)] += x_perturbation;
+                    sp.calc_step_end(1.);
+                    self.constraints.assemble(&sp, self.lambda.as_ref());
+                    let bv_plus = &self.constraints.b_sp * &vel;
+
+                    // Perturb position in negative direction ------------------
+                    sp.u_delta.fill(0.);
+                    sp.u_delta[(i_dof, node_id)] -= x_perturbation;
+                    sp.calc_step_end(1.);
+                    self.constraints.assemble(&sp, self.lambda.as_ref());
+                    let bv_minus = &self.constraints.b_sp * &vel;
+
+                    ddx_dot_dx.col_mut(k_col).copy_from(
+                        (bv_plus - bv_minus).subrows(self.n_system, self.n_lambda)
+                            / (2. * x_perturbation),
+                    );
+                });
+            });
+
+        ddx_dot_dx * &vel.subrows(0, self.n_system)
     }
 
     fn reset_matrices(&mut self) {
@@ -675,8 +1137,7 @@ impl Solver {
             .assemble_system(state, self.p.h, self.r.as_mut());
 
         // Calculate constraints
-        self.constraints
-            .assemble_constraints(state, self.lambda.as_ref());
+        self.constraints.assemble(state, self.lambda.as_ref());
 
         // Calculate tangent matrix
         self.populate_tangent_matrix(state);

@@ -115,7 +115,7 @@ pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
     let norm = (1. - w * w).sqrt();
 
     // To avoid division by zero, check if norm is very small
-    if norm < f64::EPSILON {
+    if norm < f64::EPSILON || norm.is_nan() {
         // If norm is close to zero, the rotation is very small; return a zero vector
         v.fill(0.);
     } else {
@@ -441,7 +441,7 @@ pub fn write_matrix(m: MatRef<f64>, file_path: &str) -> std::io::Result<()> {
             if j > 0 {
                 write!(file, ",")?;
             }
-            write!(file, "{}", m[(i, j)])?;
+            write!(file, "{:.16e}", m[(i, j)])?;
         }
         writeln!(file)?;
     }

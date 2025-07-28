@@ -184,9 +184,9 @@ impl Turbine {
 
         // Connect azimuth node to shaft base node with revolute joint
         let shaft_axis = col![
-            -input.shaft_tilt_angle.cos(),
+            input.shaft_tilt_angle.cos(),
             0.,
-            input.shaft_tilt_angle.sin()
+            -input.shaft_tilt_angle.sin()
         ];
         let shaft_base_azimuth_constraint_id = if input.prescribed_azimuth {
             model.add_revolute_joint(shaft_base_node_id, azimuth_node_id, shaft_axis)

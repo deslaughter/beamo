@@ -568,7 +568,7 @@ impl Beams {
         });
     }
 
-    /// Calculate element properties``
+    /// Calculate element properties
     pub fn calculate_system(&mut self, state: &State, h: f64) {
         // Copy displacement, velocity, and acceleration data from state nodes to beam nodes
         izip!(
