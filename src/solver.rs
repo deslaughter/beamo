@@ -1,5 +1,3 @@
-use std::usize;
-
 use crate::{
     constraints::Constraints,
     elements::Elements,
@@ -681,6 +679,128 @@ impl Solver {
                     .subrows_mut(self.n_system, self.n_system)
                     .copy_from((&acc_plus - &acc_minus) / (2. * x_perturbation));
             });
+
+        a_ss
+    }
+
+    pub fn linearize3<
+        Fperturb: Fn(usize, f64, bool) -> (Col<f64>, Col<f64>),
+        Fvd: Fn(Col<f64>, Col<f64>, Col<f64>) -> (Col<f64>, Col<f64>),
+    >(
+        &mut self,
+        state: &State,
+        perturb_fn: Fperturb,
+        vd_solve: Fvd,
+    ) -> Mat<f64> {
+        // Create base state for perturbation (no acceleration)
+        let mut base_state = state.clone();
+        base_state.calc_step_end(self.p.h);
+        base_state.u_prev.copy_from(&base_state.u);
+        base_state.u_delta.fill(0.);
+        base_state.vd.fill(0.);
+
+        // Create a vector of node identifiers and active dof indices
+        let perturb_node_indices = self
+            .nfm
+            .node_dofs
+            .iter()
+            .enumerate()
+            .flat_map(|(node_id, dofs)| {
+                dofs.node_dof_indices()
+                    .map(|node_dof_index| (node_id, node_dof_index))
+                    .collect_vec()
+            })
+            .collect_vec();
+
+        // State Space A matrix
+        let mut a_ss = Mat::<f64>::zeros(2 * self.n_system, 2 * self.n_system);
+        a_ss.submatrix_mut(0, self.n_system, self.n_system, self.n_system)
+            .copy_from(&Mat::<f64>::identity(self.n_system, self.n_system));
+
+        let perturbation = 1e-6;
+
+        //----------------------------------------------------------------------
+        // Position finite difference
+        //----------------------------------------------------------------------
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Loop through each node and dof
+        (0..perturb_node_indices.len()).for_each(|k_col| {
+            let (perturb_x, perturb_v) = perturb_fn(k_col, perturbation, false);
+
+            // Perturb position in positive direction ------------------
+            state_perturb.u_delta.fill(0.);
+            perturb_node_indices.iter().zip(perturb_x.iter()).for_each(
+                |(&(node_id, node_dof_index), &p)| {
+                    state_perturb.u_delta[(node_dof_index, node_id)] += p;
+                },
+            );
+            state_perturb.calc_step_end(1.);
+            let (acc_plus, _) = self.calc_acceleration(&state_perturb);
+
+            // Perturb position in negative direction ------------------
+            state_perturb.u_delta.fill(0.);
+            perturb_node_indices.iter().zip(perturb_x.iter()).for_each(
+                |(&(node_id, node_dof_index), &p)| {
+                    state_perturb.u_delta[(node_dof_index, node_id)] -= p;
+                },
+            );
+            state_perturb.calc_step_end(1.);
+            let (acc_minus, _) = self.calc_acceleration(&state_perturb);
+
+            let (v_nr, vd_nr) = vd_solve(acc_plus - acc_minus, perturb_x, perturb_v);
+
+            // Compute change in acceleration for this dof
+            a_ss.col_mut(k_col)
+                .subrows_mut(0, self.n_system)
+                .copy_from(v_nr / (2. * perturbation));
+            a_ss.col_mut(k_col)
+                .subrows_mut(self.n_system, self.n_system)
+                .copy_from(vd_nr / (2. * perturbation));
+        });
+
+        //----------------------------------------------------------------------
+        // Velocity finite difference
+        //----------------------------------------------------------------------
+
+        // Clone the state for perturbation
+        let mut state_perturb = base_state.clone();
+
+        // Loop through each node and dof
+        (0..perturb_node_indices.len()).for_each(|k_col| {
+            // Get perturbation vector for velocity
+            let (perturb_x, perturb_v) = perturb_fn(k_col, perturbation, true);
+
+            // Perturb velocity in positive direction ------------------
+            state_perturb.v.copy_from(&base_state.v);
+            perturb_node_indices.iter().zip(perturb_v.iter()).for_each(
+                |(&(node_id, node_dof_index), &p)| {
+                    state_perturb.v[(node_dof_index, node_id)] += p;
+                },
+            );
+            let (acc_plus, _) = self.calc_acceleration(&state_perturb);
+
+            // Perturb velocity in negative direction ------------------
+            state_perturb.v.copy_from(&base_state.v);
+            perturb_node_indices.iter().zip(perturb_v.iter()).for_each(
+                |(&(node_id, node_dof_index), &p)| {
+                    state_perturb.v[(node_dof_index, node_id)] -= p;
+                },
+            );
+            let (acc_minus, _) = self.calc_acceleration(&state_perturb);
+
+            let (v_nr, vd_nr) = vd_solve(acc_plus - acc_minus, perturb_x, perturb_v);
+
+            // Compute change in acceleration for this dof
+            a_ss.col_mut(k_col)
+                .subrows_mut(0, self.n_system)
+                .copy_from(v_nr / (2. * perturbation));
+            a_ss.col_mut(k_col)
+                .subrows_mut(self.n_system, self.n_system)
+                .copy_from(vd_nr / (2. * perturbation));
+        });
 
         a_ss
     }
