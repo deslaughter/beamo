@@ -189,9 +189,9 @@ impl Turbine {
             -input.shaft_tilt_angle.sin()
         ];
         let shaft_base_azimuth_constraint_id = if input.prescribed_azimuth {
-            model.add_revolute_joint(shaft_base_node_id, azimuth_node_id, shaft_axis)
-        } else {
             model.add_prescribed_rotation(shaft_base_node_id, azimuth_node_id, shaft_axis)
+        } else {
+            model.add_revolute_joint(shaft_base_node_id, azimuth_node_id, shaft_axis)
         };
 
         // Connect yaw bearing to shaft base node with a rigid constraint
