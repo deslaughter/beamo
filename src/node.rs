@@ -92,6 +92,7 @@ impl ActiveDOFs {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NodeDOFs {
     pub first_dof_index: usize,
     pub n_dofs: usize,
@@ -127,6 +128,7 @@ pub enum Direction {
     RZ = 5,
 }
 
+#[derive(Debug, Clone)]
 pub struct NodeFreedomMap {
     pub n_system_dofs: usize,
     pub n_constraint_dofs: usize,
