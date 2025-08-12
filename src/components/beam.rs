@@ -19,9 +19,10 @@ use std::f64::consts::PI;
 //------------------------------------------------------------------------------
 
 pub struct BeamComponent {
-    pub elem_id: usize,       // Unique identifier for the beam element
-    pub nodes: Vec<NodeData>, // Node identifiers for the beam element
-    pub node_xi: Vec<f64>,    // Local coordinates of nodes in the beam element
+    pub elem_id: usize,                    // Unique identifier for the beam element
+    pub nodes: Vec<NodeData>,              // Node identifiers for the beam element
+    pub node_xi: Vec<f64>,                 // Local coordinates of nodes in the beam element
+    pub root_constraint_id: Option<usize>, // Optional constraint ID for the root node
 }
 
 impl BeamComponent {
@@ -122,6 +123,11 @@ impl BeamComponent {
             elem_id: model.add_beam_element(&node_ids, &q, &sections, &input.damping),
             nodes: node_ids.iter().map(|&id| NodeData::new(id)).collect_vec(),
             node_xi,
+            root_constraint_id: if input.prescribe_root {
+                Some(model.add_prescribed_constraint(node_ids[0]))
+            } else {
+                None
+            },
         }
     }
 }
@@ -138,6 +144,7 @@ pub struct BeamInput {
     sections: Vec<BeamSection>,
     root: Root,
     damping: Damping,
+    prescribe_root: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +190,7 @@ impl BeamInputBuilder {
                     acceleration: [0.0; 6],
                 },
                 damping: Damping::None,
+                prescribe_root: false,
             },
         }
     }
@@ -342,6 +350,11 @@ impl BeamInputBuilder {
 
     pub fn set_damping(&mut self, damping: Damping) -> &mut Self {
         self.beam_input.damping = damping;
+        self
+    }
+
+    pub fn set_prescribe_root(&mut self, prescribe: bool) -> &mut Self {
+        self.beam_input.prescribe_root = prescribe;
         self
     }
 
