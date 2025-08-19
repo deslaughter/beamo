@@ -385,8 +385,14 @@ pub fn quat_from_tangent_twist(tangent: ColRef<f64>, twist: f64, q: ColMut<f64>)
 
     //  Matrix3::from_columns(&[e1, e2, e3]);
     let mut q_twist = Col::<f64>::zeros(4);
-    quat_from_axis_angle(twist * PI / 180., e1.as_ref(), q_twist.as_mut());
+    quat_from_axis_angle(twist, e1.as_ref(), q_twist.as_mut());
     quat_compose(q_twist.as_ref(), q0.as_ref(), q);
+}
+
+pub fn quat_from_tangent_twist_alloc(tangent: ColRef<f64>, twist: f64) -> Col<f64> {
+    let mut q = Col::<f64>::zeros(4);
+    quat_from_tangent_twist(tangent, twist, q.as_mut());
+    q
 }
 
 // Returns the cross product of two vectors

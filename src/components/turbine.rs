@@ -71,7 +71,7 @@ impl Turbine {
 
         // Get the tower top position
         let tt_node_id = tower.nodes.last().unwrap().id;
-        let tt_position = Col::from_iter(model.nodes[tt_node_id].x.iter().cloned());
+        let tt_position = Col::from_iter(model.nodes[tt_node_id].xr.iter().cloned());
 
         // Calculate rotor apex position based on tower top and hub offset
         let apex_position = [
@@ -170,7 +170,7 @@ impl Turbine {
             .map(|(&apex_node_id, blade)| {
                 let root_node_id = blade.nodes.first().unwrap().id;
                 let axis = Col::from_fn(3, |i| {
-                    model.nodes[apex_node_id].x[i] - model.nodes[root_node_id].x[i]
+                    model.nodes[apex_node_id].xr[i] - model.nodes[root_node_id].xr[i]
                 });
                 (
                     model.add_prescribed_rotation(apex_node_id, root_node_id, axis),
@@ -216,16 +216,16 @@ impl Turbine {
 
         let hub_node = &model.nodes[hub_node_id];
         let hub_node_pos = col![
-            hub_node.x[0] + hub_node.u[0],
-            hub_node.x[1] + hub_node.u[1],
-            hub_node.x[2] + hub_node.u[2],
+            hub_node.xr[0] + hub_node.u[0],
+            hub_node.xr[1] + hub_node.u[1],
+            hub_node.xr[2] + hub_node.u[2],
         ];
 
         let azimuth_node = &model.nodes[azimuth_node_id];
         let azimuth_node_pos = col![
-            azimuth_node.x[0] + azimuth_node.u[0],
-            azimuth_node.x[1] + azimuth_node.u[1],
-            azimuth_node.x[2] + azimuth_node.u[2],
+            azimuth_node.xr[0] + azimuth_node.u[0],
+            azimuth_node.xr[1] + azimuth_node.u[1],
+            azimuth_node.xr[2] + azimuth_node.u[2],
         ];
 
         // Get the shaft axis unit vector
@@ -238,9 +238,9 @@ impl Turbine {
         rotor_node_ids.iter().for_each(|&node_id| {
             let node = &model.nodes[node_id];
             let node_pos = col![
-                node.x[0] + node.u[0],
-                node.x[1] + node.u[1],
-                node.x[2] + node.u[2],
+                node.xr[0] + node.u[0],
+                node.xr[1] + node.u[1],
+                node.xr[2] + node.u[2],
             ];
 
             let r = node_pos - &hub_node_pos;

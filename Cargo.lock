@@ -1054,6 +1054,7 @@ dependencies = [
 name = "ottr"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "equator 0.4.2",
  "faer",
  "gauss-quad",

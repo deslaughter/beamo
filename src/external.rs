@@ -1,7 +1,7 @@
 use core::panic;
 use faer::{prelude::*, traits::num_traits::Pow};
 use itertools::{izip, Itertools};
-use std::fs;
+use std::{f64::consts::PI, fs};
 
 use crate::{
     elements::beams::{BeamSection, Damping},
@@ -78,7 +78,7 @@ pub fn add_beamdyn_blade(
         .map(|(&si, nd, deriv)| {
             let twist = nd[3];
             let tan = deriv.transpose() / deriv.norm_l2();
-            quat_from_tangent_twist(tan.as_ref(), twist, q.as_mut()); // Calculate twist about tangent
+            quat_from_tangent_twist(tan.as_ref(), twist.to_radians(), q.as_mut()); // Calculate twist about tangent
             model
                 .add_node()
                 .element_location(si)

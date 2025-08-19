@@ -23,6 +23,20 @@ pub struct Components {
 #[derive(Debug, Deserialize)]
 pub struct Blade {
     pub elastic_properties_mb: ElasticPropertiesMB,
+    pub outer_shape: BladeOuterShape,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BladeOuterShape {
+    pub airfoils: Vec<OuterShapeAirfoil>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OuterShapeAirfoil {
+    pub configuration: Vec<String>,
+    pub name: String,
+    pub spanwise_position: f64,
+    pub weight: Vec<f64>,
 }
 
 #[derive(Debug, Deserialize)]

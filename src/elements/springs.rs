@@ -61,7 +61,7 @@ impl Springs {
 
         // Initial distance between nodes
         let x0 = Mat::from_fn(3, n_elem, |i, j| {
-            nodes[elements[j].node_ids[1]].x[i] - nodes[elements[j].node_ids[0]].x[i]
+            nodes[elements[j].node_ids[1]].xr[i] - nodes[elements[j].node_ids[0]].xr[i]
         });
 
         // Initial spring length

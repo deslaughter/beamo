@@ -16,7 +16,11 @@ name = "beam_mode_sweep"
 [[example]]
 name = "bar_urc_model_compare"
 
+[[example]]
+name = "blade_aero"
+
 [dependencies]
+approx = "0.5.1"
 equator = "0.4.2"
 faer = "0.22.6"
 gauss-quad = "0.2.1"

@@ -232,9 +232,9 @@ pub fn springs_as_vtk(springs: &Springs, state: &State) -> Vtk {
                     .elem_node_ids
                     .iter()
                     .flat_map(|node_ids| {
-                        let x0_1 = state.x0.col(node_ids[0]);
+                        let x0_1 = state.xr.col(node_ids[0]);
                         let u_1 = state.u.col(node_ids[0]);
-                        let x0_2 = state.x0.col(node_ids[1]);
+                        let x0_2 = state.xr.col(node_ids[1]);
                         let u_2 = state.u.col(node_ids[1]);
                         [
                             u_1[0] + x0_1[0],

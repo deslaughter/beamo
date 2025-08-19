@@ -339,7 +339,7 @@ fn test_heavy_top_grad() {
 
     // Copy all of state to the reference
     ref_state.n_nodes = state.n_nodes;
-    ref_state.x0.copy_from(state.x0.clone());
+    ref_state.xr.copy_from(state.xr.clone());
     ref_state.x.copy_from(state.x.clone());
     ref_state.u_delta.copy_from(state.u_delta.clone());
     ref_state.u_prev.copy_from(state.u_prev.clone());
@@ -377,7 +377,7 @@ fn test_heavy_top_grad() {
 
     // Copy all of state from the reference
     state.n_nodes = ref_state.n_nodes;
-    state.x0.copy_from(ref_state.x0.clone());
+    state.xr.copy_from(ref_state.xr.clone());
     state.x.copy_from(ref_state.x.clone());
     state.u_delta.copy_from(ref_state.u_delta.clone());
     state.u_prev.copy_from(ref_state.u_prev.clone());
@@ -398,7 +398,7 @@ fn test_heavy_top_grad() {
 
         // Copy all of state from the reference
         state.n_nodes = ref_state.n_nodes;
-        state.x0.copy_from(ref_state.x0.clone());
+        state.xr.copy_from(ref_state.xr.clone());
         state.x.copy_from(ref_state.x.clone());
         state.u_delta.copy_from(ref_state.u_delta.clone());
         state.u_prev.copy_from(ref_state.u_prev.clone());
@@ -428,7 +428,7 @@ fn test_heavy_top_grad() {
 
         // Copy all of state from the reference
         state.n_nodes = ref_state.n_nodes;
-        state.x0.copy_from(ref_state.x0.clone());
+        state.xr.copy_from(ref_state.xr.clone());
         state.x.copy_from(ref_state.x.clone());
         state.u_delta.copy_from(ref_state.u_delta.clone());
         state.u_prev.copy_from(ref_state.u_prev.clone());

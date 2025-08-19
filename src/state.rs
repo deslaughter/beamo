@@ -10,7 +10,7 @@ pub struct State {
     /// Number of nodes
     pub n_nodes: usize,
     /// Initial global position/rotation `[7][n_nodes]`
-    pub x0: Mat<f64>,
+    pub xr: Mat<f64>,
     /// Current global position/rotation `[7][n_nodes]`
     pub x: Mat<f64>,
     /// Displacement increment `[6][n_nodes]`
@@ -40,8 +40,8 @@ impl State {
         let n_nodes = nodes.len();
         let mut state = Self {
             n_nodes,
-            x0: Mat::from_fn(7, n_nodes, |i, j| nodes[j].x[i]),
-            x: Mat::from_fn(7, n_nodes, |i, j| nodes[j].x[i]),
+            xr: Mat::from_fn(7, n_nodes, |i, j| nodes[j].xr[i]),
+            x: Mat::from_fn(7, n_nodes, |i, j| nodes[j].xr[i]),
             u_delta: Mat::zeros(6, n_nodes),
             u_prev: Mat::from_fn(7, n_nodes, |i, j| nodes[j].u[i]),
             u: Mat::zeros(7, n_nodes),
@@ -63,7 +63,7 @@ impl State {
         let u_n = self.u_prev.subrows(0, 3);
         let u_delta_n = self.u_delta.subrows(0, 3);
         let mut x_np1 = self.x.subrows_mut(0, 3);
-        let x0 = self.x0.subrows(0, 3);
+        let xr = self.xr.subrows(0, 3);
 
         // Calculate total displacement at end-of-step
         zip!(&mut u_np1, &u_n, &u_delta_n).for_each(|unzip!(u_np1, u_n, u_delta_n)| {
@@ -71,7 +71,7 @@ impl State {
         });
 
         // Calculate absolute rotation at end-of-step
-        zip!(&mut x_np1, &x0, &u_np1).for_each(|unzip!(x, x0, u)| {
+        zip!(&mut x_np1, &xr, &u_np1).for_each(|unzip!(x, x0, u)| {
             *x = *x0 + *u;
         });
 
@@ -80,7 +80,7 @@ impl State {
         let r_n = self.u_prev.subrows(3, 4);
         let ur_delta = self.u_delta.subrows(3, 3);
         let rr0_np1 = self.x.subrows_mut(3, 4);
-        let r0 = self.x0.subrows(3, 4);
+        let r0 = self.xr.subrows(3, 4);
 
         // Calculate change in rotation
         let mut q_delta_np1 = Col::<f64>::zeros(4);
@@ -195,8 +195,8 @@ mod tests {
     fn create_state() -> State {
         let mut q1: Col<f64> = Col::zeros(4);
         let mut q2: Col<f64> = Col::zeros(4);
-        quat_from_axis_angle(90. * PI / 180., col![1., 0., 0.].as_ref(), q1.as_mut());
-        quat_from_axis_angle(45. * PI / 180., col![0., 1., 0.].as_ref(), q2.as_mut());
+        quat_from_axis_angle(90_f64.to_radians(), col![1., 0., 0.].as_ref(), q1.as_mut());
+        quat_from_axis_angle(45_f64.to_radians(), col![0., 1., 0.].as_ref(), q2.as_mut());
         let mut model = Model::new();
         model
             .add_node()
@@ -221,7 +221,7 @@ mod tests {
 
         let state = create_state();
         assert!(
-            state.x0 ~ mat![
+            state.xr ~ mat![
                 [3.0000000000000000, 2.0000000000000000],
                 [5.0000000000000000, -3.0000000000000000],
                 [7.0000000000000000, -5.0000000000000000],

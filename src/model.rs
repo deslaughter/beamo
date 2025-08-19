@@ -109,7 +109,7 @@ impl Model {
         self.nodes.push(Node {
             id: self.nodes.len(),
             s: 0.,
-            x: [0., 0., 0., 1., 0., 0., 0.],
+            xr: [0., 0., 0., 1., 0., 0., 0.],
             u: [0., 0., 0., 1., 0., 0., 0.],
             v: [0., 0., 0., 0., 0., 0.],
             vd: [0., 0., 0., 0., 0., 0.],
@@ -153,7 +153,7 @@ impl Model {
             kind: ConstraintKind::Rigid,
             node_id_base: base_node_id,
             node_id_target: target_node_id,
-            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            x0: Col::<f64>::from_fn(3, |i| target_node.xr[i] - base_node.xr[i]),
             vec: Col::zeros(3),
         });
         self.constraints.last().unwrap().id
@@ -186,7 +186,7 @@ impl Model {
             kind: ConstraintKind::Revolute,
             node_id_base: base_node_id,
             node_id_target: target_node_id,
-            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            x0: Col::<f64>::from_fn(3, |i| target_node.xr[i] - base_node.xr[i]),
             vec: axis,
         });
         self.constraints.last().unwrap().id
@@ -206,7 +206,7 @@ impl Model {
             kind: ConstraintKind::Rotation,
             node_id_base: base_node_id,
             node_id_target: target_node_id,
-            x0: Col::<f64>::from_fn(3, |i| target_node.x[i] - base_node.x[i]),
+            x0: Col::<f64>::from_fn(3, |i| target_node.xr[i] - base_node.xr[i]),
             vec: &axis / axis.norm_l2(),
         });
         self.constraints.last().unwrap().id
@@ -343,13 +343,13 @@ impl<'a> NodeBuilder<'a> {
 
     /// Sets initial position
     pub fn position(self, x: f64, y: f64, z: f64, w: f64, i: f64, j: f64, k: f64) -> Self {
-        self.node.x[0] = x;
-        self.node.x[1] = y;
-        self.node.x[2] = z;
-        self.node.x[3] = w;
-        self.node.x[4] = i;
-        self.node.x[5] = j;
-        self.node.x[6] = k;
+        self.node.xr[0] = x;
+        self.node.xr[1] = y;
+        self.node.xr[2] = z;
+        self.node.xr[3] = w;
+        self.node.xr[4] = i;
+        self.node.xr[5] = j;
+        self.node.xr[6] = k;
         self.node.active_dofs = ActiveDOFs::All;
         self
     }
@@ -393,28 +393,28 @@ impl<'a> NodeBuilder<'a> {
 
     /// Sets initial position
     pub fn position_xyz(self, x: f64, y: f64, z: f64) -> Self {
-        self.node.x[0] = x;
-        self.node.x[1] = y;
-        self.node.x[2] = z;
+        self.node.xr[0] = x;
+        self.node.xr[1] = y;
+        self.node.xr[2] = z;
         self.node.active_dofs.add_dofs(ActiveDOFs::Translation);
         self
     }
 
     /// Sets initial orientation from quaternion
     pub fn orientation(self, w: f64, x: f64, y: f64, z: f64) -> Self {
-        self.node.x[3] = w;
-        self.node.x[4] = x;
-        self.node.x[5] = y;
-        self.node.x[6] = z;
+        self.node.xr[3] = w;
+        self.node.xr[4] = x;
+        self.node.xr[5] = y;
+        self.node.xr[6] = z;
         self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }
 
     pub fn default_orientation(self) -> Self {
-        self.node.x[3] = 1.;
-        self.node.x[4] = 0.;
-        self.node.x[5] = 0.;
-        self.node.x[6] = 0.;
+        self.node.xr[3] = 1.;
+        self.node.xr[4] = 0.;
+        self.node.xr[5] = 0.;
+        self.node.xr[6] = 0.;
         self.node.active_dofs.add_dofs(ActiveDOFs::Rotation);
         self
     }

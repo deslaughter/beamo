@@ -835,7 +835,7 @@ fn test_viscoelastic_grad() {
 
     // Copy all of state from the reference
     state.n_nodes = ref_state.n_nodes;
-    state.x0.copy_from(ref_state.x0.clone());
+    state.xr.copy_from(ref_state.xr.clone());
     state.x.copy_from(ref_state.x.clone());
     state.u_delta.copy_from(ref_state.u_delta.clone());
     state.u_prev.copy_from(ref_state.u_prev.clone());
@@ -858,7 +858,7 @@ fn test_viscoelastic_grad() {
 
         // Copy all of state from the reference
         state.n_nodes = ref_state.n_nodes;
-        state.x0.copy_from(ref_state.x0.clone());
+        state.xr.copy_from(ref_state.xr.clone());
         state.x.copy_from(ref_state.x.clone());
         state.u_delta.copy_from(ref_state.u_delta.clone());
         state.u_prev.copy_from(ref_state.u_prev.clone());
@@ -888,7 +888,7 @@ fn test_viscoelastic_grad() {
 
         // Copy all of state from the reference
         state.n_nodes = ref_state.n_nodes;
-        state.x0.copy_from(ref_state.x0.clone());
+        state.xr.copy_from(ref_state.xr.clone());
         state.x.copy_from(ref_state.x.clone());
         state.u_delta.copy_from(ref_state.u_delta.clone());
         state.u_prev.copy_from(ref_state.u_prev.clone());

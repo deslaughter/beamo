@@ -166,7 +166,7 @@ impl Beams {
                         .iter()
                         .map(|&node_id| {
                             let node = &nodes[node_id];
-                            (node.x, node.u, node.v, node.vd)
+                            (node.xr, node.u, node.v, node.vd)
                         })
                         .collect_vec()
                 })
@@ -955,7 +955,7 @@ impl Beams {
     fn integrate_forces(&mut self) {
         // Zero node matrices
         self.node_fe.fill(0.);
-        // self.node_fd.fill(0.);
+        self.node_fd.fill(0.);
         self.node_fi.fill(0.);
         // self.node_fx.fill(0.);
         self.node_fg.fill(0.);

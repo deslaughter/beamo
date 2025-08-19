@@ -9,8 +9,8 @@ pub struct Node {
     pub id: usize,
     /// Position along beam element length [0-1]
     pub s: f64,
-    /// Initial position
-    pub x: [f64; 7],
+    /// Reference position
+    pub xr: [f64; 7],
     /// Initial displacement
     pub u: [f64; 7],
     /// Initial velocity
@@ -23,9 +23,9 @@ pub struct Node {
 
 impl Node {
     pub fn translate(&mut self, xyz: [f64; 3]) -> &mut Self {
-        self.x[0] += xyz[0];
-        self.x[1] += xyz[1];
-        self.x[2] += xyz[2];
+        self.xr[0] += xyz[0];
+        self.xr[1] += xyz[1];
+        self.xr[2] += xyz[2];
         self
     }
 
@@ -34,23 +34,23 @@ impl Node {
         let dx = quat_rotate_vector_alloc(
             dq.as_ref(),
             col![
-                self.x[0] - rotation_center[0],
-                self.x[1] - rotation_center[1],
-                self.x[2] - rotation_center[2]
+                self.xr[0] - rotation_center[0],
+                self.xr[1] - rotation_center[1],
+                self.xr[2] - rotation_center[2]
             ]
             .as_ref(),
         );
 
-        let q = col![self.x[3], self.x[4], self.x[5], self.x[6]];
+        let q = col![self.xr[3], self.xr[4], self.xr[5], self.xr[6]];
         let q_new = quat_compose_alloc(dq.as_ref(), q.as_ref());
 
-        self.x[0] = rotation_center[0] + dx[0];
-        self.x[1] = rotation_center[1] + dx[1];
-        self.x[2] = rotation_center[2] + dx[2];
-        self.x[3] = q_new[0];
-        self.x[4] = q_new[1];
-        self.x[5] = q_new[2];
-        self.x[6] = q_new[3];
+        self.xr[0] = rotation_center[0] + dx[0];
+        self.xr[1] = rotation_center[1] + dx[1];
+        self.xr[2] = rotation_center[2] + dx[2];
+        self.xr[3] = q_new[0];
+        self.xr[4] = q_new[1];
+        self.xr[5] = q_new[2];
+        self.xr[6] = q_new[3];
         self
     }
 }

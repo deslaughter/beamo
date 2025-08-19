@@ -111,7 +111,7 @@ impl Masses {
             node_ids,
             elem_first_dof_indices,
             x: Mat::zeros(7, n_elem),
-            x0: Mat::from_fn(7, n_elem, |i, j| nodes[j].x[i]),
+            x0: Mat::from_fn(7, n_elem, |i, j| nodes[j].xr[i]),
             u: Mat::from_fn(7, n_elem, |i, j| nodes[j].u[i]),
             v: Mat::from_fn(6, n_elem, |i, j| nodes[j].v[i]),
             vd: Mat::from_fn(6, n_elem, |i, j| nodes[j].vd[i]),
