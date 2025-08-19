@@ -604,7 +604,7 @@ fn calculate_aerodynamic_load(
     quat_rotate_vector(
         qqr.as_ref(),
         moment_local.as_ref(),
-        load.rb_mut().subrows_mut(0, 3),
+        load.rb_mut().subrows_mut(3, 3),
     );
 }
 
@@ -700,9 +700,101 @@ fn calculate_ac_vector(
 #[cfg(test)]
 mod tests {
 
+    use std::vec;
+
     use approx::assert_relative_eq;
 
     use super::*;
+
+    #[test]
+    fn test_calculate_aerodynamic_load() {
+        // Polars
+        let n_polar_points = 3;
+        let aoa_polar = col![-1.0, 1.0]; // Angle of attack points
+        let cl_polar = col![0.0, 1.0]; // Lift coefficient values
+        let cd_polar = col![0.5, 0.0]; // Drag coefficient values
+        let cm_polar = col![0.01, 0.03]; // Moment coefficient values
+
+        struct Data {
+            v_rel: Col<f64>,
+            twist: f64,
+            chord: f64,
+            delta_s: f64,
+            fluid_density: f64,
+            qqr: Col<f64>,
+            load: Col<f64>,
+        }
+
+        let test_cases = vec![
+            // AoA = 0
+            // twist = 0
+            // cl = 0.5
+            // cd = 0.25
+            // cm = 0.02
+            // dynamic pressure = 0.5 * 1.225 * 10 * 10
+            // force  = [0., 0.5 * 1.225 * 10 * 10 * 0.25 * 2. * 1.5, -0.5 * 1.225 * 10 * 10 * 0.5 * 2. * 1.5]
+            //        = [0., 45.9375, -91.875]
+            // moment = [0.5 * 1.225 * 10 * 10 * 0.02 * 2. * 2. * 1.5, 0., 0.]
+            //        = [7.35, 0., 0.]
+            // No rotation from local to global
+            // Data {
+            //     v_rel: col![0.0, 10.0, 0.0],
+            //     twist: 0.0,
+            //     chord: 2.0,
+            //     delta_s: 1.5,
+            //     fluid_density: 1.225,
+            //     qqr: col![1.0, 0.0, 0.0, 0.0],
+            //     load: col![0.0, 45.9375, -91.875, 7.35, 0.0, 0.0],
+            // },
+            // twist = 0.0
+            // v_rel = [0.0, 10*cos(0.1), 10*sin(0.1)] = [0.0, 9.950041652780259, 0.9983341664682815]
+            // AoA = 0.1
+            // cl = 0.55
+            // cd = 0.225
+            // cm = 0.021
+            // dynamic pressure = 0.5 * 1.225 * 10 * 10
+            // force  = [0., 0.5 * 1.225 * 10 * 10 * 0.225 * 2. * 1.5, -0.5 * 1.225 * 10 * 10 * 0.55 * 2. * 1.5]
+            //        = [0., 41.34375, -101.0625]
+            // moment = [0.5 * 1.225 * 10 * 10 * 0.021 * 2. * 2. * 1.5, 0., 0.]
+            //        = [7.7175, 0., 0.]
+            // No rotation from local to global
+            Data {
+                v_rel: col![0.0, 9.950041652780259, 0.9983341664682815],
+                twist: 0.0,
+                chord: 2.0,
+                delta_s: 1.5,
+                fluid_density: 1.225,
+                qqr: col![1.0, 0.0, 0.0, 0.0],
+                load: col![0., 41.34375, -101.0625, 7.7175, 0.0, 0.0],
+            },
+        ];
+
+        for case in test_cases {
+            let mut load = col![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // Force and moment output
+
+            calculate_aerodynamic_load(
+                load.as_mut(),
+                case.v_rel.as_ref(),
+                n_polar_points,
+                aoa_polar.as_ref(),
+                cl_polar.as_ref(),
+                cd_polar.as_ref(),
+                cm_polar.as_ref(),
+                case.twist,
+                case.chord,
+                case.delta_s,
+                case.fluid_density,
+                case.qqr.as_ref(),
+            );
+
+            assert_relative_eq!(load[0], case.load[0], epsilon = 1e-10);
+            assert_relative_eq!(load[1], case.load[1], epsilon = 1e-10);
+            assert_relative_eq!(load[2], case.load[2], epsilon = 1e-10);
+            assert_relative_eq!(load[3], case.load[3], epsilon = 1e-10);
+            assert_relative_eq!(load[4], case.load[4], epsilon = 1e-10);
+            assert_relative_eq!(load[5], case.load[5], epsilon = 1e-10);
+        }
+    }
 
     #[test]
     fn test_calculate_ac_vector() {
