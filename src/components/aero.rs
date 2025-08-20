@@ -1,9 +1,10 @@
 use std::f64::consts::PI;
 
-use faer::{linalg::matmul::matmul, prelude::*, Accum};
+use faer::{linalg::matmul::matmul, prelude::*, traits::AddByRef, Accum};
 use itertools::{multizip, Itertools};
 
 use crate::{
+    components::inflow::Inflow,
     interp::{shape_deriv_matrix, shape_interp_matrix},
     node::Node,
     state::State,
@@ -235,87 +236,67 @@ impl AeroComponent {
                         load: Mat::zeros(6, n_force),
 
                         motion_interp,
-                        force_interp: force_interp,
+                        load_interp: force_interp,
                         shape_deriv_jac: jacobian_integration_matrix,
                     }
                 })
                 .collect(),
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct Inflow {
-    typ: InflowType,
-    uniform_flow: UniformFlow,
-}
+    pub fn calculate_blade_resolved(
+        &mut self,
+        state: &State,
+        time: f64,
+        loads: Vec<Vec<[f64; 6]>>,
+        load_blending: f64,
+    ) {
+        self.elems.iter_mut().for_each(|elem| {
+            // Calculate motion of aerodynamic centers
+            elem.calculate_motion(state);
 
-#[derive(Debug, Clone)]
-pub enum InflowType {
-    Uniform = 1,
-}
+            // Calculate inflow velocity at each motion point
+            elem.calculate_inflow(time, &self.inflow);
 
-#[derive(Debug, Clone)]
-pub struct UniformFlow {
-    pub time: Vec<f64>, // Time vector for uniform flow parameters
-    pub data: Vec<UniformFlowParameters>,
-}
+            // Calculate aerodynamic loads for each aero element
+            elem.calculate_beam_loads(1.225); // Assuming air density of 1.225 kg/m^3
 
-impl UniformFlow {
-    pub fn velocity(&self, t: f64, position: [f64; 3]) -> [f64; 3] {
-        match self.time.len() {
-            1 => self.data[0].velocity(position),
-            _ => unreachable!("Time-dependent uniform flow not implemented"),
-        }
+            // Blend loads with previous loads
+            // matmul(
+            //     elem.node_f.transpose_mut(),
+            //     Accum::Replace,
+            //     elem.load_interp.rb(),
+            //     elem.load.transpose(),
+            //     load_blending,
+            //     Par::Seq,
+            // );
+        });
     }
-}
 
-#[derive(Debug, Clone)]
-pub struct UniformFlowParameters {
-    pub velocity_horizontal: f64,   // Horizontal inflow velocity (m/s)
-    pub height_reference: f64,      // Reference height (m)
-    pub shear_vertical: f64,        // Vertical shear exponent
-    pub flow_angle_horizontal: f64, // Flow angle relative to x axis (radians)
-}
+    ///
+    pub fn calculate_actuator_line(
+        &mut self,
+        state: &State,
+        v_inflow: Vec<Vec<[f64; 3]>>,
+        fluid_density: f64,
+    ) {
+        // Loop through elements
+        self.elems.iter_mut().enumerate().for_each(|(i, elem)| {
+            // Calculate motion of aerodynamic centers
+            elem.calculate_motion(state);
 
-impl UniformFlowParameters {
-    pub fn velocity(&self, position: [f64; 3]) -> [f64; 3] {
-        // Calculate horizontal velocity
-        let vh = self.velocity_horizontal
-            * (position[2] / self.height_reference).powf(self.shear_vertical);
+            // Copy given inflow velocity to element
+            v_inflow[i].iter().enumerate().for_each(|(j, v)| {
+                elem.v_inflow[(0, j)] = v[0];
+                elem.v_inflow[(1, j)] = v[1];
+                elem.v_inflow[(2, j)] = v[2];
+            });
 
-        // Get sin and cos of flow angle
-        let (sin_flow_angle, cos_flow_angle) = self.flow_angle_horizontal.sin_cos();
+            // Calculate loads from blade element theory
+            elem.calculate_beam_loads(fluid_density);
 
-        // Apply horizontal direction
-        [vh * cos_flow_angle, -vh * sin_flow_angle, 0.]
-    }
-}
-
-impl Inflow {
-    pub fn steady_wind(
-        velocity_horizontal: f64,
-        height_reference: f64,
-        shear_vertical: f64,
-        flow_angle_horizontal: f64,
-    ) -> Self {
-        Inflow {
-            typ: InflowType::Uniform,
-            uniform_flow: UniformFlow {
-                time: vec![0.],
-                data: vec![UniformFlowParameters {
-                    velocity_horizontal,
-                    height_reference,
-                    shear_vertical,
-                    flow_angle_horizontal,
-                }],
-            },
-        }
-    }
-    pub fn velocity(&self, t: f64, position: [f64; 3]) -> [f64; 3] {
-        match self.typ {
-            InflowType::Uniform => self.uniform_flow.velocity(t, position),
-        }
+            // Transfer loads to nodes
+        });
     }
 }
 
@@ -332,8 +313,8 @@ pub struct AeroPoint {
     pub chord: f64,              // Chord length at each node
     pub section_offset_x: f64,   // Section offset in x-direction
     pub section_offset_y: f64,   // Section offset in y-direction
-    pub twist: f64,              // Twist angle at each node
     pub aerodynamic_center: f64, // Aerodynamic center distance from the leading edge
+    pub twist: f64,              // Twist angle at each node
     pub aoa: Vec<f64>,           // Angle of attack for all polars
     pub cl: Vec<f64>,            // Lift coefficient polar
     pub cd: Vec<f64>,            // Drag coefficient polar
@@ -375,7 +356,7 @@ pub struct AeroElement {
 
     // Interpolation and derivative matrices
     pub motion_interp: Mat<f64>, // Shape function matrix `[n_motion][n_nodes]`
-    pub force_interp: Mat<f64>,  // Shape function matrix `[n_nodes][n_force]`
+    pub load_interp: Mat<f64>,   // Shape function matrix `[n_nodes][n_force]`
     pub shape_deriv_jac: Mat<f64>, // Shape function derivative matrix `[n_jac][n_nodes]`
 }
 
@@ -470,7 +451,7 @@ impl AeroElement {
         );
     }
 
-    fn calculate_blade_element_force(&mut self, fluid_density: f64) {
+    fn calculate_beam_loads(&mut self, fluid_density: f64) {
         // Calculate relative velocity for each motion point
         multizip((
             self.v_rel.col_iter_mut(),                    // Relative velocity
@@ -574,7 +555,7 @@ fn calculate_aerodynamic_load(
 
     // Find index of angle of attack in aoa vector
     let i_aoa = (0..n_polar_points - 1)
-        .position(|i| aoa > aoa_polar[i] && aoa <= aoa_polar[i + 1])
+        .position(|i| aoa >= aoa_polar[i] && aoa < aoa_polar[i + 1])
         .unwrap();
 
     // Calculate blending term between values above and below
