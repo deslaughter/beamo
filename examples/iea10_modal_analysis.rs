@@ -276,7 +276,7 @@ fn modal_analysis(
             .iter()
             .reduce(|acc, e| if e.abs() > acc.abs() { e } else { acc })
             .unwrap();
-        zip!(&mut c).for_each(|unzip!(c)| *c /= max);
+        c /= max;
     });
 
     (eig_val, eig_vec)

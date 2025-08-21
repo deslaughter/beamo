@@ -5,8 +5,8 @@ use crate::{
     model::Model,
     quadrature::Quadrature,
     util::{
-        quat_from_rotation_vector_alloc, quat_from_tangent_twist, quat_rotate_vector_alloc,
-        rotate_section_matrix,
+        quat_as_rotation_vector, quat_as_rotation_vector_alloc, quat_from_rotation_vector_alloc,
+        quat_from_tangent_twist, quat_rotate_vector_alloc, rotate_section_matrix,
     },
 };
 use faer::prelude::*;
@@ -53,6 +53,29 @@ impl BeamComponent {
                 .build()
         })
         .collect_vec();
+
+        // Translate and rotate nodes based on root position
+        node_ids.iter().for_each(|&id| {
+            model.nodes[id]
+                .rotate(
+                    quat_as_rotation_vector_alloc(
+                        col![
+                            input.root.position[3],
+                            input.root.position[4],
+                            input.root.position[5],
+                            input.root.position[6]
+                        ]
+                        .as_ref(),
+                    )
+                    .as_ref(),
+                    col![0., 0., 0.].as_ref(),
+                )
+                .translate([
+                    input.root.position[0],
+                    input.root.position[1],
+                    input.root.position[2],
+                ]);
+        });
 
         let mut sections: Vec<BeamSection> =
             Vec::with_capacity(input.sections.len() * (input.section_refinement + 1) + 1);

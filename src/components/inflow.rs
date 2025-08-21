@@ -9,6 +9,33 @@ pub enum InflowType {
     Uniform = 1,
 }
 
+impl Inflow {
+    pub fn steady_wind(
+        velocity_horizontal: f64,
+        height_reference: f64,
+        shear_vertical: f64,
+        flow_angle_horizontal: f64,
+    ) -> Self {
+        Inflow {
+            typ: InflowType::Uniform,
+            uniform_flow: UniformFlow {
+                time: vec![0.],
+                data: vec![UniformFlowParameters {
+                    velocity_horizontal,
+                    height_reference,
+                    shear_vertical,
+                    flow_angle_horizontal,
+                }],
+            },
+        }
+    }
+    pub fn velocity(&self, t: f64, position: [f64; 3]) -> [f64; 3] {
+        match self.typ {
+            InflowType::Uniform => self.uniform_flow.velocity(t, position),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UniformFlow {
     pub time: Vec<f64>, // Time vector for uniform flow parameters
@@ -43,33 +70,6 @@ impl UniformFlowParameters {
 
         // Apply horizontal direction
         [vh * cos_flow_angle, -vh * sin_flow_angle, 0.]
-    }
-}
-
-impl Inflow {
-    pub fn steady_wind(
-        velocity_horizontal: f64,
-        height_reference: f64,
-        shear_vertical: f64,
-        flow_angle_horizontal: f64,
-    ) -> Self {
-        Inflow {
-            typ: InflowType::Uniform,
-            uniform_flow: UniformFlow {
-                time: vec![0.],
-                data: vec![UniformFlowParameters {
-                    velocity_horizontal,
-                    height_reference,
-                    shear_vertical,
-                    flow_angle_horizontal,
-                }],
-            },
-        }
-    }
-    pub fn velocity(&self, t: f64, position: [f64; 3]) -> [f64; 3] {
-        match self.typ {
-            InflowType::Uniform => self.uniform_flow.velocity(t, position),
-        }
     }
 }
 

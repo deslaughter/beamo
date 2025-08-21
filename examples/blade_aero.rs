@@ -1,28 +1,36 @@
 use faer::prelude::*;
 use itertools::Itertools;
 use ottr::{
-    components::aero::AeroPoint,
-    components::beam::{BeamComponent, BeamInputBuilder},
+    components::{
+        aero::{AeroBodyInput, AeroComponent, AeroSection},
+        beam::{BeamComponent, BeamInputBuilder},
+        inflow::Inflow,
+    },
     elements::beams::BeamSection,
     model::Model,
     output_writer::OutputWriter,
+    util::quat_from_rotation_vector_alloc,
 };
 use serde_yaml::Value;
 
 fn main() {
     let time_step = 0.01;
-    let duration = 1.0;
+    let duration = 10.0;
     let n_steps = (duration / time_step) as usize;
 
-    faer::set_global_parallelism(Par::Seq);
+    let fluid_density = 1.225; // kg/m^3
+    let vel_h = 50.0; // m/s
+    let h_ref = 100.0; // Reference height
+    let pl_exp = 0.0; // Power law exponent
+    let flow_angle = 0.0; // Flow angle (radians)
 
     let mut model = Model::new();
     model.set_time_step(time_step);
-    model.set_gravity(0.0, 0.0, -9.81);
-    model.set_solver_tolerance(1e-6, 1e-4);
+    model.set_gravity(0.0, 0.0, 0.);
+    model.set_solver_tolerance(1e-5, 1e-3);
     model.set_rho_inf(0.);
 
-    let mut blade = build_blade("examples/IEA-15-240-RWT-aero.yaml", &mut model);
+    let (_blade, mut aero) = build_blade("examples/IEA-15-240-RWT-aero.yaml", &mut model);
 
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
@@ -32,55 +40,53 @@ fn main() {
     model.write_mesh_connectivity_file("output");
 
     // Create netcdf output file
-    let mut netcdf_file = netcdf::create("output/blade.nc").unwrap();
+    let mut netcdf_file = netcdf::create("output/blade_aero.nc").unwrap();
     let mut ow = OutputWriter::new(&mut netcdf_file, state.n_nodes);
     ow.write(&state, 0);
 
-    let mut n_iter = 0;
+    // Create inflow
+    let inflow = Inflow::steady_wind(vel_h, h_ref, pl_exp, flow_angle);
 
     // Loop through steps
     for i in 1..n_steps {
         // Calculate time
         let t = (i as f64) * time_step;
 
-        // // Calculate torque and apply to the azimuth node
-        // if i < 500 {
-        //     quat_rotate_vector(
-        //         turbine.azimuth_node.displacement.subrows(3, 4),
-        //         col![turbine.torque, 0., 0.].as_ref(),
-        //         torque_vector.as_mut(),
-        //     );
-        //     // println!("t={}, torque_vector={:?}", t, torque_vector);
-        //     turbine
-        //         .azimuth_node
-        //         .loads
-        //         .subrows_mut(3, 3)
-        //         .copy_from(&torque_vector);
-        // } else if i == 500 {
-        //     torque_vector.fill(0.);
-        //     turbine
-        //         .azimuth_node
-        //         .loads
-        //         .subrows_mut(3, 3)
-        //         .copy_from(&torque_vector);
-        // }
+        // Calculate motion of aerodynamic centers
+        aero.calculate_motion(&state);
 
-        // // Set blade 3 pitch constraint rotation
-        // solver.constraints.constraints[turbine.pitch_constraint_ids[2]].set_rotation(t * 0.5);
+        // Calculate inflow velocities by calling inflow.velocity at each aerodynamic center
+        aero.set_inflow_from_function(|pos| inflow.velocity(t, pos));
 
-        // // Set the yaw constraint rotation
-        // solver.constraints.constraints[turbine.yaw_constraint_id].set_rotation(t * 0.3);
+        // Calculate aerodynamic loads
+        aero.calculate_aerodynamic_loads(fluid_density);
 
-        // // Copy loads from nodes to state
-        // turbine.set_loads(&mut state);
+        // Calculate the nodal loads from the aerodynamic loads
+        aero.calculate_nodal_loads();
+
+        // Clear external loads
+        state.fx.fill(0.);
+
+        // Add the nodal loads to the state
+        aero.add_nodal_loads_to_state(&mut state);
+
+        // println!("t = {}, node loads = {:?}", t, state.fx);
+        // println!("t = {}, node loads = {:?}", t, aero.bodies[0].node_f);
+        // println!("t = {}, aero loads = {:?}", t, aero.bodies[0].loads);
+
+        // println!(
+        //     "t = {}, node_f sum = {:?}, {:?}, {:?}, loads sum = {:?}, {:?}, {:?}",
+        //     t,
+        //     aero.bodies[0].node_f.row(0).sum(),
+        //     aero.bodies[0].node_f.row(1).sum(),
+        //     aero.bodies[0].node_f.row(2).sum(),
+        //     aero.bodies[0].loads.row(0).sum(),
+        //     aero.bodies[0].loads.row(1).sum(),
+        //     aero.bodies[0].loads.row(2).sum()
+        // );
 
         // Take step and get convergence result
         let res = solver.step(&mut state);
-
-        n_iter += res.iter;
-
-        // Copy motion from nodes to state
-        // blade.get_motion(&state);
 
         // Write output
         ow.write(&state, i);
@@ -93,11 +99,9 @@ fn main() {
 
         assert_eq!(res.converged, true);
     }
-
-    println!("num nonlinear iterations: {}", n_iter);
 }
 
-fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
+fn build_blade(wio_path: &str, model: &mut Model) -> (BeamComponent, AeroComponent) {
     let n_blade_nodes = 11;
 
     // Parse the YAML file
@@ -207,6 +211,14 @@ fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
         })
         .collect_vec();
 
+    // Determine root orientation such that leading edge is aligned with -x-axis
+    // let root_orientation = quat_compose_alloc(
+    //     quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref()).as_ref(),
+    //     quat_from_rotation_vector_alloc(col![180.0_f64.to_radians(), 0., 0.].as_ref()).as_ref(),
+    // );
+    let root_orientation =
+        quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref());
+
     // Build blade input
     let blade_input = BeamInputBuilder::new()
         .set_element_order(n_blade_nodes - 1)
@@ -254,6 +266,16 @@ fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
                 .collect_vec(),
         )
         .set_sections_z(&sections)
+        .set_prescribe_root(true)
+        .set_root_position([
+            0.,
+            0.,
+            0.,
+            root_orientation[0],
+            root_orientation[1],
+            root_orientation[2],
+            root_orientation[3],
+        ])
         .build();
 
     // Build and return the beam component
@@ -263,16 +285,16 @@ fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
     // Aero
     //--------------------------------------------------------------------------
 
-    let aero_nodes = wio["airfoils"]
+    let aero_points = wio["airfoils"]
         .as_sequence()
         .unwrap()
         .iter()
         .enumerate()
-        .map(|(i, af)| AeroPoint {
+        .map(|(i, af)| AeroSection {
             id: i,
             s: af["spanwise_position"].as_f64().unwrap(),
             chord: af["chord"].as_f64().unwrap(),
-            twist: af["twist"].as_f64().unwrap(),
+            twist: af["twist"].as_f64().unwrap().to_radians(),
             section_offset_x: af["section_offset_x"].as_f64().unwrap(),
             section_offset_y: af["section_offset_y"].as_f64().unwrap(),
             aerodynamic_center: af["aerodynamic_center"].as_f64().unwrap(),
@@ -280,7 +302,7 @@ fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
                 .as_sequence()
                 .unwrap()
                 .iter()
-                .map(|v| v.as_f64().unwrap())
+                .map(|v| v.as_f64().unwrap().to_radians())
                 .collect_vec(),
             cl: af["polars"][0]["re_sets"][0]["cl"]["values"]
                 .as_sequence()
@@ -303,5 +325,15 @@ fn build_blade(wio_path: &str, model: &mut Model) -> BeamComponent {
         })
         .collect_vec();
 
-    blade
+    // Create actuator line coupling
+    let aero = AeroComponent::new(
+        &[AeroBodyInput {
+            id: 0,
+            beam_node_ids: blade.nodes.iter().map(|n| n.id).collect(),
+            aero_sections: aero_points,
+        }],
+        &model.nodes,
+    );
+
+    (blade, aero)
 }

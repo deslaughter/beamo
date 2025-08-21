@@ -1,10 +1,10 @@
 use std::f64::consts::PI;
+use std::ops::AddAssign;
 
-use faer::{linalg::matmul::matmul, prelude::*, traits::AddByRef, Accum};
+use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::{multizip, Itertools};
 
 use crate::{
-    components::inflow::Inflow,
     interp::{shape_deriv_matrix, shape_interp_matrix},
     node::Node,
     state::State,
@@ -15,313 +15,88 @@ use crate::{
 };
 
 pub struct AeroComponent {
-    inflow: Inflow, // Inflow velocity vector
-    elems: Vec<AeroElement>,
+    pub bodies: Vec<AeroBody>,
 }
 
 impl AeroComponent {
-    pub fn new(elems: &[AeroElementInput], inflow: Inflow, nodes: &[Node]) -> Self {
+    /// Create a new AeroComponent from element input, inflow, and nodes
+    pub fn new(bodies: &[AeroBodyInput], nodes: &[Node]) -> Self {
         AeroComponent {
-            inflow,
-            elems: elems
+            bodies: bodies
                 .iter()
-                .map(|elem| {
-                    // Number of motion points in element
-                    let n_motion = elem.aero_points.len();
-
-                    // Number of force points in the element
-                    // TODO: decouple from motion points
-                    let n_force = n_motion;
-
-                    // Number of nodes in beam element
-                    let n_nodes = elem.beam_node_ids.len();
-
-                    //----------------------------------------------------------
-                    // Beam node and aero point locations on beam reference axis
-                    //----------------------------------------------------------
-
-                    // Get motion point location along beam (0-1)
-                    let motion_point_xi = elem
-                        .aero_points
-                        .iter()
-                        .map(|point| 2. * point.s - 1.)
-                        .collect_vec();
-
-                    // Get location of node along beam (0-1)
-                    let beam_node_xi = elem
-                        .beam_node_ids
-                        .iter()
-                        .map(|&id| 2. * nodes[id].s - 1.)
-                        .collect_vec();
-
-                    //----------------------------------------------------------
-                    // Motion point locations on beam reference axis
-                    //----------------------------------------------------------
-
-                    // Calculate shape function interpolation matrix to map from beam to aero points
-                    let mut motion_interp =
-                        Mat::<f64>::zeros(beam_node_xi.len(), motion_point_xi.len());
-                    shape_interp_matrix(&beam_node_xi, &motion_point_xi, motion_interp.as_mut());
-
-                    // Get node reference position (translation only)
-                    let node_x =
-                        Mat::from_fn(3, n_nodes, |i, j| nodes[elem.beam_node_ids[j]].xr[i]);
-
-                    // Interpolate node positions to aerodynamic locations on the beam reference axis
-                    let mut xr = Mat::zeros(3, n_motion);
-                    matmul(
-                        xr.transpose_mut(),
-                        Accum::Replace,
-                        &motion_interp,
-                        node_x.transpose(),
-                        1.,
-                        Par::Seq,
-                    );
-
-                    //----------------------------------------------------------
-                    // Motion point tangents on beam reference axis
-                    //----------------------------------------------------------
-
-                    // Calculate shape function derivative matrix to map from beam to motion points
-                    let mut shape_deriv_node =
-                        Mat::<f64>::zeros(beam_node_xi.len(), motion_point_xi.len());
-                    shape_deriv_matrix(&beam_node_xi, &motion_point_xi, shape_deriv_node.as_mut());
-
-                    // Calculate spatial derivative of reference axis at motion locations
-                    let mut x_tan = Mat::zeros(7, n_motion);
-                    matmul(
-                        x_tan.transpose_mut(),
-                        Accum::Replace,
-                        &shape_deriv_node,
-                        node_x.transpose(),
-                        1.,
-                        Par::Seq,
-                    );
-                    x_tan.col_iter_mut().for_each(|mut col| {
-                        let m = col.norm_l2();
-                        if m > f64::EPSILON {
-                            col /= m;
-                        }
-                    });
-
-                    //----------------------------------------------------------
-                    // Vector from motion point on beam reference axis to aerodynamic center
-                    // The beam is initialized with:
-                    //   - root at (0, 0, 0)
-                    //   - reference axis aligned with the x-axis
-                    //   - the trailing edge is towards +y-axis
-                    //   - the suction side of the airfoil is towards +z-axis
-                    // x_r translates and rotates the beam into the reference position
-                    //----------------------------------------------------------
-
-                    // Calculate vector from beam reference to aerodynamic center
-                    let ac_vec = elem
-                        .aero_points
-                        .iter()
-                        .zip(x_tan.col_iter())
-                        .map(|(node, tan)| {
-                            calculate_ac_vector(
-                                node.section_offset_y - node.aerodynamic_center,
-                                node.section_offset_x,
-                                node.twist,
-                                [tan[0], tan[1], tan[2]],
-                            )
-                        })
-                        .collect_vec();
-
-                    //----------------------------------------------------------
-                    // Aero point widths
-                    //----------------------------------------------------------
-
-                    // Calculate jacobian xi locations for width integration
-                    let jacobian_xi = calculate_jacobian_xi(&motion_point_xi);
-
-                    // Calculate shape derivative matrix to calculate jacobians
-                    let mut jacobian_integration_matrix =
-                        Mat::<f64>::zeros(jacobian_xi.len(), beam_node_xi.len());
-                    shape_deriv_matrix(
-                        &jacobian_xi,
-                        &beam_node_xi,
-                        jacobian_integration_matrix.as_mut(),
-                    );
-
-                    // Calculate aero point widths
-                    let ds = calculate_aero_node_widths(
-                        &jacobian_xi,
-                        jacobian_integration_matrix.as_ref(),
-                        node_x.as_ref(),
-                    );
-
-                    //----------------------------------------------------------
-                    // Force point locations on beam reference axis
-                    //----------------------------------------------------------
-
-                    // For now, assume that they're the same as the aero points,
-                    // this can be changed for blade resolved
-                    let force_point_xi = motion_point_xi.clone();
-
-                    // Calculate shape function interpolation matrix to distribute
-                    // loads from force points to beam nodes
-                    let mut force_interp =
-                        Mat::<f64>::zeros(force_point_xi.len(), beam_node_xi.len());
-                    shape_interp_matrix(&force_point_xi, &beam_node_xi, force_interp.as_mut());
-
-                    //----------------------------------------------------------
-                    // Polars
-                    //----------------------------------------------------------
-
-                    // Max number of polar points in any aero point.
-                    // All polars at the same point share the same angle of attack grid
-                    let n_polar_points_max = elem
-                        .aero_points
-                        .iter()
-                        .map(|p| p.aoa.len())
-                        .max()
-                        .unwrap_or_default();
-
-                    //----------------------------------------------------------
-                    // Populate element structure
-                    //----------------------------------------------------------
-
-                    AeroElement {
-                        id: elem.id,
-                        node_ids: elem.beam_node_ids.clone(),
-                        node_u: Mat::zeros(7, n_nodes),
-                        node_v: Mat::zeros(6, n_nodes),
-                        node_f: Mat::zeros(6, n_nodes),
-
-                        xr_motion_map: xr.cloned(),
-                        u_motion_map: Mat::zeros(7, n_motion),
-                        v_motion_map: Mat::zeros(6, n_motion),
-                        qqr_motion_map: Mat::zeros(4, n_motion),
-                        con_motion: Mat::from_fn(3, n_motion, |i, j| ac_vec[j][i]),
-                        x_motion: Mat::zeros(3, n_motion),
-                        v_motion: Mat::zeros(3, n_motion),
-
-                        v_rel: Mat::zeros(3, n_motion),
-                        v_inflow: Mat::zeros(3, n_motion),
-                        twist: Col::from_fn(n_motion, |i| elem.aero_points[i].twist),
-                        chord: Col::from_fn(n_motion, |i| elem.aero_points[i].chord),
-                        ds: Col::from_iter(ds.into_iter()),
-                        n_polar_points: elem.aero_points.iter().map(|p| p.aoa.len()).collect(),
-                        aoa: Mat::from_fn(n_polar_points_max, n_motion, |i, j| {
-                            if i < elem.aero_points[j].aoa.len() {
-                                elem.aero_points[j].aoa[i].to_radians()
-                            } else {
-                                0. // Fill with zero if not enough points
-                            }
-                        }),
-                        cl: Mat::from_fn(n_polar_points_max, n_motion, |i, j| {
-                            if i < elem.aero_points[j].cl.len() {
-                                elem.aero_points[j].cl[i]
-                            } else {
-                                0. // Fill with zero if not enough points
-                            }
-                        }),
-                        cd: Mat::from_fn(n_polar_points_max, n_motion, |i, j| {
-                            if i < elem.aero_points[j].cd.len() {
-                                elem.aero_points[j].cd[i]
-                            } else {
-                                0. // Fill with zero if not enough points
-                            }
-                        }),
-                        cm: Mat::from_fn(n_polar_points_max, n_motion, |i, j| {
-                            if i < elem.aero_points[j].cm.len() {
-                                elem.aero_points[j].cm[i]
-                            } else {
-                                0. // Fill with zero if not enough points
-                            }
-                        }),
-
-                        load: Mat::zeros(6, n_force),
-
-                        motion_interp,
-                        load_interp: force_interp,
-                        shape_deriv_jac: jacobian_integration_matrix,
-                    }
-                })
+                .map(|body| AeroBody::new(body, nodes))
                 .collect(),
         }
     }
 
-    pub fn calculate_blade_resolved(
-        &mut self,
-        state: &State,
-        time: f64,
-        loads: Vec<Vec<[f64; 6]>>,
-        load_blending: f64,
-    ) {
-        self.elems.iter_mut().for_each(|elem| {
-            // Calculate motion of aerodynamic centers
-            elem.calculate_motion(state);
-
-            // Calculate inflow velocity at each motion point
-            elem.calculate_inflow(time, &self.inflow);
-
-            // Calculate aerodynamic loads for each aero element
-            elem.calculate_beam_loads(1.225); // Assuming air density of 1.225 kg/m^3
-
-            // Blend loads with previous loads
-            // matmul(
-            //     elem.node_f.transpose_mut(),
-            //     Accum::Replace,
-            //     elem.load_interp.rb(),
-            //     elem.load.transpose(),
-            //     load_blending,
-            //     Par::Seq,
-            // );
+    /// Calculate the aerodynamic center motion at each section for each body:
+    /// body.x_motion contains position and body.v_motion contains velocity
+    pub fn calculate_motion(&mut self, state: &State) {
+        self.bodies.iter_mut().for_each(|body| {
+            body.calculate_motion(state);
         });
     }
 
-    ///
-    pub fn calculate_actuator_line(
-        &mut self,
-        state: &State,
-        v_inflow: Vec<Vec<[f64; 3]>>,
-        fluid_density: f64,
-    ) {
-        // Loop through elements
-        self.elems.iter_mut().enumerate().for_each(|(i, elem)| {
-            // Calculate motion of aerodynamic centers
-            elem.calculate_motion(state);
-
-            // Copy given inflow velocity to element
-            v_inflow[i].iter().enumerate().for_each(|(j, v)| {
-                elem.v_inflow[(0, j)] = v[0];
-                elem.v_inflow[(1, j)] = v[1];
-                elem.v_inflow[(2, j)] = v[2];
-            });
-
-            // Calculate loads from blade element theory
-            elem.calculate_beam_loads(fluid_density);
-
-            // Transfer loads to nodes
+    /// Set the inflow velocity at each section using a function which takes the
+    /// aerodynamic center position as input and returns a XYZ velocity vector
+    pub fn set_inflow_from_function(&mut self, inflow_velocity: impl Fn([f64; 3]) -> [f64; 3]) {
+        self.bodies.iter_mut().for_each(|body| {
+            body.set_inflow_from_function(&inflow_velocity);
         });
     }
-}
 
-pub struct AeroElementInput {
-    pub id: usize,                   // Element ID
-    pub beam_node_ids: Vec<usize>,   // Node IDs for the beam element
-    pub aero_points: Vec<AeroPoint>, // Aero points along beam axis
+    /// Set the inflow velocity at each section from vectors of XYZ velocity values per body.
+    pub fn set_inflow_from_vector(&mut self, body_inflow_velocities: &[&[[f64; 3]]]) {
+        multizip((self.bodies.iter_mut(), body_inflow_velocities.iter())).for_each(|(body, &v)| {
+            body.set_inflow_from_vector(v);
+        });
+    }
+
+    /// Calculate aerodynamic loads for each body from inflow
+    pub fn calculate_aerodynamic_loads(&mut self, fluid_density: f64) {
+        self.bodies.iter_mut().for_each(|body| {
+            body.calculate_aerodynamic_loads(fluid_density);
+        });
+    }
+
+    /// Calculate nodal loads for each body from the aerodynamic loads
+    pub fn calculate_nodal_loads(&mut self) {
+        self.bodies.iter_mut().for_each(|body| {
+            body.calculate_nodal_loads();
+        });
+    }
+
+    /// Add nodal loads to state determined by `calculate_nodal_loads` to `state`.
+    pub fn add_nodal_loads_to_state(&self, state: &mut State) {
+        self.bodies.iter().for_each(|body| {
+            body.add_nodal_loads_to_state(state);
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct AeroPoint {
+pub struct AeroBodyInput {
+    pub id: usize,                       // Element ID
+    pub beam_node_ids: Vec<usize>,       // Node IDs for the beam element
+    pub aero_sections: Vec<AeroSection>, // Aerodynamic sections along beam axis
+}
+
+#[derive(Debug, Clone)]
+pub struct AeroSection {
     pub id: usize,
     pub s: f64,                  // Position along beam element length [0-1]
-    pub chord: f64,              // Chord length at each node
+    pub chord: f64,              // Chord length
     pub section_offset_x: f64,   // Section offset in x-direction
     pub section_offset_y: f64,   // Section offset in y-direction
-    pub aerodynamic_center: f64, // Aerodynamic center distance from the leading edge
-    pub twist: f64,              // Twist angle at each node
-    pub aoa: Vec<f64>,           // Angle of attack for all polars
+    pub aerodynamic_center: f64, // Distance from leading edge to aerodynamic center
+    pub twist: f64,              // Twist angle (radians)
+    pub aoa: Vec<f64>,           // Angle of attack for all polars (radians)
     pub cl: Vec<f64>,            // Lift coefficient polar
     pub cd: Vec<f64>,            // Drag coefficient polar
     pub cm: Vec<f64>,            // Moment coefficient polar
 }
 
-pub struct AeroElement {
+pub struct AeroBody {
     pub id: usize, // Element ID
 
     // Beam
@@ -331,41 +106,247 @@ pub struct AeroElement {
     pub node_f: Mat<f64>,     // Beam node forces `[6][n_nodes]`
 
     // Motion
-    pub xr_motion_map: Mat<f64>, // Motion map reference position `[7][n_motion]`
-    pub u_motion_map: Mat<f64>,  // Motion map displacements `[7][n_motion]`
-    pub v_motion_map: Mat<f64>,  // Motion map velocities `[6][n_motion]`
-    pub qqr_motion_map: Mat<f64>, // Motion map rotation position `[4][n_motion]`
-    pub con_motion: Mat<f64>,    // Motion connectivity vector `[3][n_motion]`
-    pub x_motion: Mat<f64>,      // Motion aerodynamic center position `[3][n_motion]`
-    pub v_motion: Mat<f64>,      // Motion aerodynamic center velocity `[3][n_motion]`
+    pub xr_motion_map: Mat<f64>, // Motion map reference position `[7][n_sections]`
+    pub u_motion_map: Mat<f64>,  // Motion map displacements `[7][n_sections]`
+    pub v_motion_map: Mat<f64>,  // Motion map velocities `[6][n_sections]`
+    pub qqr_motion_map: Mat<f64>, // Motion map rotation position `[4][n_sections]`
+    pub con_motion: Mat<f64>,    // Motion connectivity vector `[3][n_sections]`
+    pub x_motion: Mat<f64>,      // Motion aerodynamic center position `[3][n_sections]`
+    pub v_motion: Mat<f64>,      // Motion aerodynamic center velocity `[3][n_sections]`
 
-    // Blade Element theory
-    pub v_inflow: Mat<f64>, // Fluid velocity at each motion point `[3][n_motion]`
+    // Loads
+    pub con_loads: Mat<f64>, // Load connectivity vector `[3][n_loads]`
+    pub loads: Mat<f64>,     // Forces and moments at aerodynamic centers `[3][n_loads]`
+    pub moment: Mat<f64>,    // Moment due to aerodynamic center moment arm `[3][n_loads]`
+
+    // Blade Element Theory
+    pub v_inflow: Mat<f64>, // Fluid velocity at each motion point `[3][n_sections]`
     pub v_rel: Mat<f64>,    // Relative wind velocity at AC
-    pub twist: Col<f64>,    // Twist angle at each aero point (radians)
-    pub chord: Col<f64>,    // Chord length at each aero point (meters)
-    pub ds: Col<f64>,       // Width of aerodynamic node
-    pub n_polar_points: Vec<usize>, // Number of polar points at each aero point
-    pub aoa: Mat<f64>,      // Angle of attack for all polars
+    pub twist: Col<f64>,    // Twist angle of each aerodynamic section (radians)
+    pub chord: Col<f64>,    // Chord length of each aerodynamic section
+    pub delta_s: Col<f64>,  // Width of aerodynamic section for load calculation
+    pub polar_size: Vec<usize>, // Number of polar points in each aerodynamic section
+    pub aoa: Mat<f64>,      // Angle of attack grid for all polars
     pub cl: Mat<f64>,       // Lift coefficient polar
     pub cd: Mat<f64>,       // Drag coefficient polar
     pub cm: Mat<f64>,       // Moment coefficient polar
 
-    // Forces
-    pub load: Mat<f64>, // Aerodynamic loads at force points `[3][n_force]`
-
     // Interpolation and derivative matrices
-    pub motion_interp: Mat<f64>, // Shape function matrix `[n_motion][n_nodes]`
-    pub load_interp: Mat<f64>,   // Shape function matrix `[n_nodes][n_force]`
+    pub motion_interp: Mat<f64>, // Shape function matrix interpolating node motion to motion map `[n_sections][n_nodes]`
     pub shape_deriv_jac: Mat<f64>, // Shape function derivative matrix `[n_jac][n_nodes]`
 }
 
-impl AeroElement {
-    /// Calculate the aerodynamic center motion at each motion point
-    pub fn calculate_motion(&mut self, state: &State) {
+impl AeroBody {
+    pub fn new(input: &AeroBodyInput, nodes: &[Node]) -> Self {
+        // Number of aerodynamic sections in body
+        let n_sections = input.aero_sections.len();
+
+        // Number of force points in the body
+        let n_loads = n_sections;
+
+        // Number of nodes in beam element
+        let n_nodes = input.beam_node_ids.len();
+
+        //----------------------------------------------------------------------
+        // Beam node and aero point locations on beam reference axis
+        //----------------------------------------------------------------------
+
+        // Get aerodynamic section location along beam (-1,1)
+        let section_xi = input
+            .aero_sections
+            .iter()
+            .map(|point| 2. * point.s - 1.)
+            .collect_vec();
+
+        // Get location of node along beam (-1,1)
+        let beam_node_xi = input
+            .beam_node_ids
+            .iter()
+            .map(|&id| 2. * nodes[id].s - 1.)
+            .collect_vec();
+
+        //----------------------------------------------------------------------
+        // Section reference positions
+        //----------------------------------------------------------------------
+
+        // Calculate shape function interpolation matrix to map from beam to aero points
+        let mut motion_interp = Mat::<f64>::zeros(section_xi.len(), beam_node_xi.len());
+        shape_interp_matrix(&section_xi, &beam_node_xi, motion_interp.as_mut());
+
+        // Get node reference position (translation only)
+        let node_x = Mat::from_fn(7, n_nodes, |i, j| nodes[input.beam_node_ids[j]].xr[i]);
+
+        // Interpolate node positions to aerodynamic sections on the beam reference axis
+        let mut xr = Mat::zeros(7, n_sections);
+        matmul(
+            xr.transpose_mut(),
+            Accum::Replace,
+            &motion_interp,
+            node_x.transpose(),
+            1.,
+            Par::Seq,
+        );
+
+        //----------------------------------------------------------------------
+        // Section location tangents on beam reference axis
+        //----------------------------------------------------------------------
+
+        // Calculate shape function derivative matrix to map from beam nodes to sections
+        let mut shape_deriv_node = Mat::<f64>::zeros(section_xi.len(), beam_node_xi.len());
+        shape_deriv_matrix(&section_xi, &beam_node_xi, shape_deriv_node.as_mut());
+
+        // Calculate spatial derivative of reference axis at section locations
+        let mut x_tan = Mat::zeros(3, n_sections);
+        matmul(
+            x_tan.transpose_mut(),
+            Accum::Replace,
+            &shape_deriv_node,
+            node_x.subrows(0, 3).transpose(),
+            1.,
+            Par::Seq,
+        );
+        x_tan.col_iter_mut().for_each(|mut col| {
+            let m = col.norm_l2();
+            if m > f64::EPSILON {
+                col /= m;
+            }
+        });
+
+        //----------------------------------------------------------------------
+        // Vector from section location on beam reference axis to aerodynamic center
+        // The beam is initialized with:
+        //   - root at (0, 0, 0)
+        //   - reference axis aligned with the x-axis
+        //   - the trailing edge is towards +y-axis
+        //   - the suction side of the airfoil is towards +z-axis
+        // x_r translates and rotates the beam into the reference position
+        //----------------------------------------------------------------------
+
+        // Calculate vector from beam reference to aerodynamic center
+        let ac_vec = input
+            .aero_sections
+            .iter()
+            .zip(x_tan.col_iter())
+            .map(|(node, tan)| {
+                calculate_ac_vector(
+                    node.section_offset_y - node.aerodynamic_center,
+                    node.section_offset_x,
+                    node.twist,
+                    [tan[0], tan[1], tan[2]],
+                )
+            })
+            .collect_vec();
+
+        //----------------------------------------------------------------------
+        // Aero point widths
+        //----------------------------------------------------------------------
+
+        // Calculate jacobian xi locations for width integration
+        let jacobian_xi = calculate_jacobian_xi(&section_xi);
+
+        // Calculate shape derivative matrix to calculate jacobians
+        let mut jacobian_integration_matrix =
+            Mat::<f64>::zeros(jacobian_xi.len(), beam_node_xi.len());
+        shape_deriv_matrix(
+            &jacobian_xi,
+            &beam_node_xi,
+            jacobian_integration_matrix.as_mut(),
+        );
+
+        // Calculate aero point widths
+        let ds = calculate_aero_point_widths(
+            &jacobian_xi,
+            jacobian_integration_matrix.as_ref(),
+            node_x.as_ref(),
+        );
+
+        //----------------------------------------------------------------------
+        // Polar data
+        //----------------------------------------------------------------------
+
+        // Max number of polar points in any aero point.
+        // All polars in the section share the same angle of attack grid
+        let n_polar_points_max = input
+            .aero_sections
+            .iter()
+            .map(|p| p.aoa.len())
+            .max()
+            .unwrap_or_default();
+
+        let aoa = Mat::from_fn(n_polar_points_max, n_sections, |i, j| {
+            if i < input.aero_sections[j].aoa.len() {
+                input.aero_sections[j].aoa[i]
+            } else {
+                0. // Fill with zero if not enough points
+            }
+        });
+        let cl = Mat::from_fn(n_polar_points_max, n_sections, |i, j| {
+            if i < input.aero_sections[j].cl.len() {
+                input.aero_sections[j].cl[i]
+            } else {
+                0. // Fill with zero if not enough points
+            }
+        });
+        let cd = Mat::from_fn(n_polar_points_max, n_sections, |i, j| {
+            if i < input.aero_sections[j].cd.len() {
+                input.aero_sections[j].cd[i]
+            } else {
+                0. // Fill with zero if not enough points
+            }
+        });
+        let cm = Mat::from_fn(n_polar_points_max, n_sections, |i, j| {
+            if i < input.aero_sections[j].cm.len() {
+                input.aero_sections[j].cm[i]
+            } else {
+                0. // Fill with zero if not enough points
+            }
+        });
+
+        //----------------------------------------------------------------------
+        // Populate element structure
+        //----------------------------------------------------------------------
+
+        Self {
+            id: input.id,
+            node_ids: input.beam_node_ids.clone(),
+            node_u: Mat::zeros(7, n_nodes),
+            node_v: Mat::zeros(6, n_nodes),
+            node_f: Mat::zeros(6, n_nodes),
+
+            xr_motion_map: xr.cloned(),
+            u_motion_map: Mat::zeros(7, n_sections),
+            v_motion_map: Mat::zeros(6, n_sections),
+            qqr_motion_map: Mat::zeros(4, n_sections),
+            con_motion: Mat::from_fn(3, n_sections, |i, j| ac_vec[j][i]),
+            x_motion: Mat::zeros(3, n_sections),
+            v_motion: Mat::zeros(3, n_sections),
+
+            con_loads: Mat::from_fn(3, n_sections, |i, j| -ac_vec[j][i]),
+            loads: Mat::zeros(6, n_loads),
+            moment: Mat::zeros(3, n_loads),
+
+            v_rel: Mat::zeros(3, n_sections),
+            v_inflow: Mat::zeros(3, n_sections),
+            twist: Col::from_fn(n_sections, |i| input.aero_sections[i].twist),
+            chord: Col::from_fn(n_sections, |i| input.aero_sections[i].chord),
+            delta_s: Col::from_iter(ds.into_iter()),
+            polar_size: input.aero_sections.iter().map(|p| p.aoa.len()).collect(),
+            aoa,
+            cl,
+            cd,
+            cm,
+
+            motion_interp,
+            shape_deriv_jac: jacobian_integration_matrix,
+        }
+    }
+
+    /// Calculate the aerodynamic center motion at each aerodynamic section:
+    /// self.x_motion contains position and self.v_motion contains velocity
+    fn calculate_motion(&mut self, state: &State) {
         // Copy beam node displacements from state
         self.node_ids.iter().enumerate().for_each(|(i, &id)| {
-            self.node_u.col_mut(i).copy_from(&state.x.col(id));
+            self.node_u.col_mut(i).copy_from(&state.u.col(id));
         });
 
         // Copy beam node velocities from state
@@ -373,7 +354,7 @@ impl AeroElement {
             self.node_v.col_mut(i).copy_from(&state.v.col(id));
         });
 
-        // Interpolate beam node displacement to motion locations on the reference axis
+        // Interpolate beam node displacement to aerodynamic sections on the reference axis
         matmul(
             self.u_motion_map.transpose_mut(),
             Accum::Replace,
@@ -396,7 +377,7 @@ impl AeroElement {
                 }
             });
 
-        // Interpolate beam node velocities to motion locations on the reference axis
+        // Interpolate beam node velocities to aerodynamic sections on the reference axis
         matmul(
             self.v_motion_map.transpose_mut(),
             Accum::Replace,
@@ -406,7 +387,7 @@ impl AeroElement {
             Par::Seq,
         );
 
-        // Calculate total rotation from material coordinates
+        // Calculate global rotation of each section
         multizip((
             self.qqr_motion_map.col_iter_mut(),
             self.xr_motion_map.subrows(3, 4).col_iter(),
@@ -424,7 +405,7 @@ impl AeroElement {
             self.qqr_motion_map.col_iter(),                 // Axis rotation displacement
             self.u_motion_map.subrows(0, 3).col_iter(),     // Axis translation displacement
             self.v_motion_map.subrows(0, 3).col_iter(),     // Axis translation velocity
-            self.v_motion_map.subrows(3, 4).col_iter(),     // Axis rotation velocity
+            self.v_motion_map.subrows(3, 3).col_iter(),     // Axis rotation velocity
             self.con_motion.col_iter(),                     // Vector from axis to AC
         ))
         .for_each(|(mut x, mut v, xr, qqr, u, v_mm, omega, con)| {
@@ -442,45 +423,62 @@ impl AeroElement {
         });
     }
 
-    pub fn calculate_inflow(&mut self, t: f64, inflow: &Inflow) {
+    /// Set the inflow velocity at each section using a function which takes the
+    /// aerodynamic center position as input and returns a XYZ velocity vector
+    fn set_inflow_from_function(&mut self, inflow_velocity: impl Fn([f64; 3]) -> [f64; 3]) {
         multizip((self.v_inflow.col_iter_mut(), self.x_motion.col_iter())).for_each(
-            |(mut v_inflow, x)| {
-                let v = inflow.velocity(t, [x[0], x[1], x[2]]);
-                v_inflow.copy_from(&col![v[0], v[1], v[2]]);
+            |(mut v, x)| {
+                let inflow_velocity = inflow_velocity([x[0], x[1], x[2]]);
+                v[0] = inflow_velocity[0];
+                v[1] = inflow_velocity[1];
+                v[2] = inflow_velocity[2];
             },
         );
     }
 
-    fn calculate_beam_loads(&mut self, fluid_density: f64) {
+    /// Set the inflow velocity at each section from a vector of XYZ velocity values
+    fn set_inflow_from_vector(&mut self, inflow_velocity: &[[f64; 3]]) {
+        multizip((self.v_inflow.col_iter_mut(), inflow_velocity.iter())).for_each(
+            |(mut v, &v_inflow)| {
+                v[0] = v_inflow[0];
+                v[1] = v_inflow[1];
+                v[2] = v_inflow[2];
+            },
+        );
+    }
+
+    /// Calculate the aerodynamic loads from the inflow velocities at each section.
+    /// Uses inflow values set by `set_inflow_from_function` or `set_inflow_from_vector`.
+    fn calculate_aerodynamic_loads(&mut self, fluid_density: f64) {
         // Calculate relative velocity for each motion point
         multizip((
-            self.v_rel.col_iter_mut(),                    // Relative velocity
-            self.v_inflow.col_iter(),                     // Fluid velocity (inflow)
-            self.v_motion.subrows_mut(0, 3).col_iter(),   // AC velocity
-            self.qqr_motion_map.subrows(3, 4).col_iter(), // Axis reference rotation
+            self.v_rel.col_iter_mut(),                  // Relative velocity
+            self.v_inflow.col_iter(),                   // Fluid velocity (inflow)
+            self.v_motion.subrows_mut(0, 3).col_iter(), // AC velocity
+            self.qqr_motion_map.col_iter(),             // Axis rotation
         ))
         .for_each(|(v_rel, v_fl, v_ac, qqr)| {
             calculate_relative_velocity(v_rel, v_fl, v_ac, qqr);
         });
 
         multizip((
-            self.load.col_iter_mut(),
+            self.loads.col_iter_mut(),
             self.v_rel.col_iter(),
-            self.n_polar_points.iter(),
+            self.polar_size.iter(),
             self.aoa.col_iter(),
             self.cl.col_iter(),
             self.cd.col_iter(),
             self.cm.col_iter(),
             self.chord.iter(),
             self.twist.iter(),
-            self.ds.iter(),
+            self.delta_s.iter(),
             self.qqr_motion_map.col_iter(),
         ))
         .for_each(
             |(
-                load,
+                loads,
                 v_rel,
-                &n_polar_points,
+                &polar_size,
                 aoa_polar,
                 cl_polar,
                 cd_polar,
@@ -491,9 +489,9 @@ impl AeroElement {
                 qqr,
             )| {
                 calculate_aerodynamic_load(
-                    load,
+                    loads,
                     v_rel,
-                    n_polar_points,
+                    polar_size,
                     aoa_polar,
                     cl_polar,
                     cd_polar,
@@ -507,7 +505,52 @@ impl AeroElement {
             },
         );
     }
+
+    /// Calculate nodal loads from aerodynamic loads stored in `self.loads`.
+    fn calculate_nodal_loads(&mut self) {
+        // Calculate additional moment from aerodynamic center moment arm
+        multizip((
+            self.moment.col_iter_mut(),
+            self.loads.subrows(0, 3).col_iter(),
+            self.con_loads.col_iter(),
+        ))
+        .for_each(|(m, f, con)| {
+            cross_product(f, con, m);
+        });
+
+        // Distribute aerodynamic loads (force and moments) to nodes
+        matmul(
+            self.node_f.transpose_mut(),
+            Accum::Replace,
+            self.motion_interp.transpose(),
+            self.loads.transpose(),
+            1.0,
+            Par::Seq,
+        );
+
+        // Add additional moments to nodes
+        matmul(
+            self.node_f.subrows_mut(3, 3).transpose_mut(),
+            Accum::Add,
+            self.motion_interp.transpose(),
+            self.moment.transpose(),
+            1.0,
+            Par::Seq,
+        );
+    }
+
+    /// Add nodal loads to state determined by `calculate_nodal_loads` to `state`.
+    fn add_nodal_loads_to_state(&self, state: &mut State) {
+        self.node_ids.iter().enumerate().for_each(|(i, &id)| {
+            let node_f = self.node_f.col(i);
+            state.fx.col_mut(id).add_assign(&node_f);
+        });
+    }
 }
+
+//------------------------------------------------------------------------------
+// Computation kernels
+//------------------------------------------------------------------------------
 
 fn calculate_relative_velocity(
     mut v_rel: ColMut<f64>,
@@ -530,15 +573,15 @@ fn calculate_relative_velocity(
 }
 
 fn calculate_aerodynamic_load(
-    mut load: ColMut<f64>,
+    mut loads: ColMut<f64>,
     v_rel: ColRef<f64>,
-    n_polar_points: usize,
+    polar_size: usize,
     aoa_polar: ColRef<f64>,
     cl_polar: ColRef<f64>,
     cd_polar: ColRef<f64>,
     cm_polar: ColRef<f64>,
-    twist: f64,
     chord: f64,
+    twist: f64,
     delta_s: f64,
     fluid_density: f64,
     qqr: ColRef<f64>,
@@ -554,9 +597,16 @@ fn calculate_aerodynamic_load(
     let aoa = beta - twist;
 
     // Find index of angle of attack in aoa vector
-    let i_aoa = (0..n_polar_points - 1)
-        .position(|i| aoa >= aoa_polar[i] && aoa < aoa_polar[i + 1])
-        .unwrap();
+    let i_aoa = (0..polar_size - 1)
+        .position(|i| aoa >= aoa_polar[i] && aoa <= aoa_polar[i + 1])
+        .unwrap_or_else(|| {
+            panic!(
+                "Angle of attack {} not in range {} - {}",
+                aoa,
+                aoa_polar[0],
+                aoa_polar[polar_size - 1]
+            )
+        });
 
     // Calculate blending term between values above and below
     let alpha = (aoa - aoa_polar[i_aoa]) / (aoa_polar[i_aoa + 1] - aoa_polar[i_aoa]);
@@ -580,12 +630,12 @@ fn calculate_aerodynamic_load(
     quat_rotate_vector(
         qqr.as_ref(),
         force_local.as_ref(),
-        load.rb_mut().subrows_mut(0, 3),
+        loads.rb_mut().subrows_mut(0, 3),
     );
     quat_rotate_vector(
         qqr.as_ref(),
         moment_local.as_ref(),
-        load.rb_mut().subrows_mut(3, 3),
+        loads.rb_mut().subrows_mut(3, 3),
     );
 }
 
@@ -618,13 +668,13 @@ fn calculate_jacobian_xi(aero_node_xi: &[f64]) -> Vec<f64> {
 
 /// Return a vector of widths for each aero node calculated using the
 /// Jacobian vector and Simpson's Rule.
-fn calculate_aero_node_widths(
-    xi: &[f64],
+fn calculate_aero_point_widths(
+    jacobian_xi: &[f64],
     jacobian_integration_matrix: MatRef<f64>,
     node_x: MatRef<f64>,
 ) -> Vec<f64> {
     // Calculate un-normalized derivative vectors
-    let tan = jacobian_integration_matrix * node_x.transpose();
+    let tan = jacobian_integration_matrix * node_x.subrows(0, 3).transpose();
 
     // Calculate jacobian values as magnitude of derivative vectors
     let j = tan
@@ -640,8 +690,8 @@ fn calculate_aero_node_widths(
         .enumerate()
         .filter_map(|(i, (j0, j1, j2))| {
             if i % 2 == 0 {
-                let h1 = xi[j1] - xi[j0];
-                let h2 = xi[j2] - xi[j1];
+                let h1 = jacobian_xi[j1] - jacobian_xi[j0];
+                let h2 = jacobian_xi[j2] - jacobian_xi[j1];
                 let width = (h1 + h2) / 6.
                     * ((2. - h2 / h1) * j[j0]
                         + ((h1 + h2).powi(2) / (h1 * h2)) * j[j1]
@@ -718,15 +768,15 @@ mod tests {
             // moment = [0.5 * 1.225 * 10 * 10 * 0.02 * 2. * 2. * 1.5, 0., 0.]
             //        = [7.35, 0., 0.]
             // No rotation from local to global
-            // Data {
-            //     v_rel: col![0.0, 10.0, 0.0],
-            //     twist: 0.0,
-            //     chord: 2.0,
-            //     delta_s: 1.5,
-            //     fluid_density: 1.225,
-            //     qqr: col![1.0, 0.0, 0.0, 0.0],
-            //     load: col![0.0, 45.9375, -91.875, 7.35, 0.0, 0.0],
-            // },
+            Data {
+                v_rel: col![0.0, 10.0, 0.0],
+                twist: 0.0,
+                chord: 2.0,
+                delta_s: 1.5,
+                fluid_density: 1.225,
+                qqr: col![1.0, 0.0, 0.0, 0.0],
+                load: col![0.0, 45.9375, -91.875, 7.35, 0.0, 0.0],
+            },
             // twist = 0.0
             // v_rel = [0.0, 10*cos(0.1), 10*sin(0.1)] = [0.0, 9.950041652780259, 0.9983341664682815]
             // AoA = 0.1
@@ -894,7 +944,7 @@ mod tests {
         );
 
         // Calculate the aerodynamic node widths
-        let widths = calculate_aero_node_widths(
+        let widths = calculate_aero_point_widths(
             &jacobian_xi,
             jacobian_integration_matrix.as_ref(),
             node_x.as_ref(),
@@ -942,7 +992,7 @@ mod tests {
         );
 
         // Calculate the aerodynamic node widths
-        let widths = calculate_aero_node_widths(
+        let widths = calculate_aero_point_widths(
             &jacobian_xi,
             jacobian_integration_matrix.as_ref(),
             node_x.as_ref(),

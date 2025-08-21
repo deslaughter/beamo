@@ -62,7 +62,8 @@ pub fn axial_vector_of_matrix(m: MatRef<f64>, mut v: ColMut<f64>) {
 #[inline]
 /// AX(A) = tr(A)/2 * I - A/2, where I is the identity matrix
 pub fn matrix_ax(m: MatRef<f64>, s: f64, mut ax: MatMut<f64>) {
-    zip!(&mut ax, &m).for_each(|unzip!(ax, m)| *ax = -*m / 2.);
+    ax.copy_from(&m);
+    ax *= -1. / 2.;
     let trace_2 = m.diagonal().column_vector().sum() / 2. * s;
     ax[(0, 0)] += trace_2;
     ax[(1, 1)] += trace_2;
@@ -125,6 +126,13 @@ pub fn quat_as_rotation_vector(q: ColRef<f64>, mut v: ColMut<f64>) {
         v[1] = y * scale;
         v[2] = z * scale;
     }
+}
+
+#[inline]
+pub fn quat_as_rotation_vector_alloc(q: ColRef<f64>) -> Col<f64> {
+    let mut v = Col::<f64>::zeros(3);
+    quat_as_rotation_vector(q, v.as_mut());
+    v
 }
 
 #[inline]
