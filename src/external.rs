@@ -1,7 +1,7 @@
 use core::panic;
-use faer::{prelude::*, traits::num_traits::Pow};
+use faer::prelude::*;
 use itertools::{izip, Itertools};
-use std::{f64::consts::PI, fs};
+use std::fs;
 
 use crate::{
     elements::beams::{BeamSection, Damping},

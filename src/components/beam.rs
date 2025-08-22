@@ -5,8 +5,8 @@ use crate::{
     model::Model,
     quadrature::Quadrature,
     util::{
-        quat_as_rotation_vector, quat_as_rotation_vector_alloc, quat_from_rotation_vector_alloc,
-        quat_from_tangent_twist, quat_rotate_vector_alloc, rotate_section_matrix,
+        quat_as_rotation_vector_alloc, quat_from_rotation_vector_alloc, quat_from_tangent_twist,
+        quat_rotate_vector_alloc, rotate_section_matrix,
     },
 };
 use faer::prelude::*;

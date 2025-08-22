@@ -43,7 +43,7 @@ pub struct UniformFlow {
 }
 
 impl UniformFlow {
-    pub fn velocity(&self, t: f64, position: [f64; 3]) -> [f64; 3] {
+    pub fn velocity(&self, _t: f64, position: [f64; 3]) -> [f64; 3] {
         match self.time.len() {
             1 => self.data[0].velocity(position),
             _ => unreachable!("Time-dependent uniform flow not implemented"),

@@ -1,3 +1,6 @@
+use rayon::prelude::*;
+use std::f64::consts::PI;
+
 use faer::prelude::*;
 use itertools::Itertools;
 use ottr::{
@@ -9,28 +12,35 @@ use ottr::{
     elements::beams::BeamSection,
     model::Model,
     output_writer::OutputWriter,
-    util::quat_from_rotation_vector_alloc,
+    util::{quat_compose_alloc, quat_from_rotation_vector_alloc},
 };
 use serde_yaml::Value;
 
 fn main() {
+    let n_angles: usize = 72;
+    let angle_step = 2.0 * PI / n_angles as f64;
+    (0..n_angles).into_par_iter().for_each(|i| {
+        let flow_angle = i as f64 * angle_step;
+        run_simulation(flow_angle);
+    });
+}
+fn run_simulation(flow_angle: f64) {
     let time_step = 0.01;
-    let duration = 10.0;
+    let duration = 5.0;
     let n_steps = (duration / time_step) as usize;
 
     let fluid_density = 1.225; // kg/m^3
-    let vel_h = 50.0; // m/s
+    let vel_h = 30.0; // m/s
     let h_ref = 100.0; // Reference height
     let pl_exp = 0.0; // Power law exponent
-    let flow_angle = 0.0; // Flow angle (radians)
 
     let mut model = Model::new();
     model.set_time_step(time_step);
-    model.set_gravity(0.0, 0.0, 0.);
+    model.set_gravity(0.0, 0.0, 0.0);
     model.set_solver_tolerance(1e-5, 1e-3);
     model.set_rho_inf(0.);
 
-    let (_blade, mut aero) = build_blade("examples/IEA-15-240-RWT-aero.yaml", &mut model);
+    let (_blade, mut aero) = build_blade(&mut model);
 
     // Create new solver where beam elements have damping
     let mut solver = model.create_solver();
@@ -40,7 +50,11 @@ fn main() {
     model.write_mesh_connectivity_file("output");
 
     // Create netcdf output file
-    let mut netcdf_file = netcdf::create("output/blade_aero.nc").unwrap();
+    let mut netcdf_file = netcdf::create(format!(
+        "output/blade_aero_{:.0}.nc",
+        flow_angle.to_degrees()
+    ))
+    .unwrap();
     let mut ow = OutputWriter::new(&mut netcdf_file, state.n_nodes);
     ow.write(&state, 0);
 
@@ -70,21 +84,6 @@ fn main() {
         // Add the nodal loads to the state
         aero.add_nodal_loads_to_state(&mut state);
 
-        // println!("t = {}, node loads = {:?}", t, state.fx);
-        // println!("t = {}, node loads = {:?}", t, aero.bodies[0].node_f);
-        // println!("t = {}, aero loads = {:?}", t, aero.bodies[0].loads);
-
-        // println!(
-        //     "t = {}, node_f sum = {:?}, {:?}, {:?}, loads sum = {:?}, {:?}, {:?}",
-        //     t,
-        //     aero.bodies[0].node_f.row(0).sum(),
-        //     aero.bodies[0].node_f.row(1).sum(),
-        //     aero.bodies[0].node_f.row(2).sum(),
-        //     aero.bodies[0].loads.row(0).sum(),
-        //     aero.bodies[0].loads.row(1).sum(),
-        //     aero.bodies[0].loads.row(2).sum()
-        // );
-
         // Take step and get convergence result
         let res = solver.step(&mut state);
 
@@ -101,18 +100,16 @@ fn main() {
     }
 }
 
-fn build_blade(wio_path: &str, model: &mut Model) -> (BeamComponent, AeroComponent) {
-    let n_blade_nodes = 11;
-
-    // Parse the YAML file
-    // let wio = read_windio_from_file(wio_path);
-
-    let yaml_file = std::fs::read_to_string(wio_path).expect("Unable to read file");
+fn build_blade(model: &mut Model) -> (BeamComponent, AeroComponent) {
+    let windio_path = "examples/IEA-15-240-RWT-aero.yaml";
+    let yaml_file = std::fs::read_to_string(windio_path).expect("Unable to read file");
     let wio: Value = serde_yaml::from_str(&yaml_file).expect("Unable to parse YAML");
 
     //--------------------------------------------------------------------------
     // Blade
     //--------------------------------------------------------------------------
+
+    let n_blade_nodes = 11;
 
     let blade = &wio["components"]["blade"];
     let ref_axis = &blade["reference_axis"];
@@ -159,13 +156,8 @@ fn build_blade(wio_path: &str, model: &mut Model) -> (BeamComponent, AeroCompone
 
     let sections = (0..matrix_grid.len())
         .map(|i| {
-            let mass = ic[0][i];
-            let cm_x = ic[1][i];
-            let cm_y = ic[2][i];
-            let i_cp = ic[3][i];
-            let i_edge = ic[4][i];
-            let i_flap = ic[5][i];
-            let i_plr = ic[6][i];
+            let (mass, cm_x, cm_y, i_cp, i_edge, i_flap, i_plr) =
+                ic.iter().map(|arr| arr[i]).collect_tuple().unwrap();
             let m = mat![
                 [mass, 0., 0., 0., 0., -mass * cm_y],
                 [0., mass, 0., 0., 0., mass * cm_x],
@@ -174,34 +166,13 @@ fn build_blade(wio_path: &str, model: &mut Model) -> (BeamComponent, AeroCompone
                 [0., 0., -mass * cm_x, -i_cp, i_flap, 0.],
                 [-mass * cm_y, mass * cm_x, 0., 0., 0., i_plr],
             ];
-            let k11 = sc[0][i];
-            let k12 = sc[1][i];
-            let k13 = sc[2][i];
-            let k14 = sc[3][i];
-            let k15 = sc[4][i];
-            let k16 = sc[5][i];
-            let k22 = sc[6][i];
-            let k23 = sc[7][i];
-            let k24 = sc[8][i];
-            let k25 = sc[9][i];
-            let k26 = sc[10][i];
-            let k33 = sc[11][i];
-            let k34 = sc[12][i];
-            let k35 = sc[13][i];
-            let k36 = sc[14][i];
-            let k44 = sc[15][i];
-            let k45 = sc[16][i];
-            let k46 = sc[17][i];
-            let k55 = sc[18][i];
-            let k56 = sc[19][i];
-            let k66 = sc[20][i];
             let k = mat![
-                [k11, k12, k13, k14, k15, k16],
-                [k12, k22, k23, k24, k25, k26],
-                [k13, k23, k33, k34, k35, k36],
-                [k14, k24, k34, k44, k45, k46],
-                [k15, k25, k35, k45, k55, k56],
-                [k16, k26, k36, k46, k56, k66],
+                [sc[0][i], sc[1][i], sc[2][i], sc[3][i], sc[4][i], sc[5][i]],
+                [sc[1][i], sc[6][i], sc[7][i], sc[8][i], sc[9][i], sc[10][i]],
+                [sc[2][i], sc[7][i], sc[11][i], sc[12][i], sc[13][i], sc[14][i]],
+                [sc[3][i], sc[8][i], sc[12][i], sc[15][i], sc[16][i], sc[17][i]],
+                [sc[4][i], sc[9][i], sc[13][i], sc[16][i], sc[18][i], sc[19][i]],
+                [sc[5][i], sc[10][i], sc[14][i], sc[17][i], sc[19][i], sc[20][i]],
             ];
             BeamSection {
                 s: matrix_grid[i],
@@ -211,13 +182,11 @@ fn build_blade(wio_path: &str, model: &mut Model) -> (BeamComponent, AeroCompone
         })
         .collect_vec();
 
-    // Determine root orientation such that leading edge is aligned with -x-axis
-    // let root_orientation = quat_compose_alloc(
-    //     quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref()).as_ref(),
-    //     quat_from_rotation_vector_alloc(col![180.0_f64.to_radians(), 0., 0.].as_ref()).as_ref(),
-    // );
-    let root_orientation =
-        quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref());
+    // Orient blade so reference axis is along z-axis
+    let root_orientation = quat_compose_alloc(
+        quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref()).as_ref(),
+        quat_from_rotation_vector_alloc(col![0., -90.0_f64.to_radians(), 0.].as_ref()).as_ref(),
+    );
 
     // Build blade input
     let blade_input = BeamInputBuilder::new()

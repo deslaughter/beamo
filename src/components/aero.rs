@@ -1,4 +1,3 @@
-use std::f64::consts::PI;
 use std::ops::AddAssign;
 
 use faer::{linalg::matmul::matmul, prelude::*, Accum};
@@ -572,6 +571,12 @@ fn calculate_relative_velocity(
     v_rel[2] = v_diff_rot[2];
 }
 
+/// Calculate angle of attack based on relative velocity and twist angle
+fn calculate_angle_of_attack(v_rel: ColRef<f64>, twist: f64) -> f64 {
+    let alpha_raw = (v_rel[2]).atan2(v_rel[1]) - twist;
+    alpha_raw.sin().atan2(alpha_raw.cos())
+}
+
 fn calculate_aerodynamic_load(
     mut loads: ColMut<f64>,
     v_rel: ColRef<f64>,
@@ -586,15 +591,8 @@ fn calculate_aerodynamic_load(
     fluid_density: f64,
     qqr: ColRef<f64>,
 ) {
-    // Calculate beta
-    let beta = if v_rel[1] < 0. {
-        2. * PI - (v_rel[1] / v_rel.norm_l2()).acos()
-    } else {
-        (v_rel[1] / v_rel.norm_l2()).acos()
-    };
-
     // Calculate angle of attack
-    let aoa = beta - twist;
+    let aoa = calculate_angle_of_attack(v_rel, twist);
 
     // Find index of angle of attack in aoa vector
     let i_aoa = (0..polar_size - 1)
@@ -730,12 +728,68 @@ fn calculate_ac_vector(
 
 #[cfg(test)]
 mod tests {
-
-    use std::vec;
-
-    use approx::assert_relative_eq;
-
     use super::*;
+    use approx::assert_relative_eq;
+    use std::f64::consts::PI;
+
+    #[test]
+    fn test_calculate_angle_of_attack_zero_twist() {
+        let n_angle: usize = 360;
+        let twist = 0.0;
+        (0..n_angle).for_each(|i| {
+            let angle = 2. * PI * (i as f64) / (n_angle as f64) - PI;
+            let v_rel = col![0.0, 10.0 * angle.cos(), 10.0 * angle.sin()];
+            let aoa = calculate_angle_of_attack(v_rel.as_ref(), twist);
+            println!("angle: {}, aoa: {}, v_rel: {:?}", angle, aoa, v_rel);
+            assert_relative_eq!(aoa, angle, epsilon = 1e-12);
+        });
+    }
+
+    #[test]
+    fn test_calculate_angle_of_attack_with_twist() {
+        struct Case {
+            flow_angle: f64,
+            twist: f64,
+            expected_aoa: f64,
+        }
+
+        vec![
+            Case {
+                flow_angle: 0.0,
+                twist: 0.1,
+                expected_aoa: -0.1,
+            },
+            Case {
+                flow_angle: 0.1,
+                twist: 0.1,
+                expected_aoa: 0.0,
+            },
+            Case {
+                flow_angle: 0.2,
+                twist: 0.1,
+                expected_aoa: 0.1,
+            },
+            Case {
+                flow_angle: -PI,
+                twist: 0.0,
+                expected_aoa: -PI,
+            },
+            // Check wraparound
+            Case {
+                flow_angle: -PI,
+                twist: 0.1,
+                expected_aoa: PI - 0.1,
+            },
+        ]
+        .iter()
+        .for_each(|c| {
+            let twist = c.twist;
+            let angle: f64 = c.flow_angle;
+            let v_rel = col![0.0, 10.0 * angle.cos(), 10.0 * angle.sin()];
+            let aoa = calculate_angle_of_attack(v_rel.as_ref(), twist);
+            assert_relative_eq!(aoa, c.expected_aoa, epsilon = 1e-12);
+        });
+    }
 
     #[test]
     fn test_calculate_aerodynamic_load() {
