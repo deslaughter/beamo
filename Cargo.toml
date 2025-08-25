@@ -19,6 +19,9 @@ name = "bar_urc_model_compare"
 [[example]]
 name = "blade_aero"
 
+[[example]]
+name = "iea15-aero"
+
 [dependencies]
 approx = "0.5.1"
 equator = "0.4.2"

@@ -16,6 +16,7 @@ use faer::{
 };
 use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::{izip, Itertools};
+use std::ops::DivAssign;
 
 const ENABLE_VISCOELASTIC: bool = false;
 
@@ -1034,8 +1035,9 @@ impl Solver {
 
     fn solve_system(&mut self) {
         // Condition system residual and populate right-hand side
-        zip!(&mut self.rhs.subrows_mut(0, self.n_system), &self.r)
-            .for_each(|unzip!(rhs, r)| *rhs = *r * self.p.conditioner);
+        self.rhs
+            .subrows_mut(0, self.n_system)
+            .copy_from(&self.r * self.p.conditioner);
 
         // Copy constraint residual to right-hand side
         self.rhs
@@ -1053,11 +1055,12 @@ impl Solver {
         lu.solve_in_place(self.rhs.as_mut());
 
         // Copy rhs to solution vector and apply negation
-        zip!(&mut self.x, &self.rhs).for_each(|unzip!(x, rhs)| *x = -*rhs);
+        self.x.copy_from(-&self.rhs);
 
         // Remove conditioning from solution vector
-        zip!(&mut self.x.subrows_mut(self.n_system, self.n_lambda))
-            .for_each(|unzip!(v)| *v /= self.p.conditioner);
+        self.x
+            .subrows_mut(self.n_system, self.n_lambda)
+            .div_assign(self.p.conditioner);
     }
 
     // Function to update the x_delta matrix based on the current x vector
@@ -1099,11 +1102,7 @@ impl Solver {
     }
 
     fn update_lambda(&mut self) {
-        zip!(
-            &mut self.lambda,
-            &self.x.subrows(self.n_system, self.n_lambda)
-        )
-        .for_each(|unzip!(lambda, dl)| *lambda += *dl);
+        self.lambda += self.x.subrows(self.n_system, self.n_lambda);
     }
 
     fn populate_tangent_matrix(&mut self, state: &State) {
@@ -1120,8 +1119,8 @@ impl Solver {
             match dofs.active {
                 ActiveDOFs::All | ActiveDOFs::Rotation => {
                     // Multiply r_delta by h
-                    zip!(&mut rv, &r_delta)
-                        .for_each(|unzip!(rv, r_delta)| *rv = self.p.h * *r_delta);
+                    rv.copy_from(r_delta);
+                    rv *= self.p.h;
 
                     // Get angle
                     let phi = rv.norm_l2();
@@ -1143,7 +1142,7 @@ impl Solver {
                     tan.fill(0.);
                     tan.diagonal_mut().column_vector_mut().fill(1.);
                     matmul(tan.as_mut(), Accum::Add, &mt, &mt, a, Par::Seq);
-                    zip!(&mut tan, &mt).for_each(|unzip!(t, mt)| *t += *mt * b);
+                    tan += &mt * b;
 
                     // Transpose tan during copy to since vals is column major
                     vals[t_offset..t_offset + 9].copy_from_slice(&[
@@ -1226,11 +1225,7 @@ impl Solver {
         self.lambda.fill(0.);
 
         // Update lambda
-        zip!(
-            &mut self.lambda,
-            &self.x.subrows(self.n_system, self.n_lambda)
-        )
-        .for_each(|unzip!(lambda, dl)| *lambda += *dl);
+        self.lambda += &self.x.subrows(self.n_system, self.n_lambda);
 
         //------------------------------------------------------------------
         // Residual Evaluation + Gradient (Same as one loop in self.step)

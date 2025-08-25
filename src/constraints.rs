@@ -3,9 +3,9 @@ use crate::{
     state::State,
     util::{
         axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2,
-        quat_as_matrix_alloc, quat_compose_alloc, quat_from_rotation_vector,
-        quat_from_rotation_vector_alloc, quat_inverse_alloc, quat_rotate_vector,
-        quat_rotate_vector_alloc, sparse_matrix_from_triplets, vec_tilde_alloc,
+        quat_as_matrix_alloc, quat_as_rotation_vector_alloc, quat_compose_alloc,
+        quat_from_rotation_vector, quat_from_rotation_vector_alloc, quat_inverse_alloc,
+        quat_rotate_vector, quat_rotate_vector_alloc, sparse_matrix_from_triplets, vec_tilde_alloc,
     },
 };
 use faer::{linalg::matmul::matmul, prelude::*, sparse::*, Accum, Par};
@@ -380,7 +380,7 @@ impl Constraint {
             &self.x0,
             &rb_x0
         )
-        .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
+        .for_each(|unzip!(mut phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
         // If only position is prescribed, return
         if self.n_rows == 3 {
@@ -461,7 +461,7 @@ impl Constraint {
             &self.x0,
             &rb_x0
         )
-        .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
+        .for_each(|unzip!(mut phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
         //----------------------------------------------------------------------
         // Stiffness matrix for base node
@@ -641,6 +641,23 @@ impl Constraint {
             .copy_from(-lambda_2 * &x_tilde * &z_tilde - lambda_3 * &x_tilde * &y_tilde);
         self.k_b
             .copy_from(lambda_2 * &z_tilde * &x_tilde + lambda_3 * &y_tilde * &x_tilde);
+    }
+
+    pub fn calculate_revolute_output(&self, state: &State) -> (f64, f64, f64) {
+        let r_target = state.u.col(self.node_id_target).subrows(3, 4);
+        let rv = quat_as_rotation_vector_alloc(r_target);
+        let joint_axis = quat_rotate_vector_alloc(r_target, self.axes.col(0));
+        (
+            dot_product(joint_axis.as_ref(), rv.as_ref()),
+            dot_product(
+                joint_axis.as_ref(),
+                state.v.col(self.node_id_target).subrows(3, 3),
+            ),
+            dot_product(
+                joint_axis.as_ref(),
+                state.vd.col(self.node_id_target).subrows(3, 3),
+            ),
+        )
     }
 }
 

@@ -2,6 +2,7 @@ use std::ops::AddAssign;
 
 use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::{multizip, Itertools};
+use vtkio::model::*;
 
 use crate::{
     interp::{shape_deriv_matrix, shape_interp_matrix},
@@ -222,12 +223,12 @@ impl AeroBody {
         //----------------------------------------------------------------------
 
         // Calculate vector from beam reference to aerodynamic center
-        let ac_vec = input
+        let con_motion = input
             .aero_sections
             .iter()
             .zip(x_tan.col_iter())
             .map(|(node, tan)| {
-                calculate_ac_vector(
+                calculate_con_motion_vector(
                     node.section_offset_y - node.aerodynamic_center,
                     node.section_offset_x,
                     node.twist,
@@ -316,11 +317,11 @@ impl AeroBody {
             u_motion_map: Mat::zeros(7, n_sections),
             v_motion_map: Mat::zeros(6, n_sections),
             qqr_motion_map: Mat::zeros(4, n_sections),
-            con_motion: Mat::from_fn(3, n_sections, |i, j| ac_vec[j][i]),
+            con_motion: Mat::from_fn(3, n_sections, |i, j| con_motion[j][i]),
             x_motion: Mat::zeros(3, n_sections),
             v_motion: Mat::zeros(3, n_sections),
 
-            con_loads: Mat::from_fn(3, n_sections, |i, j| -ac_vec[j][i]),
+            con_loads: Mat::from_fn(3, n_sections, |i, j| -con_motion[j][i]),
             loads: Mat::zeros(6, n_loads),
             moment: Mat::zeros(3, n_loads),
 
@@ -545,6 +546,116 @@ impl AeroBody {
             state.fx.col_mut(id).add_assign(&node_f);
         });
     }
+
+    pub fn as_vtk(&self) -> Vtk {
+        // let rotations = multizip((
+        //     self.u_motion_map.subrows(3, 4).col_iter(),
+        //     self.xr_motion_map.subrows(3, 4).col_iter(),
+        // ))
+        // .map(|(r, r0)| {
+        //     let mut q = Col::<f64>::zeros(4);
+        //     quat_compose(r, r0, q.as_mut());
+        //     let mut m = Mat::<f64>::zeros(3, 3);
+        //     quat_as_matrix(q.as_ref(), m.as_mut());
+        //     m
+        // })
+        // .collect_vec();
+        // let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
+        let n_sections = self.delta_s.nrows();
+
+        Vtk {
+            version: Version { major: 4, minor: 2 },
+            title: String::new(),
+            byte_order: ByteOrder::LittleEndian,
+            file_path: None,
+            data: DataSet::inline(UnstructuredGridPiece {
+                points: IOBuffer::F64(
+                    self.x_motion
+                        .col_iter()
+                        .flat_map(|x| [x[0], x[1], x[2]])
+                        .collect_vec(),
+                ),
+                cells: Cells {
+                    cell_verts: VertexNumbers::XML {
+                        connectivity: {
+                            let mut a = vec![0, n_sections - 1];
+                            let b = (1..n_sections - 1).collect_vec();
+                            a.extend(b);
+                            a.iter().map(|&i| i as u64).collect_vec()
+                        },
+                        offsets: vec![n_sections as u64],
+                    },
+                    types: vec![CellType::LagrangeCurve],
+                },
+                data: Attributes {
+                    point: vec![
+                        // orientations
+                        // .iter()
+                        // .enumerate()
+                        // .map(|(i, &orientation)| {
+                        //     Attribute::DataArray(DataArrayBase {
+                        //         name: orientation.to_string(),
+                        //         elem: ElementType::Vectors,
+                        //         data: IOBuffer::F32(
+                        //             rotations
+                        //                 .iter()
+                        //                 .flat_map(|r| {
+                        //                     r.col(i).iter().map(|&v| v as f32).collect_vec()
+                        //                 })
+                        //                 .collect_vec(),
+                        //         ),
+                        //     })
+                        // })
+                        Attribute::DataArray(DataArrayBase {
+                            name: "TranslationalVelocity".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                self.v_motion
+                                    .subrows(0, 3)
+                                    .col_iter()
+                                    .flat_map(|c| c.iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
+                        // Attribute::DataArray(DataArrayBase {
+                        //     name: "AngularVelocity".to_string(),
+                        //     elem: ElementType::Vectors,
+                        //     data: IOBuffer::F32(
+                        //         self.v_motion
+                        //             .subrows(3, 3)
+                        //             .col_iter()
+                        //             .flat_map(|c| c.iter().map(|&v| v as f32).collect_vec())
+                        //             .collect_vec(),
+                        //     ),
+                        // }),
+                        Attribute::DataArray(DataArrayBase {
+                            name: "Force".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                self.loads
+                                    .subrows(0, 3)
+                                    .col_iter()
+                                    .flat_map(|c| c.iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
+                        Attribute::DataArray(DataArrayBase {
+                            name: "Moment".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                self.loads
+                                    .subrows(0, 3)
+                                    .col_iter()
+                                    .flat_map(|c| c.iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
+                    ],
+                    ..Default::default()
+                },
+            }),
+        }
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -569,12 +680,6 @@ fn calculate_relative_velocity(
     // Relative velocity only considers flow in the y-z plane
     v_rel[1] = v_diff_rot[1];
     v_rel[2] = v_diff_rot[2];
-}
-
-/// Calculate angle of attack based on relative velocity and twist angle
-fn calculate_angle_of_attack(v_rel: ColRef<f64>, twist: f64) -> f64 {
-    let alpha_raw = (v_rel[2]).atan2(v_rel[1]) - twist;
-    alpha_raw.sin().atan2(alpha_raw.cos())
 }
 
 fn calculate_aerodynamic_load(
@@ -616,12 +721,19 @@ fn calculate_aerodynamic_load(
 
     // Calculate force and moment in local coordinates
     let dynamic_pressure = 0.5 * fluid_density * v_rel.norm_l2().powi(2);
-    let (twist_sin, twist_cos) = twist.sin_cos();
-    let force_local = col![
-        0.,
-        (cd * twist_cos - cl * twist_sin) * dynamic_pressure * chord * delta_s,
-        (cd * twist_sin - cl * twist_cos) * dynamic_pressure * chord * delta_s,
-    ];
+
+    // Calculate drag direction vector as normalized negative relative flow velocity vector
+    let drag_vector = v_rel / v_rel.norm_l2();
+
+    // Calculate lift vector perpendicular to the drag vector
+    let mut lift_vector = col![0., 0., 0.];
+    cross_product(
+        col![-1., 0., 0.].as_ref(),
+        drag_vector.as_ref(),
+        lift_vector.as_mut(),
+    );
+
+    let force_local = dynamic_pressure * chord * delta_s * (cl * &lift_vector + cd * &drag_vector);
     let moment_local = col![cm * dynamic_pressure * chord.powi(2) * delta_s, 0., 0.];
 
     // Rotate force and moment into global coordinates
@@ -635,6 +747,18 @@ fn calculate_aerodynamic_load(
         moment_local.as_ref(),
         loads.rb_mut().subrows_mut(3, 3),
     );
+    // println!("twist (deg): {:?}", twist.to_degrees());
+    // println!("v_rel: {:?}", v_rel);
+    // println!("aoa (deg): {:?}", aoa.to_degrees());
+    // println!("cl (deg): {:?}", cl);
+    // println!("cd (deg): {:?}", cd);
+    // println!("cm (deg): {:?}", cm);
+    // println!("drag_vector: {:?}", drag_vector);
+    // println!("lift_vector: {:?}", lift_vector);
+    // println!("loads: {:?}", loads);
+    // println!("force_local: {:?}", force_local);
+    // println!("moment_local: {:?}", moment_local);
+    // println!("");
 }
 
 /// Returns a vector of positions [0-1] where the jacobian is calculated for
@@ -710,16 +834,26 @@ fn calculate_aero_point_widths(
 /// * `chord_to_ref_axis_vertical` - Vertical distance from chord line to reference axis (+ towards suction side)
 /// * `twist` - Rotation about (0, 0)
 /// * `tangent` - Tangent vector of reference line at the aero point (orientation of blade in 3D space)
-fn calculate_ac_vector(
+fn calculate_con_motion_vector(
     ac_to_ref_axis_horizontal: f64,
     chord_to_ref_axis_vertical: f64,
     twist: f64,
     tangent: [f64; 3],
 ) -> [f64; 3] {
-    let q = quat_from_tangent_twist_alloc(col![tangent[0], tangent[1], tangent[2]].as_ref(), twist);
+    let q =
+        quat_from_tangent_twist_alloc(col![tangent[0], tangent[1], tangent[2]].as_ref(), -twist);
     let v_base = col![0., -ac_to_ref_axis_horizontal, chord_to_ref_axis_vertical];
     let v_rot = quat_rotate_vector_alloc(q.as_ref(), v_base.as_ref());
     [v_rot[0], v_rot[1], v_rot[2]]
+}
+
+/// Calculate angle of attack based on relative velocity and twist angle.
+/// The airfoil coordinate system has the x-axis pointing out of the page,
+/// the y-axis pointing to the trailing edge, and the z-axis pointing toward
+/// the pressure side.
+fn calculate_angle_of_attack(v_rel: ColRef<f64>, twist: f64) -> f64 {
+    let alpha_raw = (-v_rel[2]).atan2(v_rel[1]) - twist;
+    alpha_raw.sin().atan2(alpha_raw.cos())
 }
 
 //------------------------------------------------------------------------------
@@ -731,19 +865,6 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
     use std::f64::consts::PI;
-
-    #[test]
-    fn test_calculate_angle_of_attack_zero_twist() {
-        let n_angle: usize = 360;
-        let twist = 0.0;
-        (0..n_angle).for_each(|i| {
-            let angle = 2. * PI * (i as f64) / (n_angle as f64) - PI;
-            let v_rel = col![0.0, 10.0 * angle.cos(), 10.0 * angle.sin()];
-            let aoa = calculate_angle_of_attack(v_rel.as_ref(), twist);
-            println!("angle: {}, aoa: {}, v_rel: {:?}", angle, aoa, v_rel);
-            assert_relative_eq!(aoa, angle, epsilon = 1e-12);
-        });
-    }
 
     #[test]
     fn test_calculate_angle_of_attack_with_twist() {
@@ -760,23 +881,23 @@ mod tests {
                 expected_aoa: -0.1,
             },
             Case {
-                flow_angle: 0.1,
+                flow_angle: -0.1,
                 twist: 0.1,
                 expected_aoa: 0.0,
             },
             Case {
                 flow_angle: 0.2,
                 twist: 0.1,
-                expected_aoa: 0.1,
+                expected_aoa: -0.3,
             },
             Case {
-                flow_angle: -PI,
+                flow_angle: 0.1 - PI,
                 twist: 0.0,
-                expected_aoa: -PI,
+                expected_aoa: PI - 0.1,
             },
             // Check wraparound
             Case {
-                flow_angle: -PI,
+                flow_angle: PI,
                 twist: 0.1,
                 expected_aoa: PI - 0.1,
             },
@@ -785,7 +906,7 @@ mod tests {
         .for_each(|c| {
             let twist = c.twist;
             let angle: f64 = c.flow_angle;
-            let v_rel = col![0.0, 10.0 * angle.cos(), 10.0 * angle.sin()];
+            let v_rel = col![0.0, angle.cos(), angle.sin()];
             let aoa = calculate_angle_of_attack(v_rel.as_ref(), twist);
             assert_relative_eq!(aoa, c.expected_aoa, epsilon = 1e-12);
         });
@@ -832,25 +953,21 @@ mod tests {
                 load: col![0.0, 45.9375, -91.875, 7.35, 0.0, 0.0],
             },
             // twist = 0.0
-            // v_rel = [0.0, 10*cos(0.1), 10*sin(0.1)] = [0.0, 9.950041652780259, 0.9983341664682815]
+            // v_rel = [0.0, 10*cos(0.1), -10*sin(0.1)] = [0.0, 9.950041652780259, -0.9983341664682815]
             // AoA = 0.1
             // cl = 0.55
             // cd = 0.225
             // cm = 0.021
             // dynamic pressure = 0.5 * 1.225 * 10 * 10
-            // force  = [0., 0.5 * 1.225 * 10 * 10 * 0.225 * 2. * 1.5, -0.5 * 1.225 * 10 * 10 * 0.55 * 2. * 1.5]
-            //        = [0., 41.34375, -101.0625]
-            // moment = [0.5 * 1.225 * 10 * 10 * 0.021 * 2. * 2. * 1.5, 0., 0.]
-            //        = [7.7175, 0., 0.]
             // No rotation from local to global
             Data {
-                v_rel: col![0.0, 9.950041652780259, 0.9983341664682815],
+                v_rel: col![0.0, 9.950041652780259, -0.9983341664682815],
                 twist: 0.0,
                 chord: 2.0,
                 delta_s: 1.5,
                 fluid_density: 1.225,
                 qqr: col![1.0, 0.0, 0.0, 0.0],
-                load: col![0., 41.34375, -101.0625, 7.7175, 0.0, 0.0],
+                load: col![0., 31.04778878834331, -104.68509627290281, 7.7175, 0.0, 0.0],
             },
         ];
 
@@ -865,8 +982,8 @@ mod tests {
                 cl_polar.as_ref(),
                 cd_polar.as_ref(),
                 cm_polar.as_ref(),
-                case.twist,
                 case.chord,
+                case.twist,
                 case.delta_s,
                 case.fluid_density,
                 case.qqr.as_ref(),
@@ -906,7 +1023,7 @@ mod tests {
                 chord_to_ref_axis_vertical: 0.0,
                 twist: 90.0_f64.to_radians(),
                 tangent: [1.0, 0.0, 0.0],
-                ac_vec_exp: [0.0, 0.0, -1.0],
+                ac_vec_exp: [0.0, 0.0, 1.0],
             },
             // AC 0.5m from straight reference axis, -90 twist
             Data {
@@ -914,7 +1031,7 @@ mod tests {
                 chord_to_ref_axis_vertical: 0.0,
                 twist: -90.0_f64.to_radians(),
                 tangent: [1.0, 0.0, 0.0],
-                ac_vec_exp: [0.0, 0.0, 0.5],
+                ac_vec_exp: [0.0, 0.0, -0.5],
             },
             // AC 1m from reference axis curved in x-z plane toward inflow, 0 twist
             Data {
@@ -938,7 +1055,7 @@ mod tests {
                 chord_to_ref_axis_vertical: 0.0,
                 twist: 90.0_f64.to_radians(),
                 tangent: [0.8, 0.6, 0.0],
-                ac_vec_exp: [0.0, 0.0, -1.0],
+                ac_vec_exp: [0.0, 0.0, 1.0],
             },
             // AC 1m from reference axis curved in x-y plane toward TE, 30 twist
             Data {
@@ -946,12 +1063,12 @@ mod tests {
                 chord_to_ref_axis_vertical: 0.0,
                 twist: 30.0_f64.to_radians(),
                 tangent: [0.8, 0.6, 0.0],
-                ac_vec_exp: [0.51961524227066314, -0.69282032302755081, -0.5],
+                ac_vec_exp: [0.51961524227066314, -0.69282032302755081, 0.5],
             },
         ];
 
         for case in test_cases {
-            let ac_vec = calculate_ac_vector(
+            let ac_vec = calculate_con_motion_vector(
                 case.ac_to_ref_axis_horizontal,
                 case.chord_to_ref_axis_vertical,
                 case.twist,

@@ -190,7 +190,6 @@ mod tests {
     use crate::{model::Model, util::quat_from_axis_angle};
     use equator::assert;
     use faer::utils::approx::*;
-    use std::f64::consts::PI;
 
     fn create_state() -> State {
         let mut q1: Col<f64> = Col::zeros(4);
