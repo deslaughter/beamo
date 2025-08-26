@@ -120,16 +120,17 @@ pub struct AeroBody {
     pub moment: Mat<f64>,    // Moment due to aerodynamic center moment arm `[3][n_loads]`
 
     // Blade Element Theory
-    pub v_inflow: Mat<f64>, // Fluid velocity at each motion point `[3][n_sections]`
-    pub v_rel: Mat<f64>,    // Relative wind velocity at AC
-    pub twist: Col<f64>,    // Twist angle of each aerodynamic section (radians)
-    pub chord: Col<f64>,    // Chord length of each aerodynamic section
-    pub delta_s: Col<f64>,  // Width of aerodynamic section for load calculation
+    pub jacobian_xi: Col<f64>, // Jacobian xi locations for width integration
+    pub v_inflow: Mat<f64>,    // Fluid velocity at each motion point `[3][n_sections]`
+    pub v_rel: Mat<f64>,       // Relative wind velocity at AC
+    pub twist: Col<f64>,       // Twist angle of each aerodynamic section (radians)
+    pub chord: Col<f64>,       // Chord length of each aerodynamic section
+    pub delta_s: Col<f64>,     // Width of aerodynamic section for load calculation
     pub polar_size: Vec<usize>, // Number of polar points in each aerodynamic section
-    pub aoa: Mat<f64>,      // Angle of attack grid for all polars
-    pub cl: Mat<f64>,       // Lift coefficient polar
-    pub cd: Mat<f64>,       // Drag coefficient polar
-    pub cm: Mat<f64>,       // Moment coefficient polar
+    pub aoa: Mat<f64>,         // Angle of attack grid for all polars
+    pub cl: Mat<f64>,          // Lift coefficient polar
+    pub cd: Mat<f64>,          // Drag coefficient polar
+    pub cm: Mat<f64>,          // Moment coefficient polar
 
     // Interpolation and derivative matrices
     pub motion_interp: Mat<f64>, // Shape function matrix interpolating node motion to motion map `[n_sections][n_nodes]`
@@ -254,8 +255,9 @@ impl AeroBody {
         );
 
         // Calculate aero point widths
-        let ds = calculate_aero_point_widths(
-            &jacobian_xi,
+        let jacobian_xi = Col::from_iter(jacobian_xi.into_iter());
+        let delta_s = calculate_aero_point_widths(
+            jacobian_xi.as_ref(),
             jacobian_integration_matrix.as_ref(),
             node_x.as_ref(),
         );
@@ -325,11 +327,12 @@ impl AeroBody {
             loads: Mat::zeros(6, n_loads),
             moment: Mat::zeros(3, n_loads),
 
+            jacobian_xi,
             v_rel: Mat::zeros(3, n_sections),
             v_inflow: Mat::zeros(3, n_sections),
             twist: Col::from_fn(n_sections, |i| input.aero_sections[i].twist),
             chord: Col::from_fn(n_sections, |i| input.aero_sections[i].chord),
-            delta_s: Col::from_iter(ds.into_iter()),
+            delta_s,
             polar_size: input.aero_sections.iter().map(|p| p.aoa.len()).collect(),
             aoa,
             cl,
@@ -421,6 +424,17 @@ impl AeroBody {
             cross_product(omega, qqr_con.as_ref(), omega_qqr_con.as_mut());
             v.copy_from(&v_mm + &omega_qqr_con);
         });
+
+        let node_x = Mat::from_fn(7, self.node_ids.len(), |i, j| {
+            state.x[(i, self.node_ids[j])]
+        });
+
+        // Update element widths
+        self.delta_s = calculate_aero_point_widths(
+            self.jacobian_xi.as_ref(),
+            self.shape_deriv_jac.as_ref(),
+            node_x.as_ref(),
+        );
     }
 
     /// Set the inflow velocity at each section using a function which takes the
@@ -791,10 +805,10 @@ fn calculate_jacobian_xi(aero_node_xi: &[f64]) -> Vec<f64> {
 /// Return a vector of widths for each aero node calculated using the
 /// Jacobian vector and Simpson's Rule.
 fn calculate_aero_point_widths(
-    jacobian_xi: &[f64],
+    jacobian_xi: ColRef<f64>,
     jacobian_integration_matrix: MatRef<f64>,
     node_x: MatRef<f64>,
-) -> Vec<f64> {
+) -> Col<f64> {
     // Calculate un-normalized derivative vectors
     let tan = jacobian_integration_matrix * node_x.subrows(0, 3).transpose();
 
@@ -1115,8 +1129,9 @@ mod tests {
         );
 
         // Calculate the aerodynamic node widths
+        let jacobian_xi = Col::from_iter(jacobian_xi.into_iter());
         let widths = calculate_aero_point_widths(
-            &jacobian_xi,
+            jacobian_xi.as_ref(),
             jacobian_integration_matrix.as_ref(),
             node_x.as_ref(),
         );
@@ -1163,8 +1178,9 @@ mod tests {
         );
 
         // Calculate the aerodynamic node widths
+        let jacobian_xi = Col::from_iter(jacobian_xi.into_iter());
         let widths = calculate_aero_point_widths(
-            &jacobian_xi,
+            jacobian_xi.as_ref(),
             jacobian_integration_matrix.as_ref(),
             node_x.as_ref(),
         );
