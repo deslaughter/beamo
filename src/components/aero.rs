@@ -9,8 +9,8 @@ use crate::{
     node::Node,
     state::State,
     util::{
-        cross_product, quat_compose, quat_compose_alloc, quat_from_axis_angle_alloc, quat_inverse,
-        quat_rotate_vector, quat_rotate_vector_alloc,
+        cross_product, cross_product_alloc, quat_as_matrix_alloc, quat_compose, quat_compose_alloc,
+        quat_from_axis_angle_alloc, quat_inverse, quat_rotate_vector, quat_rotate_vector_alloc,
     },
 };
 
@@ -49,6 +49,13 @@ impl AeroComponent {
     pub fn set_inflow_from_vector(&mut self, body_inflow_velocities: &[&[[f64; 3]]]) {
         multizip((self.bodies.iter_mut(), body_inflow_velocities.iter())).for_each(|(body, &v)| {
             body.set_inflow_from_vector(v);
+        });
+    }
+
+    /// Set the aerodynamic loads for each body from vectors of aerodynamic load values per body.
+    pub fn set_aerodynamic_loads(&mut self, body_aero_loads: &[&[[f64; 6]]]) {
+        multizip((self.bodies.iter_mut(), body_aero_loads.iter())).for_each(|(body, &v)| {
+            body.set_aerodynamic_loads(v);
         });
     }
 
@@ -115,9 +122,9 @@ pub struct AeroBody {
     pub v_motion: Mat<f64>,      // Motion aerodynamic center velocity `[3][n_sections]`
 
     // Loads
-    pub con_loads: Mat<f64>, // Load connectivity vector `[3][n_loads]`
+    pub con_force: Mat<f64>, // Force connectivity vector `[3][n_loads]`
     pub loads: Mat<f64>,     // Forces and moments at aerodynamic centers `[3][n_loads]`
-    pub moment: Mat<f64>,    // Moment due to aerodynamic center moment arm `[3][n_loads]`
+    pub ref_axis_moments: Mat<f64>, // Moment about referecen axis `[3][n_loads]`
 
     // Blade Element Theory
     pub jacobian_xi: Col<f64>, // Jacobian xi locations for width integration
@@ -347,9 +354,9 @@ impl AeroBody {
             x_motion: Mat::zeros(3, n_sections),
             v_motion: Mat::zeros(3, n_sections),
 
-            con_loads: Mat::from_fn(3, n_sections, |i, j| -con_motion[j][i]),
+            con_force: Mat::from_fn(3, n_sections, |i, j| -con_motion[j][i]),
             loads: Mat::zeros(6, n_loads),
-            moment: Mat::zeros(3, n_loads),
+            ref_axis_moments: Mat::zeros(3, n_loads),
 
             jacobian_xi,
             v_inflow: Mat::zeros(3, n_sections),
@@ -484,82 +491,78 @@ impl AeroBody {
         );
     }
 
-    /// Calculate the aerodynamic loads from the inflow velocities at each section.
-    /// Uses inflow values set by `set_inflow_from_function` or `set_inflow_from_vector`.
-    fn calculate_aerodynamic_loads(&mut self, fluid_density: f64) {
+    /// Set the forces and moments at each section from a vector of forces and moments.
+    /// The provided loads must be in global coordinates
+    fn set_aerodynamic_loads(&mut self, aerodynamic_loads: &[[f64; 6]]) {
         multizip((
             self.loads.col_iter_mut(),
-            self.v_inflow.col_iter(), // Fluid velocity (inflow)
-            self.v_motion.subrows_mut(0, 3).col_iter(), // AC velocity
-            self.polar_size.iter(),
-            self.aoa.col_iter(),
-            self.cl.col_iter(),
-            self.cd.col_iter(),
-            self.cm.col_iter(),
-            self.chord.iter(),
-            self.delta_s.iter(),
+            self.ref_axis_moments.col_iter_mut(),
+            aerodynamic_loads.iter(),
+            self.con_force.col_iter(),
             self.qqr_motion_map.col_iter(),
         ))
         .for_each(
-            |(
-                loads,
-                v_inflow,
-                v_motion,
-                &polar_size,
-                aoa_polar,
-                cl_polar,
-                cd_polar,
-                cm_polar,
-                &chord,
-                &delta_s,
-                qqr,
-            )| {
-                calculate_aerodynamic_load(
-                    loads,
-                    v_inflow,
-                    v_motion,
-                    polar_size,
-                    aoa_polar,
-                    cl_polar,
-                    cd_polar,
-                    cm_polar,
-                    chord,
-                    delta_s,
-                    fluid_density,
-                    qqr,
-                )
+            |(mut load, mut ref_axis_moment, &aero_load, con_force_local, qqr)| {
+                // Convert aerodynamic load to column vector
+                let new_load = Col::from_iter(aero_load.into_iter());
+
+                // Copy load
+                load.copy_from(&new_load);
+
+                // Rotate connectivity vector into global coordinates
+                let con_force = quat_rotate_vector_alloc(qqr.as_ref(), con_force_local.as_ref());
+
+                // Calculate moment about reference axis due to aerodynamic center moment arm
+                ref_axis_moment.copy_from(
+                    cross_product_alloc(new_load.subrows(0, 3), con_force.as_ref())
+                        + &new_load.subrows(3, 3),
+                );
             },
         );
     }
 
+    /// Calculate the aerodynamic loads from the inflow velocities at each section.
+    /// Uses inflow values set by `set_inflow_from_function` or `set_inflow_from_vector`.
+    fn calculate_aerodynamic_loads(&mut self, fluid_density: f64) {
+        // Loop through aerodynamic sections and calculate loads and moment
+        (0..self.loads.ncols()).for_each(|i| {
+            calculate_aerodynamic_loads(
+                self.loads.col_mut(i),
+                self.ref_axis_moments.col_mut(i),
+                self.v_inflow.col(i),
+                self.v_motion.col(i),
+                self.polar_size[i],
+                self.aoa.col(i),
+                self.cl.col(i),
+                self.cd.col(i),
+                self.cm.col(i),
+                self.chord[i],
+                self.delta_s[i],
+                fluid_density,
+                self.con_force.col(i),
+                self.qqr_motion_map.col(i),
+            )
+        });
+    }
+
     /// Calculate nodal loads from aerodynamic loads stored in `self.loads`.
     fn calculate_nodal_loads(&mut self) {
-        // Calculate additional moment from aerodynamic center moment arm
-        multizip((
-            self.moment.col_iter_mut(),
-            self.loads.subrows(0, 3).col_iter(),
-            self.con_loads.col_iter(),
-        ))
-        .for_each(|(m, f, con)| {
-            cross_product(f, con, m);
-        });
-
-        // Distribute aerodynamic loads (force and moments) to nodes
+        // Distribute aerodynamic force to nodes
         matmul(
-            self.node_f.transpose_mut(),
+            self.node_f.subrows_mut(0, 3).transpose_mut(),
             Accum::Replace,
             self.motion_interp.transpose(),
-            self.loads.transpose(),
+            self.loads.subrows(0, 3).transpose(),
             1.0,
             Par::Seq,
         );
 
-        // Add additional moments to nodes
+        // Distribute aerodynamic moments about the reference axis to nodes
         matmul(
             self.node_f.subrows_mut(3, 3).transpose_mut(),
-            Accum::Add,
+            Accum::Replace,
             self.motion_interp.transpose(),
-            self.moment.transpose(),
+            self.ref_axis_moments.transpose(),
             1.0,
             Par::Seq,
         );
@@ -574,19 +577,16 @@ impl AeroBody {
     }
 
     pub fn as_vtk(&self) -> Vtk {
-        // let rotations = multizip((
-        //     self.u_motion_map.subrows(3, 4).col_iter(),
-        //     self.xr_motion_map.subrows(3, 4).col_iter(),
-        // ))
-        // .map(|(r, r0)| {
-        //     let mut q = Col::<f64>::zeros(4);
-        //     quat_compose(r, r0, q.as_mut());
-        //     let mut m = Mat::<f64>::zeros(3, 3);
-        //     quat_as_matrix(q.as_ref(), m.as_mut());
-        //     m
-        // })
-        // .collect_vec();
-        // let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
+        let rotations = multizip((
+            self.u_motion_map.subrows(3, 4).col_iter(),
+            self.xr_motion_map.subrows(3, 4).col_iter(),
+        ))
+        .map(|(r, r0)| {
+            let mut q = Col::<f64>::zeros(4);
+            quat_compose(r, r0, q.as_mut());
+            quat_as_matrix_alloc(q.as_ref())
+        })
+        .collect_vec();
         let n_sections = self.delta_s.nrows();
 
         Vtk {
@@ -615,23 +615,36 @@ impl AeroBody {
                 },
                 data: Attributes {
                     point: vec![
-                        // orientations
-                        // .iter()
-                        // .enumerate()
-                        // .map(|(i, &orientation)| {
-                        //     Attribute::DataArray(DataArrayBase {
-                        //         name: orientation.to_string(),
-                        //         elem: ElementType::Vectors,
-                        //         data: IOBuffer::F32(
-                        //             rotations
-                        //                 .iter()
-                        //                 .flat_map(|r| {
-                        //                     r.col(i).iter().map(|&v| v as f32).collect_vec()
-                        //                 })
-                        //                 .collect_vec(),
-                        //         ),
-                        //     })
-                        // })
+                        Attribute::DataArray(DataArrayBase {
+                            name: "OrientationX".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                rotations
+                                    .iter()
+                                    .flat_map(|r| r.col(0).iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
+                        Attribute::DataArray(DataArrayBase {
+                            name: "OrientationY".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                rotations
+                                    .iter()
+                                    .flat_map(|r| r.col(1).iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
+                        Attribute::DataArray(DataArrayBase {
+                            name: "OrientationZ".to_string(),
+                            elem: ElementType::Vectors,
+                            data: IOBuffer::F32(
+                                rotations
+                                    .iter()
+                                    .flat_map(|r| r.col(2).iter().map(|&v| v as f32).collect_vec())
+                                    .collect_vec(),
+                            ),
+                        }),
                         Attribute::DataArray(DataArrayBase {
                             name: "TranslationalVelocity".to_string(),
                             elem: ElementType::Vectors,
@@ -689,11 +702,12 @@ impl AeroBody {
 //------------------------------------------------------------------------------
 
 /// Calculate aerodynamic loads in the global coordinate system.
-fn calculate_aerodynamic_load(
+fn calculate_aerodynamic_loads(
     mut loads: ColMut<f64>,
+    ref_axis_moment: ColMut<f64>,
     v_inflow: ColRef<f64>,
     v_motion: ColRef<f64>,
-    polar_size: usize,
+    n_polar_points: usize,
     aoa_polar: ColRef<f64>,
     cl_polar: ColRef<f64>,
     cd_polar: ColRef<f64>,
@@ -701,6 +715,7 @@ fn calculate_aerodynamic_load(
     chord: f64,
     delta_s: f64,
     fluid_density: f64,
+    con_force: ColRef<f64>,
     qqr: ColRef<f64>,
 ) {
     // Calculate difference between inflow velocity and aerodynamic center velocity
@@ -722,14 +737,14 @@ fn calculate_aerodynamic_load(
     let aoa = calculate_angle_of_attack(v_rel.as_ref());
 
     // Find index of angle of attack in aoa vector for interpolation
-    let i_aoa = (0..polar_size - 1)
+    let i_aoa = (0..n_polar_points - 1)
         .position(|i| aoa >= aoa_polar[i] && aoa <= aoa_polar[i + 1])
         .unwrap_or_else(|| {
             panic!(
                 "Angle of attack {} not in range {} - {}",
                 aoa,
                 aoa_polar[0],
-                aoa_polar[polar_size - 1]
+                aoa_polar[n_polar_points - 1]
             )
         });
 
@@ -755,11 +770,11 @@ fn calculate_aerodynamic_load(
         lift_vector.as_mut(),
     );
 
-    // Calculate force and moment in local coordinates
+    // Calculate force and moment in local coordinates at aerodynamic centers
     let force_local = dynamic_pressure * chord * delta_s * (cl * &lift_vector + cd * &drag_vector);
     let moment_local = col![cm * dynamic_pressure * chord.powi(2) * delta_s, 0., 0.];
 
-    // Rotate force and moment into global coordinates
+    // Rotate force and moment into global coordinates at aerodynamic centers
     quat_rotate_vector(
         qqr.as_ref(),
         force_local.as_ref(),
@@ -769,6 +784,17 @@ fn calculate_aerodynamic_load(
         qqr.as_ref(),
         moment_local.as_ref(),
         loads.rb_mut().subrows_mut(3, 3),
+    );
+
+    // Calculate moment about reference axis due to aerodynamic center moment arm
+    let ref_axis_moment_local =
+        cross_product_alloc(force_local.as_ref(), con_force.as_ref()) + &moment_local;
+
+    // Rotate additional moment into global coordinates about reference axis
+    quat_rotate_vector(
+        qqr.as_ref(),
+        ref_axis_moment_local.as_ref(),
+        ref_axis_moment,
     );
 }
 
@@ -907,16 +933,19 @@ mod tests {
         let aoa_polar = col![-1.0, 1.0]; // Angle of attack points
         let cl_polar = col![0.0, 1.0]; // Lift coefficient values
         let cd_polar = col![0.5, 0.0]; // Drag coefficient values
-        let cm_polar = col![0.01, 0.03]; // Moment coefficient values
+        let cm_polar = col![-0.01, -0.03]; // Moment coefficient values
+
+        let chord = 2.0; // Chord length (m)
+        let delta_s = 1.5; // Section width (m)
+        let fluid_density = 1.225; // (kg/m^3)
+        let qqr = col![1.0, 0.0, 0.0, 0.0]; // Rotation from local to global
 
         struct Data {
             v_inflow: Col<f64>,
             v_motion: Col<f64>,
-            chord: f64,
-            delta_s: f64,
-            fluid_density: f64,
-            qqr: Col<f64>,
+            con_force: Col<f64>,
             load: Col<f64>,
+            ref_axis_moment: Col<f64>,
         }
 
         let test_cases = vec![
@@ -925,20 +954,17 @@ mod tests {
             // cl = 0.5
             // cd = 0.25
             // cm = 0.02
-            // dynamic pressure = 0.5 * 1.225 * 10 * 10
-            // force  = [0., 0.5 * 1.225 * 10 * 10 * 0.25 * 2. * 1.5, -0.5 * 1.225 * 10 * 10 * 0.5 * 2. * 1.5]
+            // dynamic pressure = 0.5 * 1.225 * 10 * 10 = 61.25
+            // force  = [0., 61.25 * 0.25 * 2. * 1.5, -61.25 * 0.5 * 2. * 1.5]
             //        = [0., 45.9375, -91.875]
-            // moment = [0.5 * 1.225 * 10 * 10 * 0.02 * 2. * 2. * 1.5, 0., 0.]
+            // moment = [61.25 * 0.02 * 2. * 2. * 1.5, 0., 0.]
             //        = [7.35, 0., 0.]
-            // No rotation from local to global
             Data {
                 v_inflow: col![0.0, 10.0, 0.0],
                 v_motion: col![0.0, 0.0, 0.0],
-                chord: 2.0,
-                delta_s: 1.5,
-                fluid_density: 1.225,
-                qqr: col![1.0, 0.0, 0.0, 0.0],
-                load: col![0.0, 45.9375, -91.875, 7.35, 0.0, 0.0],
+                con_force: col![0.0, -0.5, 0.0],
+                load: col![0.0, 45.9375, -91.875, -7.35, 0.0, 0.0],
+                ref_axis_moment: col![-7.35 - 91.875 / 2., 0.0, 0.0],
             },
             // twist = 0.0
             // v_rel = [0.0, 10*cos(0.1), -10*sin(0.1)] = [0.0, 9.950041652780259, -0.9983341664682815]
@@ -946,24 +972,30 @@ mod tests {
             // cl = 0.55
             // cd = 0.225
             // cm = 0.021
-            // dynamic pressure = 0.5 * 1.225 * 10 * 10
-            // No rotation from local to global
+            // dynamic pressure = 0.5 * 1.225 * 10 * 10 = 61.25
             Data {
                 v_inflow: col![0.0, 9.950041652780259, -0.9983341664682815],
                 v_motion: col![0.0, 0.0, 0.0],
-                chord: 2.0,
-                delta_s: 1.5,
-                fluid_density: 1.225,
-                qqr: col![1.0, 0.0, 0.0, 0.0],
-                load: col![0., 31.04778878834331, -104.68509627290281, 7.7175, 0.0, 0.0],
+                con_force: col![0.0, -0.5, 0.0],
+                load: col![
+                    0.0,
+                    31.04778878834331,
+                    -104.68509627290281,
+                    -7.7175,
+                    0.0,
+                    0.0
+                ],
+                ref_axis_moment: col![-7.7175 - 104.68509627290281 / 2., 0.0, 0.0],
             },
         ];
 
         for case in test_cases {
             let mut load = col![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]; // Force and moment output
+            let mut ref_axis_moment = col![0.0, 0.0, 0.0]; // Reference axis moment output
 
-            calculate_aerodynamic_load(
+            calculate_aerodynamic_loads(
                 load.as_mut(),
+                ref_axis_moment.as_mut(),
                 case.v_inflow.as_ref(),
                 case.v_motion.as_ref(),
                 n_polar_points,
@@ -971,10 +1003,11 @@ mod tests {
                 cl_polar.as_ref(),
                 cd_polar.as_ref(),
                 cm_polar.as_ref(),
-                case.chord,
-                case.delta_s,
-                case.fluid_density,
-                case.qqr.as_ref(),
+                chord,
+                delta_s,
+                fluid_density,
+                case.con_force.as_ref(),
+                qqr.as_ref(),
             );
 
             assert_relative_eq!(load[0], case.load[0], epsilon = 1e-10);
@@ -983,6 +1016,10 @@ mod tests {
             assert_relative_eq!(load[3], case.load[3], epsilon = 1e-10);
             assert_relative_eq!(load[4], case.load[4], epsilon = 1e-10);
             assert_relative_eq!(load[5], case.load[5], epsilon = 1e-10);
+
+            assert_relative_eq!(ref_axis_moment[0], case.ref_axis_moment[0], epsilon = 1e-10);
+            assert_relative_eq!(ref_axis_moment[1], case.ref_axis_moment[1], epsilon = 1e-10);
+            assert_relative_eq!(ref_axis_moment[2], case.ref_axis_moment[2], epsilon = 1e-10);
         }
     }
 

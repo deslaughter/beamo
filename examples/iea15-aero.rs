@@ -20,7 +20,7 @@ use serde_yaml::Value;
 
 fn main() {
     let time_step = 0.01;
-    let duration = 98.0;
+    let duration = 100.0;
     let n_steps = (duration / time_step) as usize;
 
     let mut model = Model::new();
@@ -74,6 +74,8 @@ fn main() {
 
         // Calculate aerodynamic loads
         aero.calculate_aerodynamic_loads(fluid_density);
+
+        // Add function to apply aerodynamic loads directly
 
         // Calculate the nodal loads from the aerodynamic loads
         aero.calculate_nodal_loads();

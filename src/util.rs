@@ -411,12 +411,21 @@ pub fn quat_from_tangent_twist_alloc(tangent: ColRef<f64>, twist: f64) -> Col<f6
 }
 
 // Returns the cross product of two vectors
+#[inline]
 pub fn cross_product(a: ColRef<f64>, b: ColRef<f64>, mut c: ColMut<f64>) {
     c[0] = a[1] * b[2] - a[2] * b[1];
     c[1] = a[2] * b[0] - a[0] * b[2];
     c[2] = a[0] * b[1] - a[1] * b[0];
 }
 
+#[inline]
+pub fn cross_product_alloc(a: ColRef<f64>, b: ColRef<f64>) -> Col<f64> {
+    let mut c = Col::<f64>::zeros(3);
+    cross_product(a, b, c.as_mut());
+    c
+}
+
+#[inline]
 pub fn dot_product(a: ColRef<f64>, b: ColRef<f64>) -> f64 {
     let mut sum = 0.;
     zip!(&a, &b).for_each(|unzip!(a, b)| sum += *a * *b);

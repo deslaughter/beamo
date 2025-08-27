@@ -1,6 +1,3 @@
-use rayon::prelude::*;
-use std::f64::consts::PI;
-
 use faer::prelude::*;
 use itertools::Itertools;
 use ottr::{
@@ -12,25 +9,18 @@ use ottr::{
     elements::beams::BeamSection,
     model::Model,
     output_writer::OutputWriter,
-    util::{quat_compose_alloc, quat_from_rotation_vector_alloc},
+    util::quat_from_rotation_vector_alloc,
 };
 use serde_yaml::Value;
 
 fn main() {
-    let n_angles: usize = 72;
-    let angle_step = 2.0 * PI / n_angles as f64;
-    (0..n_angles).into_par_iter().for_each(|i| {
-        let flow_angle = i as f64 * angle_step;
-        run_simulation(flow_angle);
-    });
-}
-fn run_simulation(flow_angle: f64) {
     let time_step = 0.01;
-    let duration = 5.0;
+    let duration = 1.0;
     let n_steps = (duration / time_step) as usize;
 
+    let flow_angle = 0.0_f64.to_radians(); // Angle of inflow relative to blade axis
     let fluid_density = 1.225; // kg/m^3
-    let vel_h = 30.0; // m/s
+    let vel_h = 20.0; // m/s
     let h_ref = 100.0; // Reference height
     let pl_exp = 0.0; // Power law exponent
 
@@ -89,6 +79,12 @@ fn run_simulation(flow_angle: f64) {
 
         // Write output
         ow.write(&state, i);
+
+        // Write aerodynamic output
+        aero.bodies[0]
+            .as_vtk()
+            .export_ascii(format!("output/vtk_output/aero.{:0>3}.vtk", i))
+            .unwrap();
 
         // Exit if failed to converge
         if !res.converged {
@@ -183,10 +179,14 @@ fn build_blade(model: &mut Model) -> (BeamComponent, AeroComponent) {
         .collect_vec();
 
     // Orient blade so reference axis is along z-axis
-    let root_orientation = quat_compose_alloc(
-        quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref()).as_ref(),
-        quat_from_rotation_vector_alloc(col![0., -90.0_f64.to_radians(), 0.].as_ref()).as_ref(),
-    );
+    // let root_orientation = quat_compose_alloc(
+    //     quat_from_rotation_vector_alloc(col![0., 0., 0.0_f64.to_radians()].as_ref()).as_ref(),
+    //     quat_from_rotation_vector_alloc(col![0., -90.0_f64.to_radians(), 0.].as_ref()).as_ref(),
+    // );
+
+    // Orient blade with leading edge pointed at -X and axis along -Y
+    let root_orientation =
+        quat_from_rotation_vector_alloc(col![0., 0., -90.0_f64.to_radians()].as_ref());
 
     // Build blade input
     let blade_input = BeamInputBuilder::new()
@@ -254,7 +254,7 @@ fn build_blade(model: &mut Model) -> (BeamComponent, AeroComponent) {
     // Aero
     //--------------------------------------------------------------------------
 
-    let aero_points = wio["airfoils"]
+    let aero_sections = wio["airfoils"]
         .as_sequence()
         .unwrap()
         .iter()
@@ -263,10 +263,10 @@ fn build_blade(model: &mut Model) -> (BeamComponent, AeroComponent) {
             id: i,
             s: af["spanwise_position"].as_f64().unwrap(),
             chord: af["chord"].as_f64().unwrap(),
+            aerodynamic_center: af["aerodynamic_center"].as_f64().unwrap(),
             twist: af["twist"].as_f64().unwrap().to_radians(),
             section_offset_x: af["section_offset_x"].as_f64().unwrap(),
             section_offset_y: af["section_offset_y"].as_f64().unwrap(),
-            aerodynamic_center: af["aerodynamic_center"].as_f64().unwrap(),
             aoa: af["polars"][0]["re_sets"][0]["cl"]["grid"]
                 .as_sequence()
                 .unwrap()
@@ -299,7 +299,7 @@ fn build_blade(model: &mut Model) -> (BeamComponent, AeroComponent) {
         &[AeroBodyInput {
             id: 0,
             beam_node_ids: blade.nodes.iter().map(|n| n.id).collect(),
-            aero_sections: aero_points,
+            aero_sections,
         }],
         &model.nodes,
     );
