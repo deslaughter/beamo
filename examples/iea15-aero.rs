@@ -1,5 +1,9 @@
+use std::fs::File;
+use std::io::Write;
+
 use faer::prelude::*;
 use itertools::{izip, Itertools};
+
 use ottr::{
     components::{
         aero::{AeroBodyInput, AeroComponent, AeroSection},
@@ -42,10 +46,16 @@ fn main() {
     // Create inflow definition
     let fluid_density = 1.225; // kg/m^3
     let vel_h = 10.6; // m/s
-    let h_ref = 100.0; // Reference height
-    let pl_exp = 0.1; // Power law exponent
+    let h_ref = 150.0; // Reference height
+    let pl_exp = 0.12; // Power law exponent
     let flow_angle = 0.0_f64.to_radians(); // Flow angle in radians
     let inflow = Inflow::steady_wind(vel_h, h_ref, pl_exp, flow_angle);
+
+    // Create output file in OpenFAST format
+    let mut outfile = File::create("output/output.out").unwrap();
+    write!(outfile, "\n\n\n\n\n\n").unwrap();
+    write!(outfile, "Time\tAzimuth\tRotSpeed\n").unwrap();
+    write!(outfile, "(s)\t(deg)\t(rpm)\n").unwrap();
 
     // Loop through steps
     let mut n_iter = 0;
@@ -78,6 +88,20 @@ fn main() {
         let (azimuth, rotor_speed, rotor_acc) = solver.constraints.constraints
             [turbine.shaft_base_azimuth_constraint_id]
             .calculate_revolute_output(&state);
+
+        write!(
+            outfile,
+            "{}\t{}\t{}\n",
+            t,
+            if azimuth > 0. {
+                azimuth
+            } else {
+                azimuth + 2.0 * std::f64::consts::PI
+            }
+            .to_degrees(),
+            rotor_speed * 60.0 / (2.0 * std::f64::consts::PI)
+        )
+        .unwrap();
 
         if i % 100 == 0 {
             println!(
@@ -390,6 +414,19 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
         )
         .build(model)
         .unwrap();
+
+    // Add hub mass
+    model.add_mass_element(
+        turbine.hub_node.id,
+        mat![
+            [69131., 0., 0., 0., 0., 0.],
+            [0., 69131., 0., 0., 0., 0.],
+            [0., 0., 69131., 0., 0., 0.],
+            [0., 0., 0., 969952. + 1836784., 0., 0.],
+            [0., 0., 0., 0., 1., 0.],
+            [0., 0., 0., 0., 0., 1.]
+        ],
+    );
 
     //--------------------------------------------------------------------------
     // Aero

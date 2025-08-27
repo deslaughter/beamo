@@ -282,6 +282,13 @@ pub fn quat_from_axis_angle(angle: f64, axis: ColRef<f64>, mut q: ColMut<f64>) {
     }
 }
 
+#[inline]
+pub fn quat_from_axis_angle_alloc(angle: f64, axis: ColRef<f64>) -> Col<f64> {
+    let mut q = Col::<f64>::zeros(4);
+    quat_from_axis_angle(angle, axis, q.as_mut());
+    q
+}
+
 /// Populates Quaternion from rotation matrix
 ///
 /// # Panics

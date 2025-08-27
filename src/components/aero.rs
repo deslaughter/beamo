@@ -9,7 +9,7 @@ use crate::{
     node::Node,
     state::State,
     util::{
-        cross_product, quat_compose, quat_from_tangent_twist_alloc, quat_inverse,
+        cross_product, quat_compose, quat_compose_alloc, quat_from_axis_angle_alloc, quat_inverse,
         quat_rotate_vector, quat_rotate_vector_alloc,
     },
 };
@@ -122,7 +122,6 @@ pub struct AeroBody {
     // Blade Element Theory
     pub jacobian_xi: Col<f64>, // Jacobian xi locations for width integration
     pub v_inflow: Mat<f64>,    // Fluid velocity at each motion point `[3][n_sections]`
-    pub v_rel: Mat<f64>,       // Relative wind velocity at AC
     pub twist: Col<f64>,       // Twist angle of each aerodynamic section (radians)
     pub chord: Col<f64>,       // Chord length of each aerodynamic section
     pub delta_s: Col<f64>,     // Width of aerodynamic section for load calculation
@@ -188,6 +187,14 @@ impl AeroBody {
             Par::Seq,
         );
 
+        // Normalize rotation quaternions so they have unit length
+        xr.subrows_mut(3, 4).col_iter_mut().for_each(|mut qr| {
+            let m = qr.norm_l2();
+            if m > f64::EPSILON {
+                qr /= m;
+            }
+        });
+
         //----------------------------------------------------------------------
         // Section location tangents on beam reference axis
         //----------------------------------------------------------------------
@@ -214,6 +221,26 @@ impl AeroBody {
         });
 
         //----------------------------------------------------------------------
+        // Add twist to reference rotation
+        //----------------------------------------------------------------------
+
+        multizip((
+            xr.subrows_mut(3, 4).col_iter_mut(),
+            x_tan.col_iter(),
+            input.aero_sections.iter(),
+        ))
+        .for_each(|(mut qr, tan, section)| {
+            // Calculate twist about current tangent
+            let q_twist = quat_from_axis_angle_alloc(-section.twist, tan);
+
+            // Compose twist quaternion with reference rotation quaternion
+            let q = quat_compose_alloc(q_twist.as_ref(), qr.as_ref());
+
+            // Update reference rotation quaternion
+            qr.copy_from(&q);
+        });
+
+        //----------------------------------------------------------------------
         // Vector from section location on beam reference axis to aerodynamic center
         // The beam is initialized with:
         //   - root at (0, 0, 0)
@@ -223,17 +250,14 @@ impl AeroBody {
         // x_r translates and rotates the beam into the reference position
         //----------------------------------------------------------------------
 
-        // Calculate vector from beam reference to aerodynamic center
+        // Calculate vector from beam reference to aerodynamic center in the body coordinates
         let con_motion = input
             .aero_sections
             .iter()
-            .zip(x_tan.col_iter())
-            .map(|(node, tan)| {
+            .map(|section| {
                 calculate_con_motion_vector(
-                    node.section_offset_y - node.aerodynamic_center,
-                    node.section_offset_x,
-                    node.twist,
-                    [tan[0], tan[1], tan[2]],
+                    section.section_offset_y - section.aerodynamic_center,
+                    section.section_offset_x,
                 )
             })
             .collect_vec();
@@ -328,7 +352,6 @@ impl AeroBody {
             moment: Mat::zeros(3, n_loads),
 
             jacobian_xi,
-            v_rel: Mat::zeros(3, n_sections),
             v_inflow: Mat::zeros(3, n_sections),
             twist: Col::from_fn(n_sections, |i| input.aero_sections[i].twist),
             chord: Col::from_fn(n_sections, |i| input.aero_sections[i].chord),
@@ -464,53 +487,42 @@ impl AeroBody {
     /// Calculate the aerodynamic loads from the inflow velocities at each section.
     /// Uses inflow values set by `set_inflow_from_function` or `set_inflow_from_vector`.
     fn calculate_aerodynamic_loads(&mut self, fluid_density: f64) {
-        // Calculate relative velocity for each motion point
-        multizip((
-            self.v_rel.col_iter_mut(),                  // Relative velocity
-            self.v_inflow.col_iter(),                   // Fluid velocity (inflow)
-            self.v_motion.subrows_mut(0, 3).col_iter(), // AC velocity
-            self.qqr_motion_map.col_iter(),             // Axis rotation
-        ))
-        .for_each(|(v_rel, v_fl, v_ac, qqr)| {
-            calculate_relative_velocity(v_rel, v_fl, v_ac, qqr);
-        });
-
         multizip((
             self.loads.col_iter_mut(),
-            self.v_rel.col_iter(),
+            self.v_inflow.col_iter(), // Fluid velocity (inflow)
+            self.v_motion.subrows_mut(0, 3).col_iter(), // AC velocity
             self.polar_size.iter(),
             self.aoa.col_iter(),
             self.cl.col_iter(),
             self.cd.col_iter(),
             self.cm.col_iter(),
             self.chord.iter(),
-            self.twist.iter(),
             self.delta_s.iter(),
             self.qqr_motion_map.col_iter(),
         ))
         .for_each(
             |(
                 loads,
-                v_rel,
+                v_inflow,
+                v_motion,
                 &polar_size,
                 aoa_polar,
                 cl_polar,
                 cd_polar,
                 cm_polar,
-                &twist,
                 &chord,
                 &delta_s,
                 qqr,
             )| {
                 calculate_aerodynamic_load(
                     loads,
-                    v_rel,
+                    v_inflow,
+                    v_motion,
                     polar_size,
                     aoa_polar,
                     cl_polar,
                     cd_polar,
                     cm_polar,
-                    twist,
                     chord,
                     delta_s,
                     fluid_density,
@@ -676,44 +688,40 @@ impl AeroBody {
 // Computation kernels
 //------------------------------------------------------------------------------
 
-fn calculate_relative_velocity(
-    mut v_rel: ColMut<f64>,
-    v_inflow: ColRef<f64>,
-    v_motion: ColRef<f64>,
-    qqr: ColRef<f64>,
-) {
-    // Inverse of qqr
-    let mut qqr_inv = col![0., 0., 0., 0.];
-    quat_inverse(qqr.as_ref(), qqr_inv.as_mut());
-
-    // Calculate difference between inflow velocity and aerodynamic center velocity
-    let v_diff = &v_inflow - &v_motion;
-    let mut v_diff_rot = col![0., 0., 0.];
-    quat_rotate_vector(qqr_inv.as_ref(), v_diff.as_ref(), v_diff_rot.as_mut());
-
-    // Relative velocity only considers flow in the y-z plane
-    v_rel[1] = v_diff_rot[1];
-    v_rel[2] = v_diff_rot[2];
-}
-
+/// Calculate aerodynamic loads in the global coordinate system.
 fn calculate_aerodynamic_load(
     mut loads: ColMut<f64>,
-    v_rel: ColRef<f64>,
+    v_inflow: ColRef<f64>,
+    v_motion: ColRef<f64>,
     polar_size: usize,
     aoa_polar: ColRef<f64>,
     cl_polar: ColRef<f64>,
     cd_polar: ColRef<f64>,
     cm_polar: ColRef<f64>,
     chord: f64,
-    twist: f64,
     delta_s: f64,
     fluid_density: f64,
     qqr: ColRef<f64>,
 ) {
-    // Calculate angle of attack
-    let aoa = calculate_angle_of_attack(v_rel, twist);
+    // Calculate difference between inflow velocity and aerodynamic center velocity
+    // in the global coordinate system
+    let v_rel_global = &v_inflow - &v_motion;
 
-    // Find index of angle of attack in aoa vector
+    // Transform the relative velocity to the local coordinate system with
+    // +Y to the trailing edge and +Z to the pressure side of the airfoil.
+    // This is done by rotating the relative velocity vector by the inverse of
+    // the total rotation quaternion (rotation displacement + initial rotation)
+    let mut qqr_inv = col![0., 0., 0., 0.];
+    quat_inverse(qqr.as_ref(), qqr_inv.as_mut());
+    let mut v_rel = quat_rotate_vector_alloc(qqr_inv.as_ref(), v_rel_global.as_ref());
+
+    // Relative velocity only considers flow in the y-z plane
+    v_rel[0] = 0.;
+
+    // Calculate angle of attack
+    let aoa = calculate_angle_of_attack(v_rel.as_ref());
+
+    // Find index of angle of attack in aoa vector for interpolation
     let i_aoa = (0..polar_size - 1)
         .position(|i| aoa >= aoa_polar[i] && aoa <= aoa_polar[i + 1])
         .unwrap_or_else(|| {
@@ -734,10 +742,10 @@ fn calculate_aerodynamic_load(
     let cm = (1. - alpha) * cm_polar[i_aoa] + alpha * cm_polar[i_aoa + 1];
 
     // Calculate force and moment in local coordinates
-    let dynamic_pressure = 0.5 * fluid_density * v_rel.norm_l2().powi(2);
+    let dynamic_pressure = fluid_density * v_rel.norm_l2().powi(2) / 2.;
 
     // Calculate drag direction vector as normalized negative relative flow velocity vector
-    let drag_vector = v_rel / v_rel.norm_l2();
+    let drag_vector = &v_rel / v_rel.norm_l2();
 
     // Calculate lift vector perpendicular to the drag vector
     let mut lift_vector = col![0., 0., 0.];
@@ -747,6 +755,7 @@ fn calculate_aerodynamic_load(
         lift_vector.as_mut(),
     );
 
+    // Calculate force and moment in local coordinates
     let force_local = dynamic_pressure * chord * delta_s * (cl * &lift_vector + cd * &drag_vector);
     let moment_local = col![cm * dynamic_pressure * chord.powi(2) * delta_s, 0., 0.];
 
@@ -761,18 +770,6 @@ fn calculate_aerodynamic_load(
         moment_local.as_ref(),
         loads.rb_mut().subrows_mut(3, 3),
     );
-    // println!("twist (deg): {:?}", twist.to_degrees());
-    // println!("v_rel: {:?}", v_rel);
-    // println!("aoa (deg): {:?}", aoa.to_degrees());
-    // println!("cl (deg): {:?}", cl);
-    // println!("cd (deg): {:?}", cd);
-    // println!("cm (deg): {:?}", cm);
-    // println!("drag_vector: {:?}", drag_vector);
-    // println!("lift_vector: {:?}", lift_vector);
-    // println!("loads: {:?}", loads);
-    // println!("force_local: {:?}", force_local);
-    // println!("moment_local: {:?}", moment_local);
-    // println!("");
 }
 
 /// Returns a vector of positions [0-1] where the jacobian is calculated for
@@ -846,28 +843,18 @@ fn calculate_aero_point_widths(
 ///
 /// * `ac_to_ref_axis_horizontal` - Horizontal distance from leading edge to reference axis (+ towards leading edge)
 /// * `chord_to_ref_axis_vertical` - Vertical distance from chord line to reference axis (+ towards suction side)
-/// * `twist` - Rotation about (0, 0)
-/// * `tangent` - Tangent vector of reference line at the aero point (orientation of blade in 3D space)
 fn calculate_con_motion_vector(
     ac_to_ref_axis_horizontal: f64,
     chord_to_ref_axis_vertical: f64,
-    twist: f64,
-    tangent: [f64; 3],
 ) -> [f64; 3] {
-    let q =
-        quat_from_tangent_twist_alloc(col![tangent[0], tangent[1], tangent[2]].as_ref(), -twist);
-    let v_base = col![0., -ac_to_ref_axis_horizontal, chord_to_ref_axis_vertical];
-    let v_rot = quat_rotate_vector_alloc(q.as_ref(), v_base.as_ref());
-    [v_rot[0], v_rot[1], v_rot[2]]
+    [0., -ac_to_ref_axis_horizontal, chord_to_ref_axis_vertical]
 }
 
-/// Calculate angle of attack based on relative velocity and twist angle.
-/// The airfoil coordinate system has the x-axis pointing out of the page,
-/// the y-axis pointing to the trailing edge, and the z-axis pointing toward
-/// the pressure side.
-fn calculate_angle_of_attack(v_rel: ColRef<f64>, twist: f64) -> f64 {
-    let alpha_raw = (-v_rel[2]).atan2(v_rel[1]) - twist;
-    alpha_raw.sin().atan2(alpha_raw.cos())
+/// Calculate angle of attack based on relative velocity. The airfoil
+/// coordinate system has +X pointing out of the page, +Y pointing
+/// to the trailing edge, and +Z pointing to the pressure side.
+fn calculate_angle_of_attack(v_rel: ColRef<f64>) -> f64 {
+    (-v_rel[2]).atan2(v_rel[1])
 }
 
 //------------------------------------------------------------------------------
@@ -881,47 +868,34 @@ mod tests {
     use std::f64::consts::PI;
 
     #[test]
-    fn test_calculate_angle_of_attack_with_twist() {
+    fn test_calculate_angle_of_attack() {
         struct Case {
             flow_angle: f64,
-            twist: f64,
             expected_aoa: f64,
         }
 
         vec![
             Case {
                 flow_angle: 0.0,
-                twist: 0.1,
-                expected_aoa: -0.1,
-            },
-            Case {
-                flow_angle: -0.1,
-                twist: 0.1,
                 expected_aoa: 0.0,
             },
             Case {
+                flow_angle: -0.1,
+                expected_aoa: 0.1,
+            },
+            Case {
                 flow_angle: 0.2,
-                twist: 0.1,
-                expected_aoa: -0.3,
+                expected_aoa: -0.2,
             },
             Case {
                 flow_angle: 0.1 - PI,
-                twist: 0.0,
-                expected_aoa: PI - 0.1,
-            },
-            // Check wraparound
-            Case {
-                flow_angle: PI,
-                twist: 0.1,
                 expected_aoa: PI - 0.1,
             },
         ]
         .iter()
         .for_each(|c| {
-            let twist = c.twist;
-            let angle: f64 = c.flow_angle;
-            let v_rel = col![0.0, angle.cos(), angle.sin()];
-            let aoa = calculate_angle_of_attack(v_rel.as_ref(), twist);
+            let v_rel = col![0.0, c.flow_angle.cos(), c.flow_angle.sin()];
+            let aoa = calculate_angle_of_attack(v_rel.as_ref());
             assert_relative_eq!(aoa, c.expected_aoa, epsilon = 1e-12);
         });
     }
@@ -936,8 +910,8 @@ mod tests {
         let cm_polar = col![0.01, 0.03]; // Moment coefficient values
 
         struct Data {
-            v_rel: Col<f64>,
-            twist: f64,
+            v_inflow: Col<f64>,
+            v_motion: Col<f64>,
             chord: f64,
             delta_s: f64,
             fluid_density: f64,
@@ -958,8 +932,8 @@ mod tests {
             //        = [7.35, 0., 0.]
             // No rotation from local to global
             Data {
-                v_rel: col![0.0, 10.0, 0.0],
-                twist: 0.0,
+                v_inflow: col![0.0, 10.0, 0.0],
+                v_motion: col![0.0, 0.0, 0.0],
                 chord: 2.0,
                 delta_s: 1.5,
                 fluid_density: 1.225,
@@ -975,8 +949,8 @@ mod tests {
             // dynamic pressure = 0.5 * 1.225 * 10 * 10
             // No rotation from local to global
             Data {
-                v_rel: col![0.0, 9.950041652780259, -0.9983341664682815],
-                twist: 0.0,
+                v_inflow: col![0.0, 9.950041652780259, -0.9983341664682815],
+                v_motion: col![0.0, 0.0, 0.0],
                 chord: 2.0,
                 delta_s: 1.5,
                 fluid_density: 1.225,
@@ -990,14 +964,14 @@ mod tests {
 
             calculate_aerodynamic_load(
                 load.as_mut(),
-                case.v_rel.as_ref(),
+                case.v_inflow.as_ref(),
+                case.v_motion.as_ref(),
                 n_polar_points,
                 aoa_polar.as_ref(),
                 cl_polar.as_ref(),
                 cd_polar.as_ref(),
                 cm_polar.as_ref(),
                 case.chord,
-                case.twist,
                 case.delta_s,
                 case.fluid_density,
                 case.qqr.as_ref(),
@@ -1017,67 +991,19 @@ mod tests {
         struct Data {
             ac_to_ref_axis_horizontal: f64,
             chord_to_ref_axis_vertical: f64,
-            twist: f64,
-            tangent: [f64; 3],
-            ac_vec_exp: [f64; 3],
+            ac_vec_exp: Col<f64>,
         }
 
         let test_cases = vec![
-            // AC 1m from straight reference axis, 0 twist
             Data {
                 ac_to_ref_axis_horizontal: 1.0,
                 chord_to_ref_axis_vertical: 0.0,
-                twist: 0.0_f64.to_radians(),
-                tangent: [1.0, 0.0, 0.0],
-                ac_vec_exp: [0.0, -1.0, 0.0],
+                ac_vec_exp: col![0.0, -1.0, 0.0],
             },
-            // AC 1m from straight reference axis, 90 twist
             Data {
                 ac_to_ref_axis_horizontal: 1.0,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: 90.0_f64.to_radians(),
-                tangent: [1.0, 0.0, 0.0],
-                ac_vec_exp: [0.0, 0.0, 1.0],
-            },
-            // AC 0.5m from straight reference axis, -90 twist
-            Data {
-                ac_to_ref_axis_horizontal: 0.5,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: -90.0_f64.to_radians(),
-                tangent: [1.0, 0.0, 0.0],
-                ac_vec_exp: [0.0, 0.0, -0.5],
-            },
-            // AC 1m from reference axis curved in x-z plane toward inflow, 0 twist
-            Data {
-                ac_to_ref_axis_horizontal: 1.0,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: 0.0_f64.to_radians(),
-                tangent: [0.8, 0.0, 0.6],
-                ac_vec_exp: [0.0, -1.0, 0.0],
-            },
-            // AC 1m from reference axis curved in x-y plane toward TE, 0 twist
-            Data {
-                ac_to_ref_axis_horizontal: 1.0,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: 0.0_f64.to_radians(),
-                tangent: [0.8, 0.6, 0.0],
-                ac_vec_exp: [0.6, -0.8, 0.0],
-            },
-            // AC 1m from reference axis curved in x-y plane toward TE, 90 twist
-            Data {
-                ac_to_ref_axis_horizontal: 1.0,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: 90.0_f64.to_radians(),
-                tangent: [0.8, 0.6, 0.0],
-                ac_vec_exp: [0.0, 0.0, 1.0],
-            },
-            // AC 1m from reference axis curved in x-y plane toward TE, 30 twist
-            Data {
-                ac_to_ref_axis_horizontal: 1.0,
-                chord_to_ref_axis_vertical: 0.0,
-                twist: 30.0_f64.to_radians(),
-                tangent: [0.8, 0.6, 0.0],
-                ac_vec_exp: [0.51961524227066314, -0.69282032302755081, 0.5],
+                chord_to_ref_axis_vertical: 0.5,
+                ac_vec_exp: col![0.0, -1.0, 0.5],
             },
         ];
 
@@ -1085,8 +1011,6 @@ mod tests {
             let ac_vec = calculate_con_motion_vector(
                 case.ac_to_ref_axis_horizontal,
                 case.chord_to_ref_axis_vertical,
-                case.twist,
-                case.tangent,
             );
             ac_vec
                 .into_iter()
