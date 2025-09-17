@@ -22,8 +22,18 @@ name = "blade_aero"
 [[example]]
 name = "iea15-aero"
 
+[[example]]
+name = "rotating_beam"
+
+[[example]]
+name = "turbine-lin"
+
+[[example]]
+name = "turbine-psd"
+
 [dependencies]
 approx = "0.5.1"
+csv = "1.3.1"
 equator = "0.4.2"
 faer = "0.22.6"
 gauss-quad = "0.2.1"
