@@ -189,16 +189,12 @@ impl Solver {
         let tmp_sp = SparseColMat::<usize, f64>::new(st_sym, data);
 
         //----------------------------------------------------------------------
-        // Create symbolic LU factorization if not already done
+        // Create symbolic LU factorization
         //----------------------------------------------------------------------
 
         // Calculate matrix multiplication information for St*T
         let (_, matmul_info) =
             sparse_sparse_matmul_symbolic(tmp_sp.symbolic(), t_sp.symbolic()).unwrap();
-
-        //----------------------------------------------------------------------
-        // Create symbolic LU factorization if not already done
-        //----------------------------------------------------------------------
 
         let lu_sym = sparse::linalg::solvers::SymbolicLu::try_new(tmp_sp.symbolic()).unwrap();
 
