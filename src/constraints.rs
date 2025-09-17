@@ -380,7 +380,7 @@ impl Constraint {
             &self.x0,
             &rb_x0
         )
-        .for_each(|unzip!(mut phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
+        .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
         // If only position is prescribed, return
         if self.n_rows == 3 {
@@ -461,7 +461,7 @@ impl Constraint {
             &self.x0,
             &rb_x0
         )
-        .for_each(|unzip!(mut phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
+        .for_each(|unzip!(phi, ub, ut, x0, rb_x0)| *phi = *ut + *x0 - *ub - *rb_x0);
 
         //----------------------------------------------------------------------
         // Stiffness matrix for base node
