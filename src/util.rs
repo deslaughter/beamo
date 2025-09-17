@@ -464,17 +464,20 @@ pub fn rotate_section_matrix(matrix: &Mat<f64>, rotation_vector: &Col<f64>) -> M
 
 pub fn write_matrix(m: MatRef<f64>, file_path: &str) -> std::io::Result<()> {
     use std::fs::File;
+    use std::io::BufWriter;
     use std::io::Write;
-    let mut file = File::create(file_path)?;
+    let file = File::create(file_path)?;
+    let mut writer = BufWriter::with_capacity(32 * 1024 * 1024, file);
     for i in 0..m.nrows() {
         for j in 0..m.ncols() {
             if j > 0 {
-                write!(file, ",")?;
+                write!(writer, ",")?;
             }
-            write!(file, "{:.16e}", m[(i, j)])?;
+            write!(writer, "{:.16e}", m[(i, j)])?;
         }
-        writeln!(file)?;
+        writeln!(writer)?;
     }
+    writer.flush()?;
     Ok(())
 }
 
