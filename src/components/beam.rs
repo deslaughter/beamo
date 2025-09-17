@@ -5,8 +5,8 @@ use crate::{
     model::Model,
     quadrature::Quadrature,
     util::{
-        quat_as_rotation_vector_alloc, quat_from_rotation_vector_alloc, quat_from_tangent_twist,
-        quat_rotate_vector_alloc, rotate_section_matrix,
+        cross_product_alloc, quat_as_rotation_vector_alloc, quat_from_rotation_vector_alloc,
+        quat_from_tangent_twist, quat_rotate_vector_alloc, rotate_section_matrix,
     },
 };
 use faer::prelude::*;
@@ -55,26 +55,41 @@ impl BeamComponent {
         .collect_vec();
 
         // Translate and rotate nodes based on root position
+        let omega = col![
+            input.root.velocity[3],
+            input.root.velocity[4],
+            input.root.velocity[5]
+        ];
         node_ids.iter().for_each(|&id| {
-            model.nodes[id]
-                .rotate(
-                    quat_as_rotation_vector_alloc(
-                        col![
-                            input.root.position[3],
-                            input.root.position[4],
-                            input.root.position[5],
-                            input.root.position[6]
-                        ]
-                        .as_ref(),
-                    )
+            model.nodes[id].rotate(
+                quat_as_rotation_vector_alloc(
+                    col![
+                        input.root.position[3],
+                        input.root.position[4],
+                        input.root.position[5],
+                        input.root.position[6]
+                    ]
                     .as_ref(),
-                    col![0., 0., 0.].as_ref(),
                 )
-                .translate([
-                    input.root.position[0],
-                    input.root.position[1],
-                    input.root.position[2],
-                ]);
+                .as_ref(),
+                col![0., 0., 0.].as_ref(),
+            );
+            let n = &model.nodes[id];
+            let r = col![n.xr[0] + n.u[0], n.xr[1] + n.u[1], n.xr[2] + n.u[2]];
+            let omega_cross_r = cross_product_alloc(omega.as_ref(), r.as_ref());
+            model.nodes[id].v = [
+                input.root.velocity[0] + omega_cross_r[0],
+                input.root.velocity[1] + omega_cross_r[1],
+                input.root.velocity[2] + omega_cross_r[2],
+                input.root.velocity[3],
+                input.root.velocity[4],
+                input.root.velocity[5],
+            ];
+            model.nodes[id].translate([
+                input.root.position[0],
+                input.root.position[1],
+                input.root.position[2],
+            ]);
         });
 
         let mut sections: Vec<BeamSection> =
