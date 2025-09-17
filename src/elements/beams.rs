@@ -1,3 +1,4 @@
+use std::ops::AddAssign;
 use std::ops::Rem;
 
 use crate::elements::beam_qps::BeamQPs;
@@ -674,8 +675,9 @@ impl Beams {
                             .col_iter()
                     )
                     .for_each(|(&(i, j), muu)| {
-                        let mut me = m.as_mut().submatrix_mut(i, j, 6, 6);
-                        zip!(&mut me, &muu.reshape(6, 6)).for_each(|unzip!(me, muu)| *me += *muu);
+                        m.as_mut()
+                            .submatrix_mut(i, j, 6, 6)
+                            .add_assign(&muu.reshape(6, 6));
                     });
 
                     // Stiffness matrix
@@ -687,8 +689,9 @@ impl Beams {
                             .col_iter()
                     )
                     .for_each(|(&(i, j), kuu)| {
-                        let mut ke = k.as_mut().submatrix_mut(i, j, 6, 6);
-                        zip!(&mut ke, &kuu.reshape(6, 6)).for_each(|unzip!(ke, kuu)| *ke += *kuu);
+                        k.as_mut()
+                            .submatrix_mut(i, j, 6, 6)
+                            .add_assign(&kuu.reshape(6, 6));
                     });
 
                     // Solve for A matrix given M and K
@@ -750,8 +753,7 @@ impl Beams {
                             .col_iter_mut()
                     )
                     .for_each(|(&(i, j), guu)| {
-                        zip!(&mut guu.reshape_mut(6, 6), &c_d.submatrix(i, j, 6, 6))
-                            .for_each(|unzip!(guu, c)| *guu += *c);
+                        guu.reshape_mut(6, 6).add_assign(&c_d.submatrix(i, j, 6, 6));
                     });
 
                     // Calculate the damping force on each node
@@ -762,11 +764,9 @@ impl Beams {
                     let f_d = &c_d * &v;
 
                     // Add to node dissipative force
-                    zip!(
-                        &mut self.node_fd.subcols_mut(ei.i_node_start, ei.n_nodes),
-                        &f_d.as_ref().reshape(6, ei.n_nodes)
-                    )
-                    .for_each(|unzip!(node_fd, f_d)| *node_fd += *f_d);
+                    self.node_fd
+                        .subcols_mut(ei.i_node_start, ei.n_nodes)
+                        .add_assign(&f_d.as_ref().reshape(6, ei.n_nodes));
                 }
                 _ => {}
             }
@@ -845,8 +845,7 @@ impl Beams {
                 self.node_f.subcols(ei.i_node_start, ei.n_nodes).col_iter()
             )
             .for_each(|(&i, f)| {
-                let mut residual = r.as_mut().subrows_mut(i, 6);
-                zip!(&mut residual, &f).for_each(|unzip!(r, f)| *r += *f);
+                r.as_mut().subrows_mut(i, 6).add_assign(&f);
             });
         });
     }
