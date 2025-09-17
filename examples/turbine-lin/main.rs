@@ -1,33 +1,45 @@
-use std::{collections::HashMap, f64::consts::PI, fs, io::Write};
+use std::{
+    collections::HashMap,
+    f64::consts::PI,
+    fs,
+    io::{BufWriter, Write},
+};
 
 use faer::prelude::*;
 use itertools::Itertools;
 use ottr::{
-    components::beam::{BeamComponent, BeamInputBuilder},
-    elements::beams::BeamSection,
+    components::{
+        beam::{BeamComponent, BeamInputBuilder},
+        node_data::NodeData,
+    },
+    elements::beams::{BeamSection, Damping},
     model::Model,
     output_writer::OutputWriter,
     util::{quat_as_rotation_vector, quat_compose_alloc, quat_from_axis_angle_alloc},
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+static DATA_DIR: &str = "examples/turbine-lin/lin";
+
 fn main() {
-    (0..11_usize).into_par_iter().for_each(|i| {
-        let rpm = i as f64 * 4.0;
-        let omega = rpm * 2.0 * PI / 60.0;
-        println!("Running case {}, rpm = {}, omega = {}", i + 1, rpm, omega);
-        run(i + 1, omega);
+    let max_rpm = 40.0;
+    let d_rpm = 2.0;
+    let n_cases = (max_rpm / d_rpm) as usize + 1;
+    (0..n_cases).into_par_iter().for_each(|i| {
+        let rotor_rpm = i as f64 * d_rpm;
+        println!("Running case {}, rpm = {}", i + 1, rotor_rpm);
+        run(i + 1, rotor_rpm);
     });
 }
 
 #[rustfmt::skip]
-fn run(op_num: usize, omega: f64) {
+fn run(op_num: usize, rotor_rpm: f64) {
     let time_step = 0.01;
     // let duration = 2.0;
     // let n_steps = (duration / time_step) as usize;
-    let n_revolutions = 1.;
+    let n_revolutions = 2.;
 
-    let rotor_rpm = omega * 60.0 / (2.0 * PI);
+    let omega = rotor_rpm * 2.0 * PI / 60.0;
 
     let mut model = Model::new();
     model.set_time_step(time_step);
@@ -42,17 +54,16 @@ fn run(op_num: usize, omega: f64) {
     };
 
     // Create directory
-    let directory = format!("examples/rotor/lin").to_string();
-    fs::create_dir_all(&directory).unwrap();
+    fs::create_dir_all(&DATA_DIR).unwrap();
 
     let omega_v = [omega, 0., 0.];
 
     let mut turbine = build_rotor(omega_v, &mut model);
-    model.write_mesh_connectivity_file(&directory);
+    model.write_mesh_connectivity_file(&DATA_DIR);
 
     let mut netcdf_file = netcdf::create(format!(
         "{}/{:02}_turbine_{:04.2}.nc",
-        directory,
+        DATA_DIR,
         op_num,
         rotor_rpm.abs()
     ))
@@ -119,23 +130,7 @@ fn run(op_num: usize, omega: f64) {
 
     let mut desc_map = HashMap::new();
     let mut node_data = Vec::new();
-    turbine
-        .tower
-        .nodes
-        .iter()
-        .enumerate()
-        .skip(1)
-        .for_each(|(i, node)| {
-            desc_map.insert(
-                node.id,
-                Desc {
-                    module: "ED".to_string(),
-                    label: format!("Tower N{}", i + 1),
-                    rot_frame: "F".to_string(),
-                },
-            );
-            node_data.push(node);
-        });
+
     turbine.blades.iter().enumerate().for_each(|(i, blade)| {
         blade
             .nodes
@@ -154,6 +149,23 @@ fn run(op_num: usize, omega: f64) {
                 node_data.push(node);
             });
     });
+    turbine
+        .tower
+        .nodes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .for_each(|(i, node)| {
+            desc_map.insert(
+                node.id,
+                Desc {
+                    module: "ED".to_string(),
+                    label: format!("Tower N{}", i + 1),
+                    rot_frame: "F".to_string(),
+                },
+            );
+            node_data.push(node);
+        });
 
     // Get the dof indices in the state
     let dof_indices = node_data
@@ -170,70 +182,71 @@ fn run(op_num: usize, omega: f64) {
 
     let mut rv = col![0.0, 0.0, 0.0];
 
-    let file_path = format!("{}/{:02}_turbine_{:04.2}.lin", directory, op_num, rotor_rpm.abs());
-    let mut file = fs::File::create(file_path).expect("Failed to create output file");
+    let file_path = format!("{}/{:02}_turbine_{:04.2}.lin", DATA_DIR, op_num, rotor_rpm.abs());
+    let file = fs::File::create(file_path).expect("Failed to create output file");
+    let mut w = BufWriter::new(file);
 
-    writeln!(file, "Simulation information:").unwrap();
-    writeln!(file, "Simulation time:                    {} s", t).unwrap();
-    writeln!(file, "Rotor Speed:                        {} rad/s", omega.abs()).unwrap();
-    writeln!(file, "Azimuth:                            {} rad", azimuth.abs() % (2.0 * PI)).unwrap();
-    writeln!(file, "Wind Speed:                         0.0000 m/s").unwrap();
-    writeln!(file, "Number of continuous states:        {}", 2 * n).unwrap();
-    writeln!(file, "Number of discrete states:          0").unwrap();
-    writeln!(file, "Number of constraint states:        0").unwrap();
-    writeln!(file, "Number of inputs:                   0").unwrap();
-    writeln!(file, "Number of outputs:                  0").unwrap();
-    writeln!(file, "Jacobians included in this file?    No").unwrap();
+    writeln!(w, "Simulation information:").unwrap();
+    writeln!(w, "Simulation time:                    {} s", t).unwrap();
+    writeln!(w, "Rotor Speed:                        {} rad/s", omega.abs()).unwrap();
+    writeln!(w, "Azimuth:                            {} rad", azimuth.abs() % (2.0 * PI)).unwrap();
+    writeln!(w, "Wind Speed:                         0.0000 m/s").unwrap();
+    writeln!(w, "Number of continuous states:        {}", 2 * n).unwrap();
+    writeln!(w, "Number of discrete states:          0").unwrap();
+    writeln!(w, "Number of constraint states:        0").unwrap();
+    writeln!(w, "Number of inputs:                   0").unwrap();
+    writeln!(w, "Number of outputs:                  0").unwrap();
+    writeln!(w, "Jacobians included in this file?    No").unwrap();
 
-    writeln!(file, "\nOrder of continuous states:").unwrap();
-    writeln!(file, "   Row/Column Operating Point    Rotating Frame? Derivative Order Description:").unwrap();
-    writeln!(file, "   ---------- ---------------    --------------- ---------------- -----------").unwrap();
+    writeln!(w, "\nOrder of continuous states:").unwrap();
+    writeln!(w, "   Row/Column Operating Point    Rotating Frame? Derivative Order Description:").unwrap();
+    writeln!(w, "   ---------- ---------------    --------------- ---------------- -----------").unwrap();
 
     let mut k: usize = 0;
     node_data.iter().for_each(|n| {
         let d = desc_map.get(&n.id).unwrap();
         quat_as_rotation_vector(n.position.subrows(3, 4), rv.as_mut());
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in X, m", k + 1, n.position[0], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in Y, m", k + 2, n.position[1], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in Z, m", k + 3, n.position[2], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in X, rad", k + 4, rv[0], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in Y, rad", k + 5, rv[1], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in Z, rad", k + 6, rv[2], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in X, m", k + 1, n.position[0], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in Y, m", k + 2, n.position[1], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} trans-disp in Z, m", k + 3, n.position[2], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in X, rad", k + 4, rv[0], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in Y, rad", k + 5, rv[1], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} {} rot-disp in Z, rad", k + 6, rv[2], d.rot_frame, d.module, d.label).unwrap();
         k += 6;
     });
     node_data.iter().for_each(|n| {
         let d = desc_map.get(&n.id).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in X, m/s", k + 1, n.velocity[0], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Y, m/s", k + 2, n.velocity[1], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Z, m/s", k + 3, n.velocity[2], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in X, rad/s", k + 4, n.velocity[3], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Y, rad/s", k + 5, n.velocity[4], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Z, rad/s", k + 6, n.velocity[5], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in X, m/s", k + 1, n.velocity[0], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Y, m/s", k + 2, n.velocity[1], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Z, m/s", k + 3, n.velocity[2], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in X, rad/s", k + 4, n.velocity[3], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Y, rad/s", k + 5, n.velocity[4], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Z, rad/s", k + 6, n.velocity[5], d.rot_frame, d.module, d.label).unwrap();
         k += 6;
     });
 
-    writeln!(file, "\nOrder of continuous state derivatives:").unwrap();
-    writeln!(file, "   Row/Column Operating Point    Rotating Frame? Derivative Order Description:").unwrap();
-    writeln!(file, "   ---------- ---------------    --------------- ---------------- -----------").unwrap();
+    writeln!(w, "\nOrder of continuous state derivatives:").unwrap();
+    writeln!(w, "   Row/Column Operating Point    Rotating Frame? Derivative Order Description:").unwrap();
+    writeln!(w, "   ---------- ---------------    --------------- ---------------- -----------").unwrap();
     let mut k: usize = 0;
     node_data.iter().for_each(|n| {
         let d = desc_map.get(&n.id).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in X, m/s", k + 1, n.velocity[0], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Y, m/s", k + 2, n.velocity[1], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Z, m/s", k + 3, n.velocity[2], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in X, rad/s", k + 4, n.velocity[3], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Y, rad/s", k + 5, n.velocity[4], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Z, rad/s", k + 6, n.velocity[5], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in X, m/s", k + 1, n.velocity[0], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Y, m/s", k + 2, n.velocity[1], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} trans-disp in Z, m/s", k + 3, n.velocity[2], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in X, rad/s", k + 4, n.velocity[3], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Y, rad/s", k + 5, n.velocity[4], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of {} rot-disp in Z, rad/s", k + 6, n.velocity[5], d.rot_frame, d.module, d.label).unwrap();
         k += 6;
     });
     node_data.iter().for_each(|n|{
         let d = desc_map.get(&n.id).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in X, m/s/s", k+1, n.acceleration[0], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in Y, m/s/s", k+2, n.acceleration[1], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in Z, m/s/s", k+3, n.acceleration[2], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in X, rad/s/s", k+4, n.acceleration[3], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in Y, rad/s/s", k+5, n.acceleration[4], d.rot_frame, d.module, d.label).unwrap();
-        writeln!(file, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in Z, rad/s/s", k+6, n.acceleration[5], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in X, m/s/s", k+1, n.acceleration[0], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in Y, m/s/s", k+2, n.acceleration[1], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} trans-disp in Z, m/s/s", k+3, n.acceleration[2], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in X, rad/s/s", k+4, n.acceleration[3], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in Y, rad/s/s", k+5, n.acceleration[4], d.rot_frame, d.module, d.label).unwrap();
+        writeln!(w, "{:>5}  {:<32.16e} {} 2 {} First time derivative of First time derivative of {} rot-disp in Z, rad/s/s", k+6, n.acceleration[5], d.rot_frame, d.module, d.label).unwrap();
         k += 6;
     });
 
@@ -242,21 +255,22 @@ fn run(op_num: usize, omega: f64) {
         .cloned()
         .chain(dof_indices.iter().map(|i| *i + a_ss.ncols() / 2))
         .collect_vec();
-    writeln!(file, "\nLinearized state matrices:").unwrap();
-    writeln!(file, "\nA: {} x {}", a_indices.len(), a_indices.len()).unwrap();
+    writeln!(w, "\nLinearized state matrices:").unwrap();
+    writeln!(w, "\nA: {} x {}", a_indices.len(), a_indices.len()).unwrap();
     a_indices.iter().for_each(|i| {
         a_indices.iter().for_each(|j| {
-            write!(file, "{:>24.16e}", a_ss[(*i, *j)]).unwrap();
+            write!(w, "{:>24.16e}", a_ss[(*i, *j)]).unwrap();
         });
-        writeln!(file).unwrap();
+        writeln!(w).unwrap();
     });
 
-    file.flush().unwrap();
+    w.flush().unwrap();
 }
 
 pub struct Turbine {
     pub blades: Vec<BeamComponent>,
     pub tower: BeamComponent,
+    pub hub: NodeData,
     pub hub_blade_constraint_ids: Vec<usize>,
     pub tower_hub_constraint_id: usize,
 }
@@ -345,9 +359,9 @@ fn build_rotor(omega: [f64; 3], model: &mut Model) -> Turbine {
             root_orientation[2],
             root_orientation[3],
         ])
-        // .set_damping(Damping::Mu(col![
-        //     1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3
-        // ]))
+        .set_damping(Damping::Mu(col![
+            1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3
+        ]))
         .set_root_velocity([0., 0., 0., omega[0], omega[1], omega[2]]);
 
     // Build blades at various rotations
@@ -464,14 +478,15 @@ fn build_rotor(omega: [f64; 3], model: &mut Model) -> Turbine {
         .collect_vec();
 
     // Add prescribed rotation between tower top node and hub node
-    let tower_hub_constraint_id =
-        model.add_prescribed_rotation(tt_node_id, hub_node_id, col![1., 0., 0.]);
     // let tower_hub_constraint_id =
-    //     model.add_revolute_joint(tt_node_id, hub_node_id, col![1., 0., 0.]);
+    //     model.add_prescribed_rotation(tt_node_id, hub_node_id, col![1., 0., 0.]);
+    let tower_hub_constraint_id =
+        model.add_revolute_joint(tt_node_id, hub_node_id, col![1., 0., 0.]);
 
     Turbine {
         blades,
         tower,
+        hub: NodeData::new(hub_node_id),
         hub_blade_constraint_ids,
         tower_hub_constraint_id,
     }
