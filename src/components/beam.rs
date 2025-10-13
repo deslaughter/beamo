@@ -406,7 +406,7 @@ fn get_node_coordinates(reference_axis: &ReferenceAxis, node_xi: &[f64]) -> (Mat
     let n_kps = reference_axis.coordinate_grid.len();
 
     // Get the reference axis points on [-1, 1] instead of [0, 1]
-    let kp_xi = &reference_axis
+    let kp_xi = reference_axis
         .coordinate_grid
         .iter()
         .map(|&x| 2. * x - 1.)

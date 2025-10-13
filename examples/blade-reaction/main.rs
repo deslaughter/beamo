@@ -1,45 +1,29 @@
 use std::{f64::consts::PI, fs};
 
 use faer::prelude::*;
-use itertools::Itertools;
+use itertools::{izip, Itertools};
 use ottr::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::{BeamSection, Damping},
     model::Model,
     output_writer::OutputWriter,
     util::{
-        quat_compose_alloc, quat_from_axis_angle_alloc, quat_inverse_alloc,
-        quat_rotate_vector_alloc, write_matrix,
+        quat_compose_alloc, quat_from_axis_angle_alloc, quat_inverse_alloc, quat_rotate_vector,
+        write_matrix,
     }, // output_writer::OutputWriter,
 };
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-static DATA_DIR: &str = "examples/turbine-psd/data-nm";
+static OUT_DIR: &str = "examples/blade-reaction";
 
 fn main() {
-    let max_rpm = 40.0; // Maximum rotor speed in rpm
-    let d_rpm = 0.25;
-    let n_cases = (max_rpm / d_rpm) as usize + 1;
-
-    let signal_scale = 2.0e3;
-    let contents = fs::read_to_string("examples/turbine-psd/generated_signal.txt").unwrap();
-    let signals = contents
-        .lines()
-        .map(|line| {
-            line.split_whitespace()
-                .map(|s| s.parse::<f64>().unwrap() * signal_scale)
-                .collect_vec()
-        })
-        .collect_vec();
-
-    (0..n_cases).into_par_iter().for_each(|i| {
-        let rpm = i as f64 * d_rpm;
-        println!("Running case {}, rpm = {}", i + 1, rpm);
-        run(rpm, &signals);
+    [1.0, 20.0, 40.0].par_iter().for_each(|&rotor_rpm| {
+        println!("Running for {} rpm", rotor_rpm);
+        run(rotor_rpm);
     });
 }
 
-fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
+fn run(rotor_rpm: f64) {
     let time_step = 0.01;
     let duration = 1000.0;
     let n_steps = (duration / time_step) as usize;
@@ -48,11 +32,12 @@ fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
     let mut model = Model::new();
     model.set_time_step(time_step);
     model.set_gravity(0.0, 0.0, 0.0);
-    model.set_solver_tolerance(1e-6, 1e-4);
-    model.set_rho_inf(0.);
+    model.set_max_iter(10);
+    model.set_solver_tolerance(1e-6, 1e-5);
+    model.set_rho_inf(0.95);
 
     // Create directory
-    fs::create_dir_all(DATA_DIR).unwrap();
+    fs::create_dir_all(OUT_DIR).unwrap();
 
     // Create vector for hub angular velocity
     let omega = [rotor_rpm * 2.0 * PI / 60.0, 0., 0.];
@@ -65,7 +50,7 @@ fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
     let mut state = model.create_state();
 
     // Write mesh connectivity file
-    // model.write_mesh_connectivity_file(directory);
+    model.write_mesh_connectivity_file(OUT_DIR);
 
     // Create output writer and write initial condition
     // let mut netcdf_file =
@@ -73,19 +58,29 @@ fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
     // let mut output_writer = OutputWriter::new(&mut netcdf_file, model.n_nodes());
     // output_writer.write(&state, 0);
 
-    let mut blade_tip_v = Mat::<f64>::zeros(3 * 3, n_steps);
-    let mut tower_top_v = Mat::<f64>::zeros(3, n_steps);
+    let root_orientation =
+        quat_from_axis_angle_alloc(-90.0_f64.to_radians(), col![0., 1., 0.].as_ref());
 
-    // Apply loads at next to last node of tower and blades
-    let signal_node_dofs = [
-        turbine.tower.nodes.last().unwrap().id - 1,
-        turbine.blades[0].nodes.last().unwrap().id - 1,
-        turbine.blades[1].nodes.last().unwrap().id - 1,
-        turbine.blades[2].nodes.last().unwrap().id - 1,
-    ]
-    .iter()
-    .flat_map(|&nid| [(nid, 0), (nid, 1), (nid, 2)])
-    .collect_vec();
+    let mut blade_root_force = Mat::<f64>::zeros(3 * 3, n_steps);
+    let mut blade_root_moment = Mat::<f64>::zeros(3 * 3, n_steps);
+
+    let force_constraint_indices = turbine
+        .hub_blade_constraint_ids
+        .iter()
+        .map(|&cid| {
+            let i = &solver.constraints.constraints[cid].first_row_index;
+            [i + 0, i + 1, i + 2]
+        })
+        .collect_vec();
+
+    let moment_constraint_indices = turbine
+        .hub_blade_constraint_ids
+        .iter()
+        .map(|&cid| {
+            let i = &solver.constraints.constraints[cid].first_row_index;
+            [i + 3, i + 4, i + 5]
+        })
+        .collect_vec();
 
     // Loop through steps
     for i in 0..n_steps {
@@ -98,76 +93,41 @@ fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
         // Set rotation of tower-hub constraint
         solver.constraints.constraints[turbine.tower_hub_constraint_id].set_rotation(azimuth);
 
-        // Set loads on tower top and blade tips
-        signal_node_dofs
-            .iter()
-            .enumerate()
-            .for_each(|(j, &(nid, dof))| {
-                state.fx[(dof, nid)] = signals[i][j];
-            });
-
         // Take step and get convergence result
         let res = solver.step(&mut state);
 
-        let psi = [azimuth, azimuth + 2.0 * PI / 3.0, azimuth + 4.0 * PI / 3.0];
-
-        // Transform from rotating to non-rotating frame
-        let t_mbc = 2. / 3.
-            * mat![
-                [0.5, 0.5, 0.5],
-                [psi[0].sin(), psi[1].sin(), psi[2].sin()],
-                [psi[0].cos(), psi[1].cos(), psi[2].cos()],
-            ];
-
-        // Get the node motions
-        // turbine.blades.iter_mut().for_each(|blade| {
-        //     blade.nodes.iter_mut().for_each(|node| {
-        //         node.get_motion(&state);
-        //     });
-        // });
-
-        // get the tower node motions
-        // turbine.tower.nodes.iter_mut().for_each(|node| {
-        //     node.get_motion(&state);
-        // });
-
-        turbine.blades.iter().enumerate().for_each(|(j, blade)| {
+        izip!(
+            turbine.blades.iter(),
+            force_constraint_indices.iter(),
+            moment_constraint_indices.iter(),
+        )
+        .enumerate()
+        .for_each(|(j, (blade, force_indices, moment_indices))| {
             let root_node_id = blade.nodes[0].id;
-            let tip_node_id = blade.nodes.last().unwrap().id;
 
             // Get the blade root rotation displacement
             let q_root = state.x.col(root_node_id).subrows(3, 4);
             let q_root_inv = quat_inverse_alloc(q_root);
+            let rr0 = quat_compose_alloc(root_orientation.as_ref(), q_root_inv.as_ref());
 
-            // Blade velocity in rotating frame
-            let v = quat_rotate_vector_alloc(
-                q_root_inv.as_ref(),
-                state.v.col(tip_node_id).subrows(0, 3),
+            // Blade Force in rotating frame
+            quat_rotate_vector(
+                rr0.as_ref(),
+                solver.lambda.subrows(force_indices[0], 3),
+                blade_root_force.col_mut(i).subrows_mut(j * 3, 3),
             );
 
-            blade_tip_v[(j + 0, i)] = v[0];
-            blade_tip_v[(j + 3, i)] = v[1];
-            blade_tip_v[(j + 6, i)] = v[2];
+            // Blade moment in rotating frame
+            quat_rotate_vector(
+                rr0.as_ref(),
+                solver.lambda.subrows(moment_indices[0], 3),
+                blade_root_moment.col_mut(i).subrows_mut(j * 3, 3),
+            );
         });
-
-        let vx = &t_mbc * blade_tip_v.col(i).subrows(0, 3);
-        let vy = &t_mbc * blade_tip_v.col(i).subrows(3, 3);
-        let vz = &t_mbc * blade_tip_v.col(i).subrows(6, 3);
-        blade_tip_v.col_mut(i).subrows_mut(0, 3).copy_from(vx);
-        blade_tip_v.col_mut(i).subrows_mut(3, 3).copy_from(vy);
-        blade_tip_v.col_mut(i).subrows_mut(6, 3).copy_from(vz);
-
-        // Tower top velocity
-        tower_top_v.col_mut(i).copy_from(
-            &state
-                .v
-                .col(turbine.tower.nodes.last().unwrap().id)
-                .subrows(0, 3),
-        );
 
         // Exit if failed to converge
         if !res.converged {
-            println!("failed, t={}, err={}", t, res.err);
+            println!("{}RPM, failed, t={}, err={}", rotor_rpm, t, res.err);
             break;
         }
 
@@ -177,13 +137,13 @@ fn run(rotor_rpm: f64, signals: &[Vec<f64>]) {
     }
 
     write_matrix(
-        blade_tip_v.transpose(),
-        &format!("{}/{:.2}_blade_tip_v.csv", DATA_DIR, rotor_rpm),
+        blade_root_force.transpose(),
+        &format!("{}/{:.2}_blade_root_force.csv", OUT_DIR, rotor_rpm),
     )
     .unwrap();
     write_matrix(
-        tower_top_v.transpose(),
-        &format!("{}/{:.2}_tower_top_v.csv", DATA_DIR, rotor_rpm),
+        blade_root_moment.transpose(),
+        &format!("{}/{:.2}_blade_root_moment.csv", OUT_DIR, rotor_rpm),
     )
     .unwrap();
 }
@@ -350,31 +310,31 @@ fn build_rotor(omega: [f64; 3], model: &mut Model) -> Turbine {
         .position(0., 0., tower_height, 1., 0., 0., 0.)
         .build();
 
-    // // Hub mass and inertia
-    // model.add_mass_element(
-    //     hub_node_id,
-    //     mat![
-    //         [20000., 0., 0., 0., 0., 0.],
-    //         [0., 20000., 0., 0., 0., 0.],
-    //         [0., 0., 20000., 0., 0., 0.],
-    //         [0., 0., 0., 3.0e4, 0., 0.],
-    //         [0., 0., 0., 0., 0., 0.],
-    //         [0., 0., 0., 0., 0., 0.],
-    //     ],
-    // );
+    // Hub mass and inertia
+    model.add_mass_element(
+        hub_node_id,
+        mat![
+            [20000., 0., 0., 0., 0., 0.],
+            [0., 20000., 0., 0., 0., 0.],
+            [0., 0., 20000., 0., 0., 0.],
+            [0., 0., 0., 3.0e4, 0., 0.],
+            [0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0.],
+        ],
+    );
 
-    // // Add nacelle mass and yaw bearing mass
-    // model.add_mass_element(
-    //     tt_node_id,
-    //     mat![
-    //         [100000. + 3000., 0., 0., 0., 0., 0.],
-    //         [0., 100000. + 3000., 0., 0., 0., 0.],
-    //         [0., 0., 100000. + 3000., 0., 0., 0.],
-    //         [0., 0., 0., 0., 0., 0.],
-    //         [0., 0., 0., 0., 0., 0.],
-    //         [0., 0., 0., 0., 0., 10.0e5],
-    //     ],
-    // );
+    // Add nacelle mass and yaw bearing mass
+    model.add_mass_element(
+        tt_node_id,
+        mat![
+            [100000. + 3000., 0., 0., 0., 0., 0.],
+            [0., 100000. + 3000., 0., 0., 0., 0.],
+            [0., 0., 100000. + 3000., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 0.],
+            [0., 0., 0., 0., 0., 10.0e5],
+        ],
+    );
 
     //--------------------------------------------------------------------------
     // Constraints

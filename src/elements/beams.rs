@@ -113,22 +113,18 @@ impl Beams {
         nfm: &NodeFreedomMap,
     ) -> Self {
         // Total number of nodes to allocate (multiple of 8)
-        let total_nodes = elements.iter().map(|e| (e.node_ids.len())).sum::<usize>();
+        let total_nodes = elements.iter().map(|e| e.node_ids.len()).sum::<usize>();
         let alloc_nodes = total_nodes;
 
         // Total number of quadrature points (multiple of 8)
         let total_qps = elements
             .iter()
-            .map(|e| (e.quadrature.points.len()))
+            .map(|e| e.quadrature.points.len())
             .sum::<usize>();
         let alloc_qps = total_qps;
 
         // Max number of nodes in any element
-        let max_elem_nodes = elements
-            .iter()
-            .map(|e| (e.node_ids.len()))
-            .max()
-            .unwrap_or(0);
+        let max_elem_nodes = elements.iter().map(|e| e.node_ids.len()).max().unwrap_or(0);
 
         // Build element index
         let mut elem_index: Vec<ElemIndex> = vec![];

@@ -105,7 +105,7 @@ impl Model {
     }
 
     /// Creates and returns a node builder for adding a new node to the model
-    pub fn add_node(&mut self) -> NodeBuilder {
+    pub fn add_node(&mut self) -> NodeBuilder<'_> {
         self.nodes.push(Node {
             id: self.nodes.len(),
             s: 0.,
@@ -208,6 +208,20 @@ impl Model {
             node_id_target: target_node_id,
             x0: Col::<f64>::from_fn(3, |i| target_node.xr[i] - base_node.xr[i]),
             vec: &axis / axis.norm_l2(),
+        });
+        self.constraints.last().unwrap().id
+    }
+
+    // Add prescribed rotation constraint
+    pub fn add_heavy_top(&mut self, target_node_id: usize) -> usize {
+        let target_node = &self.nodes[target_node_id];
+        self.constraints.push(ConstraintInput {
+            id: self.constraints.len(),
+            kind: ConstraintKind::HeavyTop,
+            node_id_base: 0,
+            node_id_target: target_node_id,
+            x0: Col::<f64>::from_fn(3, |i| target_node.xr[i]),
+            vec: Col::zeros(3),
         });
         self.constraints.last().unwrap().id
     }

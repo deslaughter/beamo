@@ -4,8 +4,8 @@ use crate::{
     util::{
         axial_vector_of_matrix, cross_product, dot_product, matrix_ax, matrix_ax2,
         quat_as_matrix_alloc, quat_as_rotation_vector_alloc, quat_compose_alloc,
-        quat_from_rotation_vector, quat_from_rotation_vector_alloc, quat_inverse_alloc,
-        quat_rotate_vector, quat_rotate_vector_alloc, sparse_matrix_from_triplets, vec_tilde_alloc,
+        quat_from_rotation_vector_alloc, quat_inverse_alloc, quat_rotate_vector,
+        quat_rotate_vector_alloc, sparse_matrix_from_triplets, vec_tilde_alloc,
     },
 };
 use faer::{linalg::matmul::matmul, prelude::*, sparse::*, Accum, Par};
@@ -18,6 +18,7 @@ pub enum ConstraintKind {
     Rigid,
     Revolute,
     Rotation,
+    HeavyTop,
 }
 
 pub struct ConstraintInput {
@@ -134,6 +135,9 @@ impl Constraints {
                 ConstraintKind::Revolute => {
                     c.calculate_revolute(u_base, r_base, u_target, r_target, lambda);
                 }
+                ConstraintKind::HeavyTop => {
+                    c.calculate_heavy_top(u_target, r_target, lambda);
+                }
             }
 
             // Populate k sparse matrix values
@@ -177,7 +181,7 @@ pub struct Constraint {
     pub first_row_index: usize,
     base_col_index: usize,
     target_col_index: usize,
-    n_rows: usize,
+    pub n_rows: usize,
     node_id_base: usize,
     node_id_target: usize,
     x0: Col<f64>,
@@ -198,8 +202,10 @@ pub struct Constraint {
 
 impl Constraint {
     fn new(first_dof_index: usize, input: &ConstraintInput, nfm: &NodeFreedomMap) -> Self {
+        // Get number of DOFs for base node
         let n_dofs_base = match input.kind {
             ConstraintKind::Prescribed => 0,
+            ConstraintKind::HeavyTop => 0,
             _ => nfm.node_dofs[input.node_id_base].n_dofs,
         };
 
@@ -214,6 +220,7 @@ impl Constraint {
                 cmp::min(n_dofs_base, n_dofs_target)
             }
             ConstraintKind::Revolute => 5,
+            ConstraintKind::HeavyTop => 3,
         };
 
         // Calculate constraint axes
@@ -264,6 +271,7 @@ impl Constraint {
 
         let k_b = match input.kind {
             ConstraintKind::Prescribed => Mat::<f64>::new(),
+            ConstraintKind::HeavyTop => Mat::<f64>::new(),
             _ => Mat::<f64>::zeros(3, 3),
         };
 
@@ -346,8 +354,7 @@ impl Constraint {
 
     // Set displacement for prescribed displacement constraint
     pub fn set_displacement(&mut self, x: f64, y: f64, z: f64, rx: f64, ry: f64, rz: f64) {
-        let mut q = col![0., 0., 0., 0.];
-        quat_from_rotation_vector(col![rx, ry, rz].as_ref(), q.as_mut());
+        let q = quat_from_rotation_vector_alloc(col![rx, ry, rz].as_ref());
         self.input[0] = x;
         self.input[1] = y;
         self.input[2] = z;
@@ -641,6 +648,37 @@ impl Constraint {
             .copy_from(-lambda_2 * &x_tilde * &z_tilde - lambda_3 * &x_tilde * &y_tilde);
         self.k_b
             .copy_from(lambda_2 * &z_tilde * &x_tilde + lambda_3 * &y_tilde * &x_tilde);
+    }
+
+    fn calculate_heavy_top(
+        &mut self,
+        u_target: ColRef<f64>,
+        r_target: ColRef<f64>,
+        _lambda: ColRef<f64>,
+    ) {
+        //----------------------------------------------------------------------
+        // Position residual
+        //----------------------------------------------------------------------
+
+        // Phi(0:3) = ut + xr - Rb*xr
+        let rt_xr = quat_rotate_vector_alloc(r_target.as_ref(), self.x0.as_ref());
+        zip!(&mut self.phi.subrows_mut(0, 3), &u_target, &self.x0, &rt_xr)
+            .for_each(|unzip!(phi, ut, xr, rt_xr)| *phi = *rt_xr - (*ut + *xr));
+
+        //----------------------------------------------------------------------
+        // Target constraint gradient
+        //----------------------------------------------------------------------
+
+        // B(0:3,0:3) = -I (set at init)
+        self.b_target
+            .submatrix_mut(0, 0, 3, 3)
+            .copy_from(&-Mat::<f64>::identity(3, 3));
+
+        // B(0:3,3:6) = tilde(-Rt*xr)
+        let rt_xr_tilde = vec_tilde_alloc(rt_xr.as_ref());
+        self.b_target
+            .submatrix_mut(0, 3, 3, 3)
+            .copy_from(&rt_xr_tilde.transpose());
     }
 
     pub fn calculate_revolute_output(&self, state: &State) -> (f64, f64, f64) {

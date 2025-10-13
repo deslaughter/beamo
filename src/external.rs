@@ -1,103 +1,95 @@
 use core::panic;
 use faer::prelude::*;
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use std::fs;
 
 use crate::{
+    components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::{BeamSection, Damping},
-    interp::{gauss_legendre_lobotto_points, shape_deriv_matrix, shape_interp_matrix},
     model::Model,
-    quadrature::Quadrature,
-    util::quat_from_tangent_twist,
+    util::quat_from_rotation_vector_alloc,
 };
 
 pub fn add_beamdyn_blade(
     model: &mut Model,
     bd_primary_file_path: &str,
     bd_blade_file_path: &str,
-    elem_order: usize,
-    damping: Damping,
-) -> (Vec<usize>, usize) {
+    root_position: &[f64; 6],
+) -> BeamComponent {
     // Read key points
-    let key_points = parse_beamdyn_primary_file(&fs::read_to_string(bd_primary_file_path).unwrap());
+    let bd_input = parse_beamdyn_primary_file(&fs::read_to_string(bd_primary_file_path).unwrap());
 
     // Read sections
-    let sections = parse_beamdyn_blade_file(&fs::read_to_string(bd_blade_file_path).unwrap());
+    let bd_blade_input = parse_beamdyn_blade_file(&fs::read_to_string(bd_blade_file_path).unwrap());
 
-    // Calculate key point position on range of [-1,1]
-    let n_kps = key_points.len();
-    let kp_range = key_points[n_kps - 1][0] - key_points[0][0];
-    let kp_xi = key_points
+    // Calculate key point position on range of [0,1]
+    let distances = bd_input
+        .key_points
         .iter()
-        .map(|kp| 2. * (kp[0] - key_points[0][0]) / kp_range - 1.)
-        .collect_vec();
-
-    // Get node positions on [-1,1] and [0,1]
-    let n_nodes = elem_order + 1;
-    let node_xi = gauss_legendre_lobotto_points(elem_order);
-    let node_s = node_xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
-
-    // Build interpolation matrix to go from key points to node
-    let mut shape_interp = Mat::<f64>::zeros(kp_xi.len(), node_xi.len());
-    shape_interp_matrix(&kp_xi, &node_xi, shape_interp.as_mut());
-
-    // Build A matrix for fitting key points to element nodes
-    let mut a_matrix = Mat::<f64>::zeros(n_nodes, n_nodes);
-    for i in 0..n_nodes {
-        for j in 0..n_nodes {
-            for k in 0..n_kps {
-                a_matrix[(i, j)] += shape_interp[(k, i)].powi(2);
-            }
-        }
-    }
-    a_matrix.row_mut(0).fill(0.);
-    a_matrix.row_mut(n_nodes - 1).fill(0.);
-    a_matrix[(0, 0)] = 1.;
-    a_matrix[(n_nodes - 1, n_nodes - 1)] = 1.;
-
-    // Build B matrix for fitting key points to element nodes
-    let kp_matrix = Mat::from_fn(n_kps, 4, |i, j| key_points[i][j]);
-    let mut b_matrix = shape_interp.transpose() * &kp_matrix;
-    b_matrix.row_mut(0).copy_from(&kp_matrix.row(0));
-    b_matrix
-        .row_mut(n_nodes - 1)
-        .copy_from(&kp_matrix.row(n_kps - 1));
-
-    // Solve for node locations using least squares
-    let lu = a_matrix.full_piv_lu();
-    let node_xyzt = lu.solve(&b_matrix);
-
-    // Calculate derivative at nodes
-    let mut shape_deriv = Mat::<f64>::zeros(node_xi.len(), node_xi.len());
-    shape_deriv_matrix(&node_xi, &node_xi, shape_deriv.as_mut());
-    let deriv = shape_deriv * &node_xyzt.subcols(0, 3);
-
-    // Loop through node locations and derivatives and add to model
-    let mut q = col![0., 0., 0., 0.];
-    let node_ids = izip!(node_s.iter(), node_xyzt.row_iter(), deriv.row_iter())
-        .map(|(&si, nd, deriv)| {
-            let twist = nd[3];
-            let tan = deriv.transpose() / deriv.norm_l2();
-            quat_from_tangent_twist(tan.as_ref(), twist.to_radians(), q.as_mut()); // Calculate twist about tangent
-            model
-                .add_node()
-                .element_location(si)
-                .position(nd[0], nd[1], nd[2], q[0], q[1], q[2], q[3])
-                .build()
+        .tuple_windows()
+        .map(|(kp0, kp1)| {
+            ((kp1[0] - kp0[0]).powi(2) + (kp1[1] - kp0[1]).powi(2) + (kp1[2] - kp0[2]).powi(2))
+                .sqrt()
         })
         .collect_vec();
+    let kp_range = distances.iter().sum::<f64>();
+    let mut kp_cumdist = vec![0.];
+    for d in distances {
+        kp_cumdist.push(kp_cumdist.last().unwrap() + d);
+    }
+    let kp_grid = kp_cumdist.iter().map(|&d| d / kp_range).collect_vec();
 
-    // Quadrature rule
-    let gq = Quadrature::trapezoidal(&sections.iter().map(|s| s.s).collect_vec());
+    let root_orientation = quat_from_rotation_vector_alloc(
+        col![root_position[3], root_position[4], root_position[5]].as_ref(),
+    );
 
-    // Add beam element
-    let beam_elem_id = model.add_beam_element(&node_ids, &gq, &sections, &damping);
+    let input = BeamInputBuilder::new()
+        .set_element_order(bd_input.elem_order)
+        .set_damping(bd_blade_input.damping)
+        .set_section_refinement(bd_input.refinement - 1)
+        .set_reference_axis_z(
+            &kp_grid,
+            &bd_input
+                .key_points
+                .iter()
+                .map(|kp| [kp[0], kp[1], kp[2]])
+                .collect_vec(),
+            &kp_grid,
+            &bd_input.key_points.iter().map(|kp| kp[3]).collect_vec(),
+        )
+        .set_sections_z(&bd_blade_input.sections)
+        .set_root_position([
+            root_position[0],
+            root_position[1],
+            root_position[2],
+            root_orientation[0],
+            root_orientation[1],
+            root_orientation[2],
+            root_orientation[3],
+        ])
+        .build();
 
-    (node_ids, beam_elem_id)
+    BeamComponent::new(&input, model)
 }
 
-pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
+#[derive(Debug)]
+pub struct BeamDynInput {
+    pub key_points: Vec<[f64; 4]>,
+    pub refinement: usize,
+    pub elem_order: usize,
+}
+
+pub fn parse_beamdyn_primary_file(file_data: &str) -> BeamDynInput {
     let lines = file_data.lines().collect_vec();
+
+    let refinement_line = lines.get(7).unwrap();
+    let refinement: usize = refinement_line
+        .split_whitespace()
+        .collect_vec()
+        .first()
+        .unwrap()
+        .parse()
+        .unwrap();
 
     let member_total_line = lines.get(19).unwrap();
     if !member_total_line.contains("member_total") {
@@ -129,7 +121,7 @@ pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
         .unwrap();
 
     // Get key point coordinates and twist (swap x and z so length is along x)
-    lines
+    let key_points = lines
         .iter()
         .skip(24)
         .take(kp_total)
@@ -140,13 +132,64 @@ pub fn parse_beamdyn_primary_file(file_data: &str) -> Vec<[f64; 4]> {
                 .collect_vec();
             [v[0], v[1], v[2], v[3]]
         })
+        .collect_vec();
+
+    let elem_order_line = lines.get(25 + kp_total).unwrap();
+    let elem_order: usize = elem_order_line
+        .split_whitespace()
         .collect_vec()
+        .first()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    BeamDynInput {
+        key_points,
+        refinement,
+        elem_order,
+    }
 }
 
-pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
-    let lines = file_data.lines().skip(10).collect_vec();
-    lines
-        .chunks_exact(15)
+#[derive(Debug)]
+pub struct BeamDynBladeInput {
+    pub sections: Vec<BeamSection>,
+    pub damping: Damping,
+}
+
+pub fn parse_beamdyn_blade_file(file_data: &str) -> BeamDynBladeInput {
+    let damping_type_line = file_data.lines().nth(4).unwrap();
+    let damping_type: usize = damping_type_line
+        .split_whitespace()
+        .collect_vec()
+        .first()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let damping_coefficients_line = file_data.lines().nth(8).unwrap();
+    let damping_coefficients: [f64; 6] = damping_coefficients_line
+        .split_whitespace()
+        .map(|s| s.parse().unwrap())
+        .collect_vec()
+        .try_into()
+        .unwrap();
+
+    let station_total_line = file_data.lines().nth(3).unwrap();
+    let n_stations: usize = station_total_line
+        .split_whitespace()
+        .collect_vec()
+        .first()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let section_lines = file_data
+        .lines()
+        .skip(10)
+        .take(n_stations * 15)
+        .collect_vec();
+    let sections = section_lines
+        .chunks(15)
         .map(|chunk| {
             let s = chunk[0].trim().parse::<f64>().unwrap();
             let c = (1..7)
@@ -171,7 +214,23 @@ pub fn parse_beamdyn_blade_file(file_data: &str) -> Vec<BeamSection> {
                 c_star: Mat::<f64>::from_fn(6, 6, |i, j| c[i][j]),
             }
         })
-        .collect_vec()
+        .collect_vec();
+
+    BeamDynBladeInput {
+        sections: sections,
+        damping: match damping_type {
+            0 => Damping::None,
+            1 => Damping::Mu(col![
+                damping_coefficients[0],
+                damping_coefficients[1],
+                damping_coefficients[2],
+                damping_coefficients[3],
+                damping_coefficients[4],
+                damping_coefficients[5]
+            ]),
+            _ => panic!("Unsupported damping type"),
+        },
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -185,14 +244,16 @@ mod tests {
 
     #[test]
     fn test_parse_beamdyn_keypoints() {
-        let keypoints = parse_beamdyn_primary_file(BD_INPUT1);
-        println!("{:?}", keypoints);
+        let inp = parse_beamdyn_primary_file(BD_INPUT1);
+        assert_eq!(inp.key_points.len(), 5);
+        assert_eq!(inp.refinement, 1);
     }
 
     #[test]
     fn test_parse_beamdyn_blade_file() {
-        let sections = parse_beamdyn_blade_file(BD_INPUT2);
-        println!("{:?}", sections);
+        let inp = parse_beamdyn_blade_file(BD_INPUT2);
+        assert_eq!(inp.sections.len(), 3);
+        assert!(matches!(inp.damping, Damping::Mu(_)));
     }
 
     const BD_INPUT1: &str = r#"--------- BEAMDYN with OpenFAST INPUT FILE -------------------------------------------
@@ -223,13 +284,16 @@ True          RotStates        - Orient states in the rotating frame during line
 	 0.00000e+00 	 0.00000e+00 	 2.04082e+00 	 0.00000e+00
 	 0.00000e+00 	 0.00000e+00 	 4.08163e+00 	 0.00000e+00
 	 0.00000e+00 	 0.00000e+00 	 6.12245e+00 	 0.00000e+00
-	 0.00000e+00 	 0.00000e+00 	 8.16327e+00 	 0.00000e+00 "#;
+	 0.00000e+00 	 0.00000e+00 	 8.16327e+00 	 0.00000e+00
+---------------------- MESH PARAMETER ------------------------------------------
+          10   order_elem     - Order of interpolation (basis) function (-)
+---------------------- MATERIAL PARAMETER -------------------------------------- "#;
 
     const BD_INPUT2: &str =
         "------- BEAMDYN V1.00.* INDIVIDUAL BLADE INPUT FILE --------------------------
 ! NACA 0012 airfoil with chord 0.1 - Written using beamdyn.py
 ---------------------- BLADE PARAMETERS --------------------------------------
-   21  station_total    - Number of blade input stations (-)
+    3  station_total    - Number of blade input stations (-)
     1  damp_type        - Damping type (switch): 0: no damping; 1: viscous damping
 ---------------------- DAMPING COEFFICIENT------------------------------------
    mu1        mu2        mu3        mu4        mu5        mu6
@@ -279,5 +343,7 @@ True          RotStates        - Orient states in the rotating frame during line
    0.000000E+00 0.000000E+00 6.413657E+00 -3.175257E-18 -1.076823E-01 0.000000E+00
    0.000000E+00 0.000000E+00 -3.175257E-18 6.776322E-09 5.331106E-20 0.000000E+00
    0.000000E+00 0.000000E+00 -1.076823E-01 5.331106E-20 1.808609E-03 0.000000E+00
-   3.175257E-18 1.076823E-01 0.000000E+00 0.000000E+00 0.000000E+00 1.808616E-03";
+   3.175257E-18 1.076823E-01 0.000000E+00 0.000000E+00 0.000000E+00 1.808616E-03
+
+";
 }

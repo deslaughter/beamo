@@ -704,7 +704,7 @@ impl AeroBody {
 /// Calculate aerodynamic loads in the global coordinate system.
 fn calculate_aerodynamic_loads(
     mut loads: ColMut<f64>,
-    ref_axis_moment: ColMut<f64>,
+    mut ref_axis_moment: ColMut<f64>,
     v_inflow: ColRef<f64>,
     v_motion: ColRef<f64>,
     n_polar_points: usize,
@@ -794,8 +794,18 @@ fn calculate_aerodynamic_loads(
     quat_rotate_vector(
         qqr.as_ref(),
         ref_axis_moment_local.as_ref(),
-        ref_axis_moment,
+        ref_axis_moment.as_mut(),
     );
+
+    // println!("v_motion              {:?}", v_motion.as_ref());
+    // println!("v_inflow              {:?}", v_inflow.as_ref());
+    // println!("v_rel                 {:?}", v_rel.as_ref());
+    // println!("con_force             {:?}", con_force.as_ref());
+    // println!("force_local           {:?}", force_local.as_ref());
+    // println!("moment_local          {:?}", moment_local.as_ref());
+    // println!("ref_axis_moment_local {:?}", ref_axis_moment_local.as_ref());
+    // println!("ref_axis_moment       {:?}", ref_axis_moment.as_ref());
+    // println!("");
 }
 
 /// Returns a vector of positions [0-1] where the jacobian is calculated for

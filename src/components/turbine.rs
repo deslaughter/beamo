@@ -230,7 +230,7 @@ impl Turbine {
 
         // Get the shaft axis unit vector
         let shaft_axis =
-            (&hub_node_pos - &azimuth_node_pos) / (&hub_node_pos - &azimuth_node_pos).norm_l2();
+            (&azimuth_node_pos - &hub_node_pos) / (&azimuth_node_pos - &hub_node_pos).norm_l2();
 
         let omega = input.rotor_speed * shaft_axis;
         let mut v = Col::<f64>::zeros(3);

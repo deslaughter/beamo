@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use std::{f64::consts::PI, fs};
 
 use faer::prelude::*;
 use itertools::Itertools;
@@ -11,6 +11,8 @@ use ottr::{
     util::{quat_from_axis_angle_alloc, write_matrix, ColRefReshape},
     vtk::beams_nodes_as_vtk,
 };
+
+static DATA_DIR: &str = "examples/rotating_beam";
 
 fn main() {
     let time_step = 0.01;
@@ -46,8 +48,10 @@ fn main() {
     let mut solver = model.create_solver();
     let mut state = model.create_state();
 
+    fs::create_dir_all(format!("{}/vtk", DATA_DIR)).unwrap();
+
     beams_nodes_as_vtk(&solver.elements.beams)
-        .export_ascii(&format!("examples/rotating_beam/vtk/step_{:04}.vtk", 0))
+        .export_ascii(&format!("{}/vtk/step_{:04}.vtk", DATA_DIR, 0))
         .unwrap();
 
     // Loop through steps
@@ -199,7 +203,7 @@ fn main() {
     cols.iter().enumerate().for_each(|(j, col)| {
         a.col_mut(j).copy_from(&col);
     });
-    write_matrix(a.as_ref(), "examples/rotating_beam/a.csv").unwrap();
+    write_matrix(a.as_ref(), &format!("{}/a.csv", DATA_DIR)).unwrap();
 }
 
 fn calc_accel(solver: &mut Solver, state: &State, time_step: f64) -> Col<f64> {

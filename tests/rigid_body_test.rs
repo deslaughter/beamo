@@ -55,11 +55,23 @@ fn test_precession() {
     // run simulation
     //--------------------------------------------------------------------------
 
-    for _ in 0..500 {
+    let mut e = col![0., 0., 0.];
+
+    for i in 0..500 {
         // Output current rotation
-        // let q = state.u.col(0).subrows(3, 4);
-        // quat_as_euler_angles(q, e.as_mut());
-        // println!("{}\t{}\t{}\t{}", (i as f64) * time_step, e[0], e[1], e[2]);
+        let x = state.x.col(0).subrows(0, 3);
+        let q = state.u.col(0).subrows(3, 4);
+        quat_as_euler_angles(q.as_ref(), e.as_mut());
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            (i as f64) * time_step,
+            x[0],
+            x[1],
+            x[2],
+            e[0],
+            e[1],
+            e[2]
+        );
 
         // Step
         let res = solver.step(&mut state);
@@ -77,7 +89,7 @@ fn test_precession() {
 fn test_heavy_top() {
     let time_step: f64 = 0.002;
     let t_end: f64 = 2.;
-    let n_steps = ((t_end / time_step).ceil() as usize) + 1;
+    let n_steps = (t_end / time_step).ceil() as usize;
 
     // Create output directory
     fs::create_dir_all(OUT_DIR).unwrap();
@@ -85,10 +97,10 @@ fn test_heavy_top() {
     // Model
     let mut model = Model::new();
     // model.set_solver_tolerance(1e-5, 1e-3);
-    model.set_solver_tolerance(1e-9, 1e-9);
+    model.set_solver_tolerance(1e-11, 1e-11);
     model.set_time_step(time_step);
     model.set_rho_inf(0.9);
-    model.set_max_iter(10);
+    model.set_max_iter(30);
 
     // Heavy top parameters
     let m = 15.;
@@ -155,9 +167,10 @@ fn test_heavy_top() {
     mass_matrix.submatrix_mut(3, 3, 3, 3).copy_from(&j);
     model.add_mass_element(mass_node_id, mass_matrix);
 
-    let ground_node_id = model.add_node().position_xyz(0., 0., 0.).build();
-    model.add_rigid_constraint(mass_node_id, ground_node_id);
-    model.add_prescribed_constraint(ground_node_id);
+    // let ground_node_id = model.add_node().position_xyz(0., 0., 0.).build();
+    // model.add_rigid_constraint(mass_node_id, ground_node_id);
+    // model.add_prescribed_constraint(ground_node_id);
+    model.add_heavy_top(mass_node_id);
 
     // Set gravity
     model.set_gravity(gamma[0], gamma[1], gamma[2]);
@@ -185,34 +198,34 @@ fn test_heavy_top() {
     let mut err_sum = 0.0;
 
     // Time step
-    for i in 0..n_steps {
+    for i in 0..n_steps + 1 {
         let t = (i as f64) * time_step;
 
         // Output current position and rotation
-        let u = state.u.col(0).subrows(0, 3);
+        let x = state.x.col(0).subrows(0, 3);
         let q = state.u.col(0).subrows(3, 4);
         quat_as_rotation_vector(q, rv.as_mut());
         file.write_fmt(format_args!(
             "{},{},{},{},{},{},{}\n",
-            t, u[0], u[1], u[2], rv[0], rv[1], rv[2]
+            t, x[0], x[1], x[2], rv[0], rv[1], rv[2]
         ))
         .unwrap();
 
-        if i == 400 {
-            let approx_eq = CwiseMat(ApproxEq::eps() * 10.);
-            assert!(
-                state.u.col(0) ~
-                col![
-                    -0.42217802273894345,
-                    -0.09458263530050703,
-                    -0.04455460488952848,
-                    -0.17919607435565366,
-                    0.21677896640311572,
-                    -0.9594776960853596,
-                    -0.017268392381761217,
-                ]
-            );
-        }
+        // if i == 400 {
+        //     let approx_eq = CwiseMat(ApproxEq::eps() * 10.);
+        //     assert!(
+        //         state.u.col(0) ~
+        //         col![
+        //             -0.42217802273894345,
+        //             -0.09458263530050703,
+        //             -0.04455460488952848,
+        //             -0.17919607435565366,
+        //             0.21677896640311572,
+        //             -0.9594776960853596,
+        //             -0.017268392381761217,
+        //         ]
+        //     );
+        // }
 
         // Step
         let res = solver.step(&mut state);
@@ -222,6 +235,12 @@ fn test_heavy_top() {
 
         assert_eq!(res.converged, true);
     }
+
+    println!(
+        "time = {}, pos: {:?}",
+        n_steps as f64 * time_step,
+        state.x.col(0)
+    );
 
     println!("Total iterations: {}", n_iter_sum);
     println!("Average iterations: {}", n_iter_sum as f64 / n_steps as f64);

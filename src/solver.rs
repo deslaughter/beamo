@@ -268,6 +268,12 @@ impl Solver {
 
             self.build_system();
 
+            // let (err_sys, err_con) = self.calculate_convergence_error_separate();
+            // if err_sys < self.p.abs_tol && err_con < self.p.rel_tol {
+            //     res.err = (err_sys.powi(2) + err_con.powi(2)).sqrt();
+            //     break;
+            // }
+
             // Solve System
             self.solve_system();
 
@@ -317,6 +323,11 @@ impl Solver {
 
         res.converged = true;
         res
+    }
+
+    pub fn constraint_loads(&self, constraint_id: usize) -> Col<f64> {
+        let c = &self.constraints.constraints[constraint_id];
+        self.lambda.subrows(c.first_row_index, c.n_rows).to_owned()
     }
 
     // Linearization based on s11071-020-06069-5
@@ -1079,22 +1090,28 @@ impl Solver {
 
     // Calculate convergence error (https://doi.org/10.1115/1.4033441)
     fn calculate_convergence_error(&self, state: &State) -> f64 {
-        let sys_sum_err_squared = zip!(&self.x_delta, &state.u_delta)
-            .map(|unzip!(pi, xi)| {
-                (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
-            })
-            .as_ref()
-            .sum();
+        self.r.subrows(0, self.n_system).norm_l2()
+        // let sys_sum_err_squared = zip!(&self.x_delta, &state.u_delta)
+        //     .map(|unzip!(pi, xi)| {
+        //         (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
+        //     })
+        //     .as_ref()
+        //     .sum();
 
-        let const_sum_err_squared =
-            zip!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
-                .map(|unzip!(pi, xi)| {
-                    (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
-                })
-                .sum();
+        // let const_sum_err_squared =
+        //     zip!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
+        //         .map(|unzip!(pi, xi)| {
+        //             (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
+        //         })
+        //         .sum();
 
-        let sum_err_squared = sys_sum_err_squared + const_sum_err_squared;
-        return sum_err_squared.sqrt() / (self.n_dofs as f64).sqrt();
+        // let sum_err_squared = sys_sum_err_squared + const_sum_err_squared;
+        // return sum_err_squared.sqrt() / (self.n_dofs as f64).sqrt();
+    }
+
+    // Calculate convergence error (https://doi.org/10.1115/1.4033441)
+    fn calculate_convergence_error_separate(&self) -> (f64, f64) {
+        (self.r.norm_l2(), self.constraints.phi.norm_l2())
     }
 
     fn update_lambda(&mut self) {

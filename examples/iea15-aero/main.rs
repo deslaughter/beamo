@@ -1,9 +1,10 @@
-use std::fs::File;
 use std::io::Write;
+use std::{f64::consts::PI, fs::File};
 
 use faer::prelude::*;
 use itertools::{izip, Itertools};
 
+use ottr::util::{quat_rotate_vector, quat_rotate_vector_alloc};
 use ottr::{
     components::{
         aero::{AeroBodyInput, AeroComponent, AeroSection},
@@ -36,10 +37,10 @@ fn main() {
     let mut state = model.create_state();
 
     // Write mesh connectivity file
-    model.write_mesh_connectivity_file("output");
+    model.write_mesh_connectivity_file("examples/iea15-aero");
 
     // Create netcdf output file
-    let mut netcdf_file = netcdf::create("output/turbine.nc").unwrap();
+    let mut netcdf_file = netcdf::create("examples/iea15-aero/turbine.nc").unwrap();
     let mut ow = OutputWriter::new(&mut netcdf_file, state.n_nodes);
     ow.write(&state, 0);
 
@@ -57,11 +58,21 @@ fn main() {
     write!(outfile, "Time\tAzimuth\tRotSpeed\n").unwrap();
     write!(outfile, "(s)\t(deg)\t(rpm)\n").unwrap();
 
+    // Torque at rated wind speed
+    turbine.torque = -21.03e6;
+
     // Loop through steps
     let mut n_iter = 0;
     for i in 1..n_steps {
         // Calculate time
         let t = (i as f64) * time_step;
+
+        // Calculate torque load on the hub
+        quat_rotate_vector(
+            state.x.col(turbine.hub_node.id).subrows(3, 4),
+            col![turbine.torque, 0., 0.].as_ref(),
+            turbine.hub_node.loads.subrows_mut(3, 3),
+        );
 
         // Copy loads from nodes to state
         turbine.set_loads(&mut state);
@@ -105,10 +116,33 @@ fn main() {
         )
         .unwrap();
 
-        if i % 100 == 0 {
+        turbine.torque -= (rotor_speed - 7.56 * 0.104719755) * 1e5;
+
+        let aero_loads = aero
+            .bodies
+            .iter()
+            .map(|b| {
+                [
+                    b.loads.row(0).sum(),
+                    b.loads.row(1).sum(),
+                    b.loads.row(2).sum(),
+                ]
+            })
+            .collect_vec();
+
+        let aero_loads = col![
+            aero_loads.iter().map(|x| x[0]).sum::<f64>(),
+            aero_loads.iter().map(|x| x[1]).sum::<f64>(),
+            aero_loads.iter().map(|x| x[2]).sum::<f64>(),
+        ];
+
+        if i % 10 == 0 {
             println!(
-                "t: {:.2}, azimuth: {:.4}, rotor_speed: {:.4}, rotor_acc: {:.4}",
-                t, azimuth, rotor_speed, rotor_acc
+                "t: {:6.2}, azimuth: {:.4}, rotor_speed: {:.3},  torque: {:.2}", //, tt_loads: {:?}, blade_loads: {:?}",
+                t,
+                azimuth,
+                rotor_speed * 9.549297,
+                turbine.torque //solver.constraint_loads(turbine.yaw_bearing_shaft_base_constraint_id).subrows(0, 3)/1000., aero_loads/1000.
             );
         }
 
@@ -123,7 +157,11 @@ fn main() {
         // Write aerodynamic output
         aero.bodies.iter().enumerate().for_each(|(j, body)| {
             body.as_vtk()
-                .export_ascii(format!("output/vtk_output/aero_b{}.{:0>3}.vtk", j + 1, i))
+                .export_ascii(format!(
+                    "examples/iea15-aero/vtk_output/aero_b{}.{:0>3}.vtk",
+                    j + 1,
+                    i
+                ))
                 .unwrap()
         });
 
@@ -140,8 +178,6 @@ fn main() {
 }
 
 fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
-    let n_tower_nodes = 11;
-
     let windio_path = "examples/IEA-15-240-RWT-aero.yaml";
     let yaml_file = std::fs::read_to_string(windio_path).expect("Unable to read file");
     let wio: Value = serde_yaml::from_str(&yaml_file).expect("Unable to parse YAML");
@@ -161,14 +197,7 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
     // Inertia matrix components
     let ic = ["mass", "cm_x", "cm_y", "i_cp", "i_edge", "i_flap", "i_plr"]
         .iter()
-        .map(|key| {
-            inertia_matrix[key]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec()
-        })
+        .map(|key| serde_yaml::from_value::<Vec<f64>>(inertia_matrix[key].clone()).unwrap())
         .collect_vec();
 
     // Stiffness matrix components
@@ -177,23 +206,12 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
         "K35", "K36", "K44", "K45", "K46", "K55", "K56", "K66",
     ]
     .iter()
-    .map(|key| {
-        stiffness_matrix[key]
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_f64().unwrap())
-            .collect_vec()
-    })
+    .map(|key| serde_yaml::from_value::<Vec<f64>>(stiffness_matrix[key].clone()).unwrap())
     .collect_vec();
 
     // Grid
-    let blade_matrix_grid = inertia_matrix["grid"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_f64().unwrap())
-        .collect_vec();
+    let blade_matrix_grid =
+        serde_yaml::from_value::<Vec<f64>>(inertia_matrix["grid"].clone()).unwrap();
 
     let blade_sections = (0..blade_matrix_grid.len())
         .map(|i| {
@@ -228,46 +246,16 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
         .set_element_order(n_blade_nodes - 1)
         .set_section_refinement(0)
         .set_reference_axis_z(
-            &ref_axis["x"]["grid"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
+            &serde_yaml::from_value::<Vec<f64>>(ref_axis["x"]["grid"].clone()).unwrap(),
             &itertools::izip!(
-                ref_axis["x"]["values"]
-                    .as_sequence()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_f64().unwrap())
-                    .collect_vec(),
-                ref_axis["y"]["values"]
-                    .as_sequence()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_f64().unwrap())
-                    .collect_vec(),
-                ref_axis["z"]["values"]
-                    .as_sequence()
-                    .unwrap()
-                    .iter()
-                    .map(|v| v.as_f64().unwrap())
-                    .collect_vec()
+                serde_yaml::from_value::<Vec<f64>>(ref_axis["x"]["values"].clone()).unwrap(),
+                serde_yaml::from_value::<Vec<f64>>(ref_axis["y"]["values"].clone()).unwrap(),
+                serde_yaml::from_value::<Vec<f64>>(ref_axis["z"]["values"].clone()).unwrap(),
             )
             .map(|(x, y, z)| [x, y, z])
             .collect_vec(),
-            &blade_twist["grid"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
-            &blade_twist["values"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
+            &serde_yaml::from_value::<Vec<f64>>(blade_twist["grid"].clone()).unwrap(),
+            &serde_yaml::from_value::<Vec<f64>>(blade_twist["values"].clone()).unwrap(),
         )
         .set_sections_z(&blade_sections)
         .build();
@@ -275,6 +263,8 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
     //--------------------------------------------------------------------------
     // Tower
     //--------------------------------------------------------------------------
+
+    let n_tower_nodes = 7;
 
     let tower = &wio["components"]["tower"];
     let tower_diameter = &tower["outer_shape"]["outer_diameter"];
@@ -288,32 +278,6 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
         .iter()
         .find(|m| m["name"] == *tower_material_name)
         .expect("Tower material not found");
-
-    // // Inertia matrix components
-    // let inertia_matrix = &tower["structure"]["elastic_properties"]["inertia_matrix"];
-    // let mass = inertia_matrix["mass"]
-    //     .as_sequence()
-    //     .unwrap()
-    //     .iter()
-    //     .map(|v| v.as_f64().unwrap())
-    //     .collect_vec();
-
-    // // Stiffness matrix components
-    // let stiffness_matrix = &tower["structure"]["elastic_properties"]["stiffness_matrix"];
-    // let sc = [
-    //     "K11", "K12", "K13", "K14", "K15", "K16", "K22", "K23", "K24", "K25", "K26", "K33", "K34",
-    //     "K35", "K36", "K44", "K45", "K46", "K55", "K56", "K66",
-    // ]
-    // .iter()
-    // .map(|key| {
-    //     stiffness_matrix[key]
-    //         .as_sequence()
-    //         .unwrap()
-    //         .iter()
-    //         .map(|v| v.as_f64().unwrap())
-    //         .collect_vec()
-    // })
-    // .collect_vec();
 
     // Build tower input
     let elastic_modulus = tower_material["E"].as_f64().unwrap();
@@ -414,19 +378,33 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
                 .unwrap()
                 .to_radians(),
         )
+        // .set_shaft_tilt_angle(0.)
+        .set_rotor_speed(7.56 * 0.104719755) // 7.56 rpm
         .build(model)
         .unwrap();
 
     // Add hub mass
+    let hub_mass = hub["elastic_properties"]["mass"].as_f64().unwrap();
+    let hub_inertia =
+        serde_yaml::from_value::<Vec<f64>>(hub["elastic_properties"]["inertia"].clone()).unwrap();
+    // .as_mapping()
+    // .unwrap()
+    // .get(&Value::from("values"))
+    // .unwrap()
+    // .as_sequence()
+    // .unwrap()
+    // .iter()
+    // .map(|v| v.as_f64().unwrap())
+    // .collect_vec();
     model.add_mass_element(
         turbine.hub_node.id,
         mat![
-            [69131., 0., 0., 0., 0., 0.],
-            [0., 69131., 0., 0., 0., 0.],
-            [0., 0., 69131., 0., 0., 0.],
-            [0., 0., 0., 969952. + 1836784., 0., 0.],
-            [0., 0., 0., 0., 1., 0.],
-            [0., 0., 0., 0., 0., 1.]
+            [hub_mass, 0., 0., 0., 0., 0.],
+            [0., hub_mass, 0., 0., 0., 0.],
+            [0., 0., hub_mass, 0., 0., 0.],
+            [0., 0., 0., hub_inertia[0], hub_inertia[3], hub_inertia[4]],
+            [0., 0., 0., hub_inertia[3], hub_inertia[1], hub_inertia[5]],
+            [0., 0., 0., hub_inertia[4], hub_inertia[5], hub_inertia[2]]
         ],
     );
 
@@ -448,30 +426,25 @@ fn build_turbine(model: &mut Model) -> (Turbine, AeroComponent) {
             section_offset_x: af["section_offset_x"].as_f64().unwrap(),
             section_offset_y: af["section_offset_y"].as_f64().unwrap(),
             aerodynamic_center: af["aerodynamic_center"].as_f64().unwrap(),
-            aoa: af["polars"][0]["re_sets"][0]["cl"]["grid"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap().to_radians())
-                .collect_vec(),
-            cl: af["polars"][0]["re_sets"][0]["cl"]["values"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
-            cd: af["polars"][0]["re_sets"][0]["cd"]["values"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
-            cm: af["polars"][0]["re_sets"][0]["cm"]["values"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_f64().unwrap())
-                .collect_vec(),
+            aoa: serde_yaml::from_value::<Vec<f64>>(
+                af["polars"][0]["re_sets"][0]["cl"]["grid"].clone(),
+            )
+            .unwrap()
+            .into_iter()
+            .map(f64::to_radians)
+            .collect_vec(),
+            cl: serde_yaml::from_value::<Vec<f64>>(
+                af["polars"][0]["re_sets"][0]["cl"]["values"].clone(),
+            )
+            .unwrap(),
+            cd: serde_yaml::from_value::<Vec<f64>>(
+                af["polars"][0]["re_sets"][0]["cd"]["values"].clone(),
+            )
+            .unwrap(),
+            cm: serde_yaml::from_value::<Vec<f64>>(
+                af["polars"][0]["re_sets"][0]["cm"]["values"].clone(),
+            )
+            .unwrap(),
         })
         .collect_vec();
 

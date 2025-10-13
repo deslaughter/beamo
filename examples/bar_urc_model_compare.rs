@@ -40,16 +40,15 @@ fn main() {
     model.set_time_step(time_step);
 
     // Add BeamDyn blade to model
-    let (node_ids, _beam_elem_id) = add_beamdyn_blade(
+    let beam = add_beamdyn_blade(
         &mut model,
         &format!("{inp_dir}/bar_urc_bd_primary.inp"),
         &format!("{inp_dir}/bar_urc_bd_props.inp"),
-        10,
-        damping,
+        &[0., 0., 0., 0., 0., 0.],
     );
 
     // Prescribed constraint to first node of beam
-    model.add_prescribed_constraint(node_ids[0]);
+    model.add_prescribed_constraint(beam.nodes[0].id);
 
     // Perform modal analysis
     let (_eig_val, _eig_vec) = modal_analysis(&out_dir, &model);

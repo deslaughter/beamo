@@ -35,8 +35,6 @@ fn main() {
 #[rustfmt::skip]
 fn run(op_num: usize, rotor_rpm: f64) {
     let time_step = 0.01;
-    // let duration = 2.0;
-    // let n_steps = (duration / time_step) as usize;
     let n_revolutions = 2.;
 
     let omega = rotor_rpm * 2.0 * PI / 60.0;
@@ -359,9 +357,9 @@ fn build_rotor(omega: [f64; 3], model: &mut Model) -> Turbine {
             root_orientation[2],
             root_orientation[3],
         ])
-        .set_damping(Damping::Mu(col![
-            1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3
-        ]))
+        // .set_damping(Damping::Mu(col![
+        //     1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3
+        // ]))
         .set_root_velocity([0., 0., 0., omega[0], omega[1], omega[2]]);
 
     // Build blades at various rotations
@@ -478,10 +476,10 @@ fn build_rotor(omega: [f64; 3], model: &mut Model) -> Turbine {
         .collect_vec();
 
     // Add prescribed rotation between tower top node and hub node
-    // let tower_hub_constraint_id =
-    //     model.add_prescribed_rotation(tt_node_id, hub_node_id, col![1., 0., 0.]);
     let tower_hub_constraint_id =
-        model.add_revolute_joint(tt_node_id, hub_node_id, col![1., 0., 0.]);
+        model.add_prescribed_rotation(tt_node_id, hub_node_id, col![1., 0., 0.]);
+    // let tower_hub_constraint_id =
+    //     model.add_revolute_joint(tt_node_id, hub_node_id, col![1., 0., 0.]);
 
     Turbine {
         blades,
