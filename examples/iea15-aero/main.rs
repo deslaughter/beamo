@@ -4,8 +4,8 @@ use std::{f64::consts::PI, fs::File};
 use faer::prelude::*;
 use itertools::{izip, Itertools};
 
-use ottr::util::{quat_rotate_vector, quat_rotate_vector_alloc};
-use ottr::{
+use beamo::util::{quat_rotate_vector, quat_rotate_vector_alloc};
+use beamo::{
     components::{
         aero::{AeroBodyInput, AeroComponent, AeroSection},
         beam::BeamInputBuilder,

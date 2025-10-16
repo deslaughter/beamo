@@ -7,7 +7,7 @@ use std::{
 use faer::prelude::*;
 
 use itertools::{izip, Itertools};
-use ottr::{
+use beamo::{
     elements::beams::{BeamSection, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,

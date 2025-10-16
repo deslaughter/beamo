@@ -1,7 +1,7 @@
 use std::fs;
 
 use itertools::Itertools;
-use ottr::model::Model;
+use beamo::model::Model;
 
 fn main() {}
 

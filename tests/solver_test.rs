@@ -3,7 +3,7 @@ use faer::prelude::*;
 use faer::utils::approx::*;
 
 use itertools::Itertools;
-use ottr::{
+use beamo::{
     elements::beams::{BeamSection, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,

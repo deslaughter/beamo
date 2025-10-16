@@ -1,6 +1,6 @@
 use faer::prelude::*;
 use itertools::izip;
-use ottr::{
+use beamo::{
     elements::beams::Damping,
     external::add_beamdyn_blade,
     model::Model,

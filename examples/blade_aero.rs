@@ -1,6 +1,6 @@
 use faer::prelude::*;
 use itertools::Itertools;
-use ottr::{
+use beamo::{
     components::{
         aero::{AeroBodyInput, AeroComponent, AeroSection},
         beam::{BeamComponent, BeamInputBuilder},

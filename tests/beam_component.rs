@@ -1,6 +1,6 @@
 use faer::prelude::*;
 use itertools::Itertools;
-use ottr::{
+use beamo::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::BeamSection,
     model::Model,

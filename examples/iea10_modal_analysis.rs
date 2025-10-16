@@ -1,6 +1,6 @@
 use faer::{linalg::matmul::matmul, prelude::*, Accum};
 use itertools::{izip, Itertools};
-use ottr::{
+use beamo::{
     elements::beams::{BeamSection, Beams, Damping},
     interp::gauss_legendre_lobotto_points,
     model::Model,

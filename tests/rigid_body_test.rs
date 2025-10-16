@@ -1,14 +1,14 @@
-use equator::assert;
-use faer::prelude::*;
-use faer::utils::approx::*;
-use itertools::Itertools;
-use ottr::{
+use beamo::{
     interfaces::{MooringLine, RigidPlatform},
     model::Model,
     node::Direction,
     util::{cross_product, quat_as_euler_angles, quat_as_rotation_vector, vec_tilde},
     vtk::lines_as_vtk,
 };
+use equator::assert;
+use faer::prelude::*;
+use faer::utils::approx::*;
+use itertools::Itertools;
 use std::{
     f64::consts::PI,
     fs::{self, File},

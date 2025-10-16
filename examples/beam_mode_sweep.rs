@@ -1,6 +1,6 @@
 use faer::prelude::*;
 use itertools::{izip, Itertools};
-use ottr::{
+use beamo::{
     elements::beams::{BeamSection, Damping},
     // external::parse_beamdyn_sections,
     interp::gauss_legendre_lobotto_points,

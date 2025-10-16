@@ -7,7 +7,7 @@ use std::{
 
 use faer::prelude::*;
 use itertools::Itertools;
-use ottr::{
+use beamo::{
     components::{
         beam::{BeamComponent, BeamInputBuilder},
         node_data::NodeData,

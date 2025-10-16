@@ -2,7 +2,7 @@ use std::{f64::consts::PI, fs};
 
 use faer::prelude::*;
 use itertools::{izip, Itertools};
-use ottr::{
+use beamo::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::{BeamSection, Damping},
     model::Model,

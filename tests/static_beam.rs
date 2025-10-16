@@ -1,13 +1,13 @@
-use equator::assert;
-use faer::prelude::*;
-use faer::utils::approx::*;
-use itertools::Itertools;
-use ottr::{
+use beamo::{
     elements::beams::{BeamSection, Damping},
     model::Model,
     node::Direction,
     quadrature::Quadrature,
 };
+use equator::assert;
+use faer::prelude::*;
+use faer::utils::approx::*;
+use itertools::Itertools;
 use std::process;
 
 #[test]

@@ -1,6 +1,6 @@
 use faer::prelude::*;
 use itertools::{izip, Itertools};
-use ottr::{
+use beamo::{
     components::{
         beam::BeamInputBuilder,
         turbine::{Turbine, TurbineBuilder},
