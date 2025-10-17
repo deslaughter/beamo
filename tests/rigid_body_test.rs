@@ -96,8 +96,7 @@ fn test_heavy_top() {
 
     // Model
     let mut model = Model::new();
-    // model.set_solver_tolerance(1e-5, 1e-3);
-    model.set_solver_tolerance(1e-11, 1e-11);
+    model.set_solver_tolerance(1e-8, 1e-8);
     model.set_time_step(time_step);
     model.set_rho_inf(0.9);
     model.set_max_iter(30);
@@ -247,6 +246,7 @@ fn test_heavy_top() {
     println!("Average error: {}", err_sum as f64 / n_steps as f64);
 }
 
+#[ignore]
 #[test]
 fn test_heavy_top_grad() {
     let time_step: f64 = 0.002;

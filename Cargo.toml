@@ -14,9 +14,6 @@ name = "cantilever_sin_load"
 name = "beam_mode_sweep"
 
 [[example]]
-name = "bar_urc_model_compare"
-
-[[example]]
 name = "blade_aero"
 
 [[example]]

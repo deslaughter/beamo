@@ -1090,23 +1090,22 @@ impl Solver {
 
     // Calculate convergence error (https://doi.org/10.1115/1.4033441)
     fn calculate_convergence_error(&self, state: &State) -> f64 {
-        self.r.subrows(0, self.n_system).norm_l2()
-        // let sys_sum_err_squared = zip!(&self.x_delta, &state.u_delta)
-        //     .map(|unzip!(pi, xi)| {
-        //         (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
-        //     })
-        //     .as_ref()
-        //     .sum();
+        let sys_sum_err_squared = zip!(&self.x_delta, &state.u_delta)
+            .map(|unzip!(pi, xi)| {
+                (*pi / (self.p.abs_tol + (*xi * self.p.h * self.p.rel_tol).abs())).powi(2)
+            })
+            .as_ref()
+            .sum();
 
-        // let const_sum_err_squared =
-        //     zip!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
-        //         .map(|unzip!(pi, xi)| {
-        //             (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
-        //         })
-        //         .sum();
+        let const_sum_err_squared =
+            zip!(&self.x.subrows(self.n_system, self.n_lambda), &self.lambda)
+                .map(|unzip!(pi, xi)| {
+                    (*pi / (self.p.abs_tol + (*xi * self.p.rel_tol).abs())).powi(2)
+                })
+                .sum();
 
-        // let sum_err_squared = sys_sum_err_squared + const_sum_err_squared;
-        // return sum_err_squared.sqrt() / (self.n_dofs as f64).sqrt();
+        let sum_err_squared = sys_sum_err_squared + const_sum_err_squared;
+        return sum_err_squared.sqrt() / (self.n_dofs as f64).sqrt();
     }
 
     // Calculate convergence error (https://doi.org/10.1115/1.4033441)
