@@ -1,17 +1,16 @@
 use std::{f64::consts::PI, fs};
 
-use faer::prelude::*;
-use itertools::Itertools;
 use beamo::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::{BeamSection, Damping},
     model::Model,
-    output_writer::OutputWriter,
     util::{
         quat_compose_alloc, quat_from_axis_angle_alloc, quat_inverse_alloc,
         quat_rotate_vector_alloc, write_matrix,
-    }, // output_writer::OutputWriter,
+    },
 };
+use faer::prelude::*;
+use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 static DATA_DIR: &str = "examples/turbine-psd/data-nm";

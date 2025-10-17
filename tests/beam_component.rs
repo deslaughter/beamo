@@ -1,5 +1,3 @@
-use faer::prelude::*;
-use itertools::Itertools;
 use beamo::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::BeamSection,
@@ -7,12 +5,14 @@ use beamo::{
     output_writer::OutputWriter,
     util::write_matrix,
 };
+use faer::prelude::*;
+use itertools::Itertools;
 
 #[test]
 fn test_beam_component_simple() {
     let time_step = 0.01;
     let duration = 1.0;
-    let n_steps = (duration / time_step) as usize;
+    // let n_steps = (duration / time_step) as usize;
 
     let n_nodes = 4;
 
@@ -94,7 +94,7 @@ fn test_beam_component_simple() {
     ow.write(&state, 0);
     model.write_mesh_connectivity_file("output");
 
-    let res = solver.step(&mut state);
+    solver.step(&mut state);
     write_matrix(solver.st_sp.to_dense().as_ref(), "output/st.csv").unwrap();
     solver.rhs.iter().enumerate().for_each(|(i, v)| {
         println!("rhs[{}] = {}", i, v);
