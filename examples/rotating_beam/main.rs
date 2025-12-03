@@ -1,7 +1,5 @@
 use std::{f64::consts::PI, fs};
 
-use faer::prelude::*;
-use itertools::Itertools;
 use beamo::{
     components::beam::{BeamComponent, BeamInputBuilder},
     elements::beams::BeamSection,
@@ -11,6 +9,8 @@ use beamo::{
     util::{quat_from_axis_angle_alloc, write_matrix, ColRefReshape},
     vtk::beams_nodes_as_vtk,
 };
+use faer::prelude::*;
+use itertools::Itertools;
 
 static DATA_DIR: &str = "examples/rotating_beam";
 
@@ -108,8 +108,8 @@ fn main() {
 
     println!("node_fe = {:?}", solver.elements.beams.node_fe.transpose());
     println!("node_fi = {:?}", solver.elements.beams.node_fi.transpose());
-    println!("qp.fe_c = {:?}", solver.elements.beams.qp.fe_c.transpose());
-    println!("qp.fe_d = {:?}", solver.elements.beams.qp.fe_d.transpose());
+    println!("qp.f_e1 = {:?}", solver.elements.beams.qp.f_e1.transpose());
+    println!("qp.f_e2 = {:?}", solver.elements.beams.qp.f_e2.transpose());
     println!("vd = {:?}", state.vd.transpose());
     println!("reaction = {:?}", solver.lambda);
 
@@ -140,8 +140,8 @@ fn main() {
                     //     "qp.strain = {:?}",
                     //     solver.elements.beams.qp.strain.transpose()
                     // );
-                    // println!("qp.fe_c = {:?}", solver.elements.beams.qp.fe_c.transpose());
-                    // println!("qp.fe_d = {:?}", solver.elements.beams.qp.fe_d.transpose());
+                    // println!("qp.f_e1 = {:?}", solver.elements.beams.qp.f_e1.transpose());
+                    // println!("qp.f_e2 = {:?}", solver.elements.beams.qp.f_e2.transpose());
                     // println!(
                     //     "node_f = {:?}",
                     //     solver.elements.beams.node_f.subcols(1, nnm1).transpose()

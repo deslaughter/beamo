@@ -1,5 +1,3 @@
-use faer::prelude::*;
-use itertools::{izip, Itertools};
 use beamo::{
     elements::beams::{BeamSection, Damping},
     // external::parse_beamdyn_sections,
@@ -8,15 +6,17 @@ use beamo::{
     quadrature::Quadrature,
     util::{quat_as_rotation_vector, ColRefReshape},
 };
+use faer::prelude::*;
+use itertools::{izip, Itertools};
 use std::{
     f64::consts::PI,
     fs::{self, File},
     io::Write,
 };
 
-const V_SCALE: f64 = 1.0;
+const V_SCALE: f64 = 40.0;
 
-const OUT_DIR: &str = "output/beam_mode_sweep";
+const OUT_DIR: &str = "examples/beam_mode_sweep";
 
 fn main() {
     // Damping ratio for modes 1-6
@@ -24,11 +24,11 @@ fn main() {
 
     // Select damping type
     // let damping = Damping::None;
-    // let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
-    let damping = Damping::ModalElement(zeta.clone());
+    let damping = Damping::Mu(col![0., 0., 0., 0., 0., 0.]);
+    // let damping = Damping::ModalElement(zeta.clone());
 
     // Settings
-    let n_cycles = 3.5; // Number of oscillations to simulate
+    let n_cycles = 4.5; // Number of oscillations to simulate
     let rho_inf = 1.; // Numerical damping
     let max_iter = 6; // Max convergence iterations
     let time_step = 0.0001; // Time step
@@ -63,6 +63,7 @@ fn main() {
                         % 3
                 })
                 .collect_vec();
+
             let i_max_x = i_max.iter().position(|&i| i == 0).unwrap();
             let i_max_y = i_max.iter().position(|&i| i == 1).unwrap();
             let i_max_z = i_max.iter().position(|&i| i == 2).unwrap();
@@ -219,11 +220,11 @@ fn modal_analysis(model: &Model) -> (Col<f64>, Mat<f64>) {
 
 fn setup_model(damping: Damping) -> Model {
     let beam_length = 10.;
-    let xi = gauss_legendre_lobotto_points(6);
+    let xi = gauss_legendre_lobotto_points(7);
     let s = xi.iter().map(|v| (v + 1.) / 2.).collect_vec();
 
     // Quadrature rule
-    let gq = Quadrature::gauss(12);
+    let gq = Quadrature::gauss(21);
 
     // Model
     let mut model = Model::new();
@@ -245,7 +246,7 @@ fn setup_model(damping: Damping) -> Model {
         [0.000, 0.000, 0.000, 1.4433, 0.00000, 0.0000],
         [0.000, 0.000, 0.000, 0.0000, 0.40972, 0.0000],
         [0.000, 0.000, 0.000, 0.0000, 0.00000, 1.0336],
-    ] * Scale(1e-2);
+    ] * 1e-2;
 
     let c_star = mat![
         [1368.17, 0., 0., 0., 0., 0.],
@@ -254,7 +255,7 @@ fn setup_model(damping: Damping) -> Model {
         [0., 0., 0., 16.960, 17.610, -0.351],
         [0., 0., 0., 17.610, 59.120, -0.370],
         [0., 0., 0., -0.351, -0.370, 141.47],
-    ] * Scale(1e3);
+    ] * 1e3;
 
     let sections = vec![
         BeamSection {
