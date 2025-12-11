@@ -13,7 +13,7 @@ use faer::{prelude::*, Accum};
 use itertools::{izip, multiunzip, Itertools};
 
 use super::kernels::{
-    calc_fd_c, calc_fd_c_viscoelastic, calc_fd_d, calc_inertial_matrix, calc_sd_pd_od_qd_gd_xd_yd,
+    calc_damping_matrices, calc_f_d1_viscoelastic, calc_f_d2, calc_global_matrix,
     rotate_col_to_sectional, update_viscoelastic,
 };
 
@@ -318,19 +318,19 @@ impl Beams {
 
             // Calculate Jacobian
             let qp_jacobian = beams.qp.jacobian.subrows_mut(ei.i_qp_start, ei.n_qps);
-            let mut qp_x0_prime = beams.qp.x0_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
+            let mut qp_xr_prime = beams.qp.xr_prime.subcols_mut(ei.i_qp_start, ei.n_qps);
             matmul(
-                qp_x0_prime.as_mut().transpose_mut(),
+                qp_xr_prime.as_mut().transpose_mut(),
                 faer::Accum::Replace,
                 shape_deriv,
                 node_x0.transpose(),
                 1.0,
                 Par::Seq,
             );
-            izip!(qp_jacobian.iter_mut(), qp_x0_prime.col_iter_mut()).for_each(
-                |(j, mut x0_prime)| {
-                    *j = x0_prime.as_mut().subrows(0, 3).norm_l2();
-                    x0_prime /= *j;
+            izip!(qp_jacobian.iter_mut(), qp_xr_prime.col_iter_mut()).for_each(
+                |(j, mut xr_prime)| {
+                    *j = xr_prime.as_mut().subrows(0, 3).norm_l2();
+                    xr_prime /= *j;
                 },
             );
 
@@ -392,7 +392,7 @@ impl Beams {
                     // Calculate damping matrix (g_star = mu*c_star) for each qp in element
                     let mut mu_mat = Mat::<f64>::zeros(6, 6);
                     mu_mat.diagonal_mut().column_vector_mut().copy_from(&mu);
-                    let qp_g_star = beams.qp.g_star.subcols_mut(ei.i_qp_start, ei.n_qps);
+                    let qp_g_star = beams.qp.d_star.subcols_mut(ei.i_qp_start, ei.n_qps);
                     let qp_c_star = beams.qp.c_star.subcols(ei.i_qp_start, ei.n_qps);
                     izip!(qp_g_star.col_iter_mut(), qp_c_star.col_iter()).for_each(
                         |(g_star_col, c_star_col)| {
@@ -424,7 +424,7 @@ impl Beams {
             let phi_prime = beams.shape_deriv.subrows(ei.i_qp_start, ei.n_qps);
 
             // Force integration constant
-            // c = w * j * phi
+            // c1 = w * j * phi
             ei.fi_c1
                 .col_iter_mut()
                 .enumerate()
@@ -434,7 +434,7 @@ impl Beams {
                 });
 
             // Force integration constant
-            // c = w * phi_prime
+            // c2 = w * phi_prime
             ei.fi_c2
                 .col_iter_mut()
                 .enumerate()
@@ -449,7 +449,7 @@ impl Beams {
                 .collect_vec();
 
             // Matrix integration constant
-            // c = w * j * phi_i * phi_j
+            // c1 = w * j * phi_i * phi_j
             node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
                 zip!(
                     &mut ei.mi_c1.col_mut(col),
@@ -462,7 +462,7 @@ impl Beams {
             });
 
             // Matrix integration constant
-            // c = w * phi_i * phi_prime_j
+            // c2 = w * phi_i * phi_prime_j
             node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
                 zip!(
                     &mut ei.mi_c2.col_mut(col),
@@ -474,7 +474,7 @@ impl Beams {
             });
 
             // Matrix integration constant
-            // c = w * phi_prime_i * phi_j
+            // c3 = w * phi_prime_i * phi_j
             node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
                 zip!(
                     &mut ei.mi_c3.col_mut(col),
@@ -486,7 +486,7 @@ impl Beams {
             });
 
             // Matrix integration constant
-            // c = w * phi_prime_i * phi_prime_j / j
+            // c4 = w * phi_prime_i * phi_prime_j / j
             node_ij.iter().enumerate().for_each(|(col, &(i, j))| {
                 zip!(
                     &mut ei.mi_c4.col_mut(col),
@@ -591,24 +591,7 @@ impl Beams {
         // Loop through elements and handle quadrature-point damping
         self.elem_index.iter().for_each(|ei| match &ei.damping {
             Damping::Mu(_) => {
-                calculate_mu_damping(
-                    self.qp.g_star.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.strain_dot.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.v.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.v_prime.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.fd_d.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.sd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.pd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.od.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.qd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.gd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.xd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.yd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                );
+                self.qp.calculate_mu_damping(ei.i_qp_start, ei.n_qps);
             }
             Damping::Viscoelastic(kv_i, tau_i) => {
                 rotate_col_to_sectional(
@@ -621,23 +604,25 @@ impl Beams {
                     kv_i.as_ref(),
                     tau_i.as_ref(),
                     self.qp.rr0.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.strain.subcols(ei.i_qp_start, ei.n_qps),
                     state.strain_dot_n.subcols(ei.i_qp_start, ei.n_qps),
                     strain_dot_local.subcols(ei.i_qp_start, ei.n_qps),
                     state.visco_hist.subcols(ei.i_qp_start, ei.n_qps),
                     h,
-                    self.qp.e1_tilde.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.u.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.v.subcols(ei.i_qp_start, ei.n_qps),
                     self.qp.v_prime.subcols(ei.i_qp_start, ei.n_qps),
-                    self.qp.mu_cuu.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.fd_c.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.fd_d.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.sd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.pd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.od.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.qd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.gd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.xd.subcols_mut(ei.i_qp_start, ei.n_qps),
-                    self.qp.yd.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.xr_prime.subcols(ei.i_qp_start, ei.n_qps),
+                    self.qp.d.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.f_d1.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.f_d2.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.d_d1.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.d_d2.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.g_d1.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.g_d2.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.p_d2.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.k_d1.subcols_mut(ei.i_qp_start, ei.n_qps),
+                    self.qp.k_d2.subcols_mut(ei.i_qp_start, ei.n_qps),
                 );
             }
             _ => (),
@@ -952,7 +937,7 @@ impl Beams {
         self.node_fe.fill(0.);
         self.node_fd.fill(0.);
         self.node_fi.fill(0.);
-        // self.node_fx.fill(0.);
+        self.node_fx.fill(0.);
         self.node_fg.fill(0.);
 
         // Loop through elements
@@ -963,10 +948,10 @@ impl Beams {
                 self.node_fi.subcols_mut(ei.i_node_start, ei.n_nodes),
                 self.node_fx.subcols_mut(ei.i_node_start, ei.n_nodes),
                 self.node_fg.subcols_mut(ei.i_node_start, ei.n_nodes),
-                self.qp.fe_c.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.fe_d.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.fd_c.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.fd_d.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.f_e1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.f_e2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.f_d1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.f_d2.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fi.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fg.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.fx.subcols(ei.i_qp_start, ei.n_qps),
@@ -987,21 +972,21 @@ impl Beams {
                     .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes),
                 self.node_kuu
                     .subcols_mut(ei.i_mat_start, ei.n_nodes * ei.n_nodes),
-                self.qp.muu.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.m.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.gi.subcols(ei.i_qp_start, ei.n_qps),
                 self.qp.ki.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.pe.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.qe.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.cuu.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.oe.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.sd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.pd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.od.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.qd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.gd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.xd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.yd.subcols(ei.i_qp_start, ei.n_qps),
-                self.qp.mu_cuu.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.c.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.k_e1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.k_e2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.p_e2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.d.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.d_d1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.d_d2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.g_d1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.g_d2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.p_d2.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.k_d1.subcols(ei.i_qp_start, ei.n_qps),
+                self.qp.k_d2.subcols(ei.i_qp_start, ei.n_qps),
                 ei.mi_c1.rb(),
                 ei.mi_c2.rb(),
                 ei.mi_c3.rb(),
@@ -1018,16 +1003,19 @@ fn integrate_element_forces(
     mut node_fi: MatMut<f64>,
     mut node_fx: MatMut<f64>,
     mut node_fg: MatMut<f64>,
-    qp_fe_c: MatRef<f64>,
-    qp_fe_d: MatRef<f64>,
-    qp_fd_c: MatRef<f64>,
-    qp_fd_d: MatRef<f64>,
+    qp_f_e1: MatRef<f64>,
+    qp_f_e2: MatRef<f64>,
+    qp_f_d1: MatRef<f64>,
+    qp_f_d2: MatRef<f64>,
     qp_fi: MatRef<f64>,
     qp_fg: MatRef<f64>,
     qp_fx: MatRef<f64>,
     c1: MatRef<f64>,
     c2: MatRef<f64>,
 ) {
+    // c1 = w * j * phi
+    // c2 = w * phi_prime
+
     // Internal forces
     matmul(node_fi.rb_mut(), Accum::Replace, &qp_fi, &c1, 1., Par::Seq);
 
@@ -1037,146 +1025,115 @@ fn integrate_element_forces(
     // External distributed forces
     matmul(node_fx.rb_mut(), Accum::Replace, &qp_fx, &c1, 1., Par::Seq);
 
-    // Elastic forces part 1
+    // Elastic forces
     matmul(
         node_fe.rb_mut(),
         Accum::Replace,
-        &qp_fe_d,
-        &c1,
+        &qp_f_e1,
+        &c2,
         1.,
         Par::Seq,
     );
+    matmul(node_fe.rb_mut(), Accum::Add, &qp_f_e2, &c1, 1., Par::Seq);
 
-    // Dissipative forces part 1
+    // Dissipative forces
     matmul(
         node_fd.rb_mut(),
         Accum::Replace,
-        &qp_fd_d,
-        &c1,
+        &qp_f_d1,
+        &c2,
         1.,
         Par::Seq,
     );
-
-    // Elastic forces part 2
-    matmul(node_fe.rb_mut(), Accum::Add, &qp_fe_c, &c2, 1., Par::Seq);
-
-    // Dissipative forces part 2
-    matmul(node_fd.rb_mut(), Accum::Add, &qp_fd_c, &c2, 1., Par::Seq);
+    matmul(node_fd.rb_mut(), Accum::Add, &qp_f_d2, &c1, 1., Par::Seq);
 }
 
 fn integrate_element_matrices(
     mut node_m: MatMut<f64>,
     mut node_g: MatMut<f64>,
     mut node_k: MatMut<f64>,
-    qp_muu: MatRef<f64>,
+    qp_m: MatRef<f64>,
     qp_gi: MatRef<f64>,
     qp_ki: MatRef<f64>,
-    qp_pe: MatRef<f64>,
-    qp_qe: MatRef<f64>,
-    qp_cuu: MatRef<f64>,
-    qp_oe: MatRef<f64>,
-    qp_sd: MatRef<f64>,
-    qp_pd: MatRef<f64>,
-    qp_od: MatRef<f64>,
-    qp_qd: MatRef<f64>,
-    qp_gd: MatRef<f64>,
-    qp_xd: MatRef<f64>,
-    qp_yd: MatRef<f64>,
-    qp_mu_cuu: MatRef<f64>,
+    qp_c: MatRef<f64>,
+    qp_k_e1: MatRef<f64>,
+    qp_k_e2: MatRef<f64>,
+    qp_p_e2: MatRef<f64>,
+    qp_d: MatRef<f64>,
+    qp_d_d1: MatRef<f64>,
+    qp_d_d2: MatRef<f64>,
+    qp_g_d1: MatRef<f64>,
+    qp_g_d2: MatRef<f64>,
+    qp_p_d2: MatRef<f64>,
+    qp_k_d1: MatRef<f64>,
+    qp_k_d2: MatRef<f64>,
     c1: MatRef<f64>,
     c2: MatRef<f64>,
     c3: MatRef<f64>,
     c4: MatRef<f64>,
 ) {
-    matmul(node_m.rb_mut(), Accum::Replace, qp_muu, c1, 1., Par::Seq);
+    // c1 = w * j * phi_i * phi_j
+    // c2 = w * phi_i * phi_prime_j
+    // c3 = w * phi_prime_i * phi_j
+    // c4 = w * phi_prime_i * phi_prime_j / j
 
+    // Node mass matrix
+    matmul(node_m.rb_mut(), Accum::Replace, qp_m, c1, 1., Par::Seq);
+
+    // Node gyroscopic matrix
     matmul(node_g.rb_mut(), Accum::Replace, qp_gi, c1, 1., Par::Seq);
-    matmul(node_g.rb_mut(), Accum::Add, qp_xd, c1, 1., Par::Seq);
-    matmul(node_g.rb_mut(), Accum::Add, qp_yd, c2, 1., Par::Seq);
-    matmul(node_g.rb_mut(), Accum::Add, qp_gd, c3, 1., Par::Seq);
-    matmul(node_g.rb_mut(), Accum::Add, qp_mu_cuu, c4, 1., Par::Seq);
+    matmul(node_g.rb_mut(), Accum::Add, qp_d, c4, 1., Par::Seq);
+    matmul(node_g.rb_mut(), Accum::Add, qp_g_d1, c3, 1., Par::Seq);
+    matmul(node_g.rb_mut(), Accum::Add, qp_d_d2, c2, 1., Par::Seq);
+    matmul(node_g.rb_mut(), Accum::Add, qp_g_d2, c1, 1., Par::Seq);
 
+    // Node stiffness matrix
     matmul(node_k.rb_mut(), Accum::Replace, qp_ki, c1, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_qe, c1, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_qd, c1, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_pe, c2, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_pd, c2, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_oe, c3, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_od, c3, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_cuu, c4, 1., Par::Seq);
-    matmul(node_k.rb_mut(), Accum::Add, qp_sd, c4, 1., Par::Seq);
-}
-
-pub fn calculate_mu_damping(
-    g_star: MatRef<f64>,
-    rr0: MatRef<f64>,
-    strain_dot: MatRef<f64>,
-    e1_tilde: MatRef<f64>,
-    v: MatRef<f64>,
-    v_prime: MatRef<f64>,
-    mut mu_cuu: MatMut<f64>,
-    mut fd_c: MatMut<f64>,
-    fd_d: MatMut<f64>,
-    sd: MatMut<f64>,
-    pd: MatMut<f64>,
-    od: MatMut<f64>,
-    qd: MatMut<f64>,
-    gd: MatMut<f64>,
-    xd: MatMut<f64>,
-    yd: MatMut<f64>,
-) {
-    calc_inertial_matrix(mu_cuu.as_mut(), g_star, rr0);
-    calc_fd_c(fd_c.as_mut(), mu_cuu.as_ref(), strain_dot);
-    calc_fd_d(fd_d, fd_c.as_ref(), e1_tilde);
-    calc_sd_pd_od_qd_gd_xd_yd(
-        sd,
-        pd,
-        od,
-        qd,
-        gd,
-        xd,
-        yd,
-        mu_cuu.as_ref(),
-        v_prime.subrows(0, 3),
-        v.subrows(3, 3),
-        fd_c.as_ref(),
-        e1_tilde,
-    )
+    matmul(node_k.rb_mut(), Accum::Add, qp_c, c4, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_k_e1, c3, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_p_e2, c2, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_k_e2, c1, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_d_d1, c4, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_k_d1, c3, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_p_d2, c2, 1., Par::Seq);
+    matmul(node_k.rb_mut(), Accum::Add, qp_k_d2, c1, 1., Par::Seq);
 }
 
 pub fn calculate_viscoelastic_force(
     kv_i: MatRef<f64>, //[36][n_prony]
     tau_i: ColRef<f64>,
     rr0: MatRef<f64>,
+    strain: MatRef<f64>,
     strain_dot_n: MatRef<f64>,
     strain_dot_n1: MatRef<f64>,
     visco_hist: MatRef<f64>, //[6*n_prony][n_qps in elem]
     h: f64,
-    e1_tilde: MatRef<f64>,
+    u: MatRef<f64>,
     v: MatRef<f64>,
-    v_prime: MatRef<f64>,
+    u_prime: MatRef<f64>,
+    xr_prime: MatRef<f64>,
     mut mu_cuu: MatMut<f64>,
-    mut fd_c: MatMut<f64>,
-    mut fd_d: MatMut<f64>,
-    mut sd: MatMut<f64>,
-    mut pd: MatMut<f64>,
-    mut od: MatMut<f64>,
-    mut qd: MatMut<f64>,
-    mut gd: MatMut<f64>,
-    mut xd: MatMut<f64>,
-    mut yd: MatMut<f64>,
+    mut f_d1: MatMut<f64>,
+    mut f_d2: MatMut<f64>,
+    mut d_d1: MatMut<f64>,
+    mut d_d2: MatMut<f64>,
+    mut g_d1: MatMut<f64>,
+    mut g_d2: MatMut<f64>,
+    mut p_d2: MatMut<f64>,
+    mut k_d1: MatMut<f64>,
+    mut k_d2: MatMut<f64>,
 ) {
     // fill everything with zeros
     mu_cuu.fill(0.);
-    fd_c.fill(0.);
-    fd_d.fill(0.);
-    sd.fill(0.);
-    pd.fill(0.);
-    od.fill(0.);
-    qd.fill(0.);
-    gd.fill(0.);
-    xd.fill(0.);
-    yd.fill(0.);
+    f_d1.fill(0.);
+    f_d2.fill(0.);
+    d_d1.fill(0.);
+    d_d2.fill(0.);
+    g_d1.fill(0.);
+    g_d2.fill(0.);
+    p_d2.fill(0.);
+    k_d1.fill(0.);
+    k_d2.fill(0.);
 
     // copy kv_i needs to be reshaped to match formatting of mu_cuu
     let mut flat_kvi: Mat<f64> = faer::Mat::zeros(36, mu_cuu.shape().1);
@@ -1184,21 +1141,21 @@ pub fn calculate_viscoelastic_force(
     izip!(kv_i.col_iter().enumerate(), tau_i.iter()).for_each(|((index, kvi_col), tau_i_curr)| {
         let kvi_mat = kvi_col.reshape(6, 6);
 
-        let mut mu_cuu_tmp: Mat<f64> = faer::Mat::zeros(mu_cuu.shape().0, mu_cuu.shape().1);
-        let mut fd_c_tmp: Mat<f64> = faer::Mat::zeros(fd_c.shape().0, fd_c.shape().1);
-        let mut fd_d_tmp: Mat<f64> = faer::Mat::zeros(fd_d.shape().0, fd_d.shape().1);
-        let mut sd_tmp: Mat<f64> = faer::Mat::zeros(sd.shape().0, sd.shape().1);
-        let mut pd_tmp: Mat<f64> = faer::Mat::zeros(pd.shape().0, pd.shape().1);
-        let mut od_tmp: Mat<f64> = faer::Mat::zeros(od.shape().0, od.shape().1);
-        let mut qd_tmp: Mat<f64> = faer::Mat::zeros(qd.shape().0, qd.shape().1);
-        let mut gd_tmp: Mat<f64> = faer::Mat::zeros(gd.shape().0, gd.shape().1);
-        let mut xd_tmp: Mat<f64> = faer::Mat::zeros(xd.shape().0, xd.shape().1);
-        let mut yd_tmp: Mat<f64> = faer::Mat::zeros(yd.shape().0, yd.shape().1);
+        let mut mu_cuu_tmp = mu_cuu.to_owned();
+        let mut f_d1_tmp = f_d1.to_owned();
+        let mut f_d2_tmp = f_d2.to_owned();
+        let mut d_d1_tmp = d_d1.to_owned();
+        let mut d_d2_tmp = d_d2.to_owned();
+        let mut g_d1_tmp = g_d1.to_owned();
+        let mut g_d2_tmp = g_d2.to_owned();
+        let mut p_d2_tmp = p_d2.to_owned();
+        let mut k_d1_tmp = k_d1.to_owned();
+        let mut k_d2_tmp = k_d2.to_owned();
         let mut flat_kvi_tmp: Mat<f64> = faer::Mat::zeros(flat_kvi.shape().0, flat_kvi.shape().1);
 
-        // Quadrature viscoelastic forces saved into fd_c
-        calc_fd_c_viscoelastic(
-            fd_c_tmp.as_mut(),
+        // Quadrature viscoelastic forces saved into f_d1
+        calc_f_d1_viscoelastic(
+            f_d1_tmp.as_mut(),
             h,
             kvi_mat,
             *tau_i_curr,
@@ -1208,9 +1165,6 @@ pub fn calculate_viscoelastic_force(
             visco_hist.subrows(6 * index, 6),
         );
 
-        // Additional components similar to fd_d
-        calc_fd_d(fd_d_tmp.as_mut(), fd_c_tmp.as_ref(), e1_tilde);
-
         flat_kvi_tmp.col_iter_mut().for_each(|col_kvi| {
             let mut mat_kvi_grad = col_kvi.reshape_mut(6, 6);
             mat_kvi_grad.copy_from(h / 2. * kvi_mat);
@@ -1218,36 +1172,47 @@ pub fn calculate_viscoelastic_force(
 
         // Gradient of global forces w.r.t. global strain rate at n+1
         // saved into mu_cuu
-        calc_inertial_matrix(mu_cuu_tmp.as_mut(), flat_kvi_tmp.as_ref(), rr0);
+        calc_global_matrix(mu_cuu_tmp.as_mut(), flat_kvi_tmp.as_ref(), rr0);
 
-        calc_sd_pd_od_qd_gd_xd_yd(
-            sd_tmp.as_mut(),
-            pd_tmp.as_mut(),
-            od_tmp.as_mut(),
-            qd_tmp.as_mut(),
-            gd_tmp.as_mut(),
-            xd_tmp.as_mut(),
-            yd_tmp.as_mut(),
+        // Additional components similar to f_d2
+        calc_f_d2(
+            f_d2_tmp.as_mut(),
             mu_cuu_tmp.as_ref(),
-            v_prime.subrows(0, 3),
-            v.subrows(3, 3),
-            fd_c_tmp.as_ref(),
-            e1_tilde,
+            xr_prime,
+            u_prime,
+            strain_dot_n1,
         );
 
-        fd_c += fd_c_tmp;
-        fd_d += fd_d_tmp;
+        calc_damping_matrices(
+            d_d1_tmp.as_mut(),
+            d_d2_tmp.as_mut(),
+            g_d1_tmp.as_mut(),
+            g_d2_tmp.as_mut(),
+            p_d2_tmp.as_mut(),
+            k_d1_tmp.as_mut(),
+            k_d2_tmp.as_mut(),
+            u.as_ref(),
+            v.as_ref(),
+            mu_cuu_tmp.as_ref(),
+            strain.subrows(0, 3),
+            strain_dot_n1.subrows(3, 3),
+            xr_prime.as_ref(),
+            u_prime.as_ref(),
+        );
+
+        f_d1 += f_d1_tmp;
+        f_d2 += f_d2_tmp;
 
         flat_kvi += flat_kvi_tmp;
         mu_cuu += mu_cuu_tmp;
 
-        sd += sd_tmp;
-        pd += pd_tmp;
-        od += od_tmp;
-        qd += qd_tmp;
-        gd += gd_tmp;
-        xd += xd_tmp;
-        yd += yd_tmp;
+        d_d1 += d_d1_tmp;
+        d_d2 += d_d2_tmp;
+        g_d1 += g_d1_tmp;
+        g_d2 += g_d2_tmp;
+        p_d2 += p_d2_tmp;
+        k_d1 += k_d1_tmp;
+        k_d2 += k_d2_tmp;
     });
 }
 
@@ -1597,7 +1562,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.x0_prime.col(0) ~
+            beams.qp.xr_prime.col(0) ~
             col![
                 0.92498434449987588,
                 -0.34174910719483215,
@@ -1738,7 +1703,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.muu.col(0).reshape(6, 6) ~
+            beams.qp.m.col(0).reshape(6, 6) ~
             mat![
                 [
                     2.000000000000001,
@@ -1792,7 +1757,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.cuu.col(0).reshape(6, 6) ~
+            beams.qp.c.col(0).reshape(6, 6) ~
             mat![
                 [
                     1.3196125048858467,
@@ -1846,7 +1811,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.fe_c.subcols(0, 2).transpose() ~
+            beams.qp.f_e1.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.10234015755301376,
@@ -1890,7 +1855,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.fe_d.subcols(0, 2).transpose() ~
+            beams.qp.f_e2.subcols(0, 2).transpose() ~
             mat![
                 [
                     0.,
@@ -1920,7 +1885,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.oe.col(0).reshape(6, 6) ~
+            beams.qp.k_e1.col(0).reshape(6, 6) ~
             mat![
                 [
                     0.,
@@ -1974,7 +1939,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.pe.col(0).reshape(6, 6) ~
+            beams.qp.p_e2.col(0).reshape(6, 6) ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2007,7 +1972,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.qe.col(0).reshape(6, 6) ~
+            beams.qp.k_e2.col(0).reshape(6, 6) ~
             mat![
                 [0., 0., 0., 0., 0., 0.],
                 [0., 0., 0., 0., 0., 0.],
@@ -2400,7 +2365,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.cuu.col(0).reshape(6, 6) ~
+            beams.qp.c.col(0).reshape(6, 6) ~
             mat![
                 [
                     1.3196125048858467,
@@ -2455,7 +2420,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.fe_c.col(0) ~
+            beams.qp.f_e1.col(0) ~
             col![
                 0.1023401575530157,
                 0.15123731179112812,
@@ -2467,7 +2432,7 @@ mod tests {
         );
 
         assert!(
-            beams.qp.fe_d.col(0) ~
+            beams.qp.f_e2.col(0) ~
             col![
                 0.0,
                 0.0,
