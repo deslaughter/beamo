@@ -112,7 +112,7 @@ pub fn beams_qps_as_vtk(beams: &Beams) -> Vtk {
     })
     .collect_vec();
     let orientations = vec!["OrientationX", "OrientationY", "OrientationZ"];
-    let n_qps = beams.qp.m.nrows();
+    let n_qps = beams.qp.mass.nrows();
 
     Vtk {
         version: Version { major: 4, minor: 2 },

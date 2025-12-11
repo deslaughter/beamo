@@ -8,7 +8,7 @@ use itertools::{izip, Itertools};
 use std::ops::Rem;
 
 use super::kernels::{
-    calc_fg, calc_fi, calc_gi, calc_inertial_matrix, calc_ki, calc_m_eta_rho, calc_rr0, calc_x,
+    calc_fg, calc_fi, calc_gi, calc_global_matrix, calc_ki, calc_m_eta_rho, calc_rr0, calc_x,
 };
 
 pub struct MassElement {
@@ -167,7 +167,7 @@ impl Masses {
         calc_rr0(self.rr0.as_mut(), self.x.as_ref());
 
         // Rotate material mass matrix to inertial frame
-        calc_inertial_matrix(self.muu.as_mut(), self.m_star.as_ref(), self.rr0.as_ref());
+        calc_global_matrix(self.muu.as_mut(), self.m_star.as_ref(), self.rr0.as_ref());
 
         // Extract components of mass matrix
         calc_m_eta_rho(

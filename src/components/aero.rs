@@ -796,16 +796,6 @@ fn calculate_aerodynamic_loads(
         ref_axis_moment_local.as_ref(),
         ref_axis_moment.as_mut(),
     );
-
-    // println!("v_motion              {:?}", v_motion.as_ref());
-    // println!("v_inflow              {:?}", v_inflow.as_ref());
-    // println!("v_rel                 {:?}", v_rel.as_ref());
-    // println!("con_force             {:?}", con_force.as_ref());
-    // println!("force_local           {:?}", force_local.as_ref());
-    // println!("moment_local          {:?}", moment_local.as_ref());
-    // println!("ref_axis_moment_local {:?}", ref_axis_moment_local.as_ref());
-    // println!("ref_axis_moment       {:?}", ref_axis_moment.as_ref());
-    // println!("");
 }
 
 /// Returns a vector of positions [0-1] where the jacobian is calculated for

@@ -292,12 +292,12 @@ fn test_iter_1_u() {
 }
 
 #[test]
-fn test_iter_1_x0_prime() {
+fn test_iter_1_xr_prime() {
     let (solver, _) = setup_test(1);
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.x0_prime.col(5).subrows(0, 3) ~
+        solver.elements.beams.qp.xr_prime.col(5).subrows(0, 3) ~
         col![1., 0., 0.]
     );
 }
@@ -322,17 +322,17 @@ fn test_iter_1_u_prime() {
 }
 
 #[test]
-fn test_iter_1_r_x0_prime() {
+fn test_iter_1_r_xr_prime() {
     let (solver, _) = setup_test(1);
 
-    let mut r_x0_prime = Col::<f64>::zeros(3);
+    let mut r_xr_prime = Col::<f64>::zeros(3);
     let r = solver.elements.beams.qp.u.col(5).subrows(3, 4);
-    let x0_prime = solver.elements.beams.qp.x0_prime.col(5).subrows(0, 3);
-    quat_rotate_vector(r, x0_prime, r_x0_prime.as_mut());
+    let xr_prime = solver.elements.beams.qp.xr_prime.col(5).subrows(0, 3);
+    quat_rotate_vector(r, xr_prime, r_xr_prime.as_mut());
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        r_x0_prime ~
+        r_xr_prime ~
         col![
             0.999999993146614,
             -0.00000003071620710312654,
@@ -520,7 +520,7 @@ fn test_iter_1_cuu() {
     let (solver, _) = setup_test(1);
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.cuu.col(4).reshape(6, 6) ~
+        solver.elements.beams.qp.c.col(4).reshape(6, 6) ~
         mat![
             [
                 1368169.991368319,
@@ -575,7 +575,7 @@ fn test_iter_1_cuu() {
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.cuu.col(5).reshape(6, 6) ~
+        solver.elements.beams.qp.c.col(5).reshape(6, 6) ~
         mat![
             [
                 1368169.9817783544,
@@ -635,7 +635,7 @@ fn test_iter_1_qp_fc() {
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.fe_c.col(4) ~
+        solver.elements.beams.qp.f_e1.col(4) ~
         col![
             0.005706498962533676,
             0.00038766265036750165,
@@ -648,7 +648,7 @@ fn test_iter_1_qp_fc() {
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.fe_c.col(5) ~
+        solver.elements.beams.qp.f_e1.col(5) ~
         col![
             0.011066510391149387,
             0.0010264240944318046,
@@ -666,7 +666,7 @@ fn test_iter_1_fd() {
 
     let approx_eq = CwiseMat(ApproxEq::eps() * 1000.);
     assert!(
-        solver.elements.beams.qp.fe_d.col(5) ~
+        solver.elements.beams.qp.f_e2.col(5) ~
         col![
             0.,
             0.,
