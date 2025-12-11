@@ -64,21 +64,21 @@ fn main() {
                 })
                 .collect_vec();
 
-            let i_max_x = i_max.iter().position(|&i| i == 0).unwrap();
-            let i_max_y = i_max.iter().position(|&i| i == 1).unwrap();
-            let i_max_z = i_max.iter().position(|&i| i == 2).unwrap();
+            let i_max_rx = i_max.iter().position(|&i| i == 0).unwrap(); // Torsion about x
+            let i_max_uz = i_max.iter().position(|&i| i == 2).unwrap(); // Bending in z
+            let i_max_uy = i_max.iter().position(|&i| i == 1).unwrap(); // Bending in y
 
-            let mu_x = 2. * zeta[i_max_x] / omega[i_max_x];
-            let mu_y = 2. * zeta[i_max_y] / omega[i_max_y];
-            let mu_z = 2. * zeta[i_max_z] / omega[i_max_z];
+            let mu_uz = 2. * zeta[0] / omega[i_max_uz];
+            let mu_uy = 2. * zeta[1] / omega[i_max_uy];
+            let mu_rx = 2. * zeta[2] / omega[i_max_rx];
 
-            let mu = col![mu_x, mu_y, mu_z, mu_x, mu_z, mu_y];
+            let mu = col![mu_rx, mu_uy, mu_uz, mu_rx, mu_uz, mu_uy];
             println!("mu={:?}", mu);
             println!(
                 "modes: x={}, y={}, z={}",
-                i_max_x + 1,
-                i_max_y + 1,
-                i_max_z + 1
+                i_max_rx + 1,
+                i_max_uy + 1,
+                i_max_uz + 1
             );
             model
                 .beam_elements
@@ -252,10 +252,19 @@ fn setup_model(damping: Damping) -> Model {
         [1368.17, 0., 0., 0., 0., 0.],
         [0., 88.56, 0., 0., 0., 0.],
         [0., 0., 38.78, 0., 0., 0.],
-        [0., 0., 0., 16.960, 17.610, -0.351],
-        [0., 0., 0., 17.610, 59.120, -0.370],
-        [0., 0., 0., -0.351, -0.370, 141.47],
+        [0., 0., 0., 5.0, 0., 0.],
+        [0., 0., 0., 0., 59.120, 0.],
+        [0., 0., 0., 0., 0., 141.47],
     ] * 1e3;
+
+    // let c_star = mat![
+    //     [1368.17, 0., 0., 0., 0., 0.],
+    //     [0., 88.56, 0., 0., 0., 0.],
+    //     [0., 0., 38.78, 0., 0., 0.],
+    //     [0., 0., 0., 16.960, 17.610, -0.351],
+    //     [0., 0., 0., 17.610, 59.120, -0.370],
+    //     [0., 0., 0., -0.351, -0.370, 141.47],
+    // ] * 1e3;
 
     let sections = vec![
         BeamSection {
