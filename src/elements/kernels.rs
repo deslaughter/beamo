@@ -914,7 +914,7 @@ pub fn calc_damping_matrices(
             k_d1_22.copy_from(
                 -&tilde_d21_eps_dot + d21_tilde_eps_dot - &tilde_d22_kappa_dot
                     + d22_tilde_kappa_dot
-                    + d22 * &tilde_omega * &tilde_r_xr_prime
+                    + d21 * &tilde_omega * &tilde_r_xr_prime
                     - d22 * &tilde_omega * &tilde_kappa,
             );
 
