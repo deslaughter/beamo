@@ -925,3 +925,100 @@ pub fn calc_damping_matrices(
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+
+    use crate::util::ColRefReshape;
+
+    use super::*;
+
+    #[test]
+    fn test_calc_f_d2() {
+        let mut f_d2 = Mat::<f64>::zeros(6, 1);
+
+        // 1., 2., 3., 4., 5., 6.,
+        // 7., 8., 9., 10., 11., 12.,
+        // 13., 14., 15., 16., 17., 18.,
+        // 19., 20., 21., 22., 23., 24.,
+        // 25., 26., 27., 28., 29., 30.,
+        // 31., 32., 33., 34., 35., 36.,
+
+        let d = faer::MatRef::from_column_major_slice(
+            &[
+                1., 7., 13., 19., 25., 31., 2., 8., 14., 20., 26., 32., 3., 9., 15., 21., 27., 33.,
+                4., 10., 16., 22., 28., 34., 5., 11., 17., 23., 29., 35., 6., 12., 18., 24., 30.,
+                36.,
+            ],
+            36,
+            1,
+        );
+
+        let xr_prime = faer::MatRef::from_column_major_slice(&[37., 38., 39.], 3, 1);
+        let u_prime = faer::MatRef::from_column_major_slice(&[40., 41., 42.], 3, 1);
+        let strain_dot =
+            faer::MatRef::from_column_major_slice(&[43., 44., 45., 46., 47., 48.], 6, 1);
+
+        calc_f_d2(f_d2.as_mut(), d, xr_prime, u_prime, strain_dot);
+    }
+
+    #[test]
+    fn test_calc_damping_matrices() {
+        let mut d_d1 = Mat::<f64>::zeros(36, 1);
+        let mut d_d2 = Mat::<f64>::zeros(36, 1);
+        let mut g_d1 = Mat::<f64>::zeros(36, 1);
+        let mut g_d2 = Mat::<f64>::zeros(36, 1);
+        let mut p_d2 = Mat::<f64>::zeros(36, 1);
+        let mut k_d1 = Mat::<f64>::zeros(36, 1);
+        let mut k_d2 = Mat::<f64>::zeros(36, 1);
+
+        // 1., 2., 3., 4., 5., 6.,
+        // 7., 8., 9., 10., 11., 12.,
+        // 13., 14., 15., 16., 17., 18.,
+        // 19., 20., 21., 22., 23., 24.,
+        // 25., 26., 27., 28., 29., 30.,
+        // 31., 32., 33., 34., 35., 36.,
+        let d = faer::MatRef::from_column_major_slice(
+            &[
+                1., 7., 13., 19., 25., 31., 2., 8., 14., 20., 26., 32., 3., 9., 15., 21., 27., 33.,
+                4., 10., 16., 22., 28., 34., 5., 11., 17., 23., 29., 35., 6., 12., 18., 24., 30.,
+                36.,
+            ],
+            36,
+            1,
+        );
+
+        let u = faer::MatRef::from_column_major_slice(&[37., 38., 39., 40., 41., 42., 43.], 7, 1);
+        let v = faer::MatRef::from_column_major_slice(&[44., 45., 46., 47., 48., 49.], 6, 1);
+        let strain = faer::MatRef::from_column_major_slice(&[50., 51., 52., 53., 54., 55.], 6, 1);
+        let strain_dot =
+            faer::MatRef::from_column_major_slice(&[56., 57., 58., 59., 60., 61.], 6, 1);
+        let xr_prime = faer::MatRef::from_column_major_slice(&[62., 63., 64.], 3, 1);
+        let u_prime = faer::MatRef::from_column_major_slice(&[65., 66., 67.], 3, 1);
+
+        calc_damping_matrices(
+            d_d1.as_mut(),
+            d_d2.as_mut(),
+            g_d1.as_mut(),
+            g_d2.as_mut(),
+            p_d2.as_mut(),
+            k_d1.as_mut(),
+            k_d2.as_mut(),
+            u,
+            v,
+            d,
+            strain,
+            strain_dot,
+            xr_prime,
+            u_prime,
+        );
+
+        print!("\nd_d1\n{:?}", d_d1.col(0).reshape(6, 6));
+        print!("\nd_d2\n{:?}", d_d2.col(0).reshape(6, 6));
+        print!("\ng_d1\n{:?}", g_d1.col(0).reshape(6, 6));
+        print!("\ng_d2\n{:?}", g_d2.col(0).reshape(6, 6));
+        print!("\np_d2\n{:?}", p_d2.col(0).reshape(6, 6));
+        print!("\nk_d1\n{:?}", k_d1.col(0).reshape(6, 6));
+        print!("\nk_d2\n{:?}", k_d2.col(0).reshape(6, 6));
+    }
+}
